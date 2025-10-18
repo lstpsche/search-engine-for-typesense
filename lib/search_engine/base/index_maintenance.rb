@@ -1,7 +1,107 @@
 # frozen_string_literal: true
 
+module SearchEngine
+  class Base
+    module IndexMaintenance
+      # Schema lifecycle helpers (ensure/apply/drop/prune).
+      module Schema
+        extend ActiveSupport::Concern
+
+        class_methods do
+          def schema
+            SearchEngine::Schema.compile(self)
+          end
+
+          def current_schema
+            client = (SearchEngine.config.respond_to?(:client) && SearchEngine.config.client) || SearchEngine::Client.new
+            logical = respond_to?(:collection) ? collection.to_s : name.to_s
+            physical = client.resolve_alias(logical) || logical
+            client.retrieve_collection_schema(physical)
+          end
+
+          def schema_diff
+            client = (SearchEngine.config.respond_to?(:client) && SearchEngine.config.client) || SearchEngine::Client.new
+            res = SearchEngine::Schema.diff(self, client: client)
+            res[:diff]
+          end
+
+          def drop_collection!
+            client = (SearchEngine.config.respond_to?(:client) && SearchEngine.config.client) || SearchEngine::Client.new
+            logical = respond_to?(:collection) ? collection.to_s : name.to_s
+
+            alias_target = client.resolve_alias(logical)
+            physical = if alias_target && !alias_target.to_s.strip.empty?
+                         alias_target.to_s
+                       else
+                         live = client.retrieve_collection_schema(logical)
+                         live ? logical : nil
+                       end
+
+            if physical.nil?
+              puts('Drop Collection — skip (not present)')
+              return
+            end
+
+            puts
+            puts(%(>>>>>> Dropping Collection "#{logical}"))
+            puts("Drop Collection — processing (logical=#{logical} physical=#{physical})")
+            client.delete_collection(physical)
+            puts('Drop Collection — done')
+            puts(%(>>>>>> Dropped Collection "#{logical}"))
+            nil
+          end
+
+          def recreate_collection!
+            client = (SearchEngine.config.respond_to?(:client) && SearchEngine.config.client) || SearchEngine::Client.new
+            logical = respond_to?(:collection) ? collection.to_s : name.to_s
+
+            alias_target = client.resolve_alias(logical)
+            physical = if alias_target && !alias_target.to_s.strip.empty?
+                         alias_target.to_s
+                       else
+                         live = client.retrieve_collection_schema(logical)
+                         live ? logical : nil
+                       end
+
+            if physical
+              puts("Recreate Collection — dropping existing (logical=#{logical} physical=#{physical})")
+              client.delete_collection(physical)
+            else
+              puts('Recreate Collection — no existing collection (skip drop)')
+            end
+
+            schema = SearchEngine::Schema.compile(self)
+            puts("Recreate Collection — creating collection with schema (logical=#{logical})")
+            client.create_collection(schema)
+            puts('Recreate Collection — done')
+            nil
+          end
+
+          def __se_retention_cleanup!(*_)
+            SearchEngine::Schema.prune_history!(self)
+          end
+
+          def __se_schema_missing?(diff)
+            opts = diff[:collection_options]
+            opts.is_a?(Hash) && opts[:live] == :missing
+          end
+
+          def __se_schema_drift?(diff)
+            added = Array(diff[:added_fields])
+            removed = Array(diff[:removed_fields])
+            changed = (diff[:changed_fields] || {}).to_h
+            coll_opts = (diff[:collection_options] || {}).to_h
+            added.any? || removed.any? || !changed.empty? || !coll_opts.empty?
+          end
+        end
+      end
+    end
+  end
+end
 require 'active_support/concern'
-require 'set'
+require 'search_engine/base/index_maintenance/cleanup'
+require 'search_engine/base/index_maintenance/lifecycle'
+require 'search_engine/base/index_maintenance/schema'
 
 module SearchEngine
   class Base
@@ -9,464 +109,9 @@ module SearchEngine
     module IndexMaintenance
       extend ActiveSupport::Concern
 
-      # rubocop:disable Metrics/BlockLength
-      class_methods do
-        # Delete stale documents from the collection according to DSL rules.
-        #
-        # Evaluates all stale definitions declared via the indexing DSL and
-        # `stale_filter_by`, building a filter that deletes matching documents
-        # using {SearchEngine::Deletion.delete_by}. When no stale configuration
-        # is present, the method logs a skip message and returns 0.
-        #
-        # @param into [String, nil] optional physical collection override
-        # @param partition [Object, nil] optional partition token forwarded to resolvers
-        # @return [Integer] number of deleted documents
-        def cleanup(into: nil, partition: nil)
-          logical = respond_to?(:collection) ? collection.to_s : name.to_s
-          puts
-          puts(%(>>>>>> Cleanup Collection "#{logical}"))
-
-          compiled = SearchEngine::StaleFilter.for(self)
-          stale_entries = Array(stale_entries()).map(&:dup)
-          filters = []
-
-          scope_filters = build_scope_filters(stale_entries, partition: partition)
-          filters.concat(scope_filters)
-          filters.concat(build_attribute_filters(stale_entries))
-          filters.concat(build_hash_filters(stale_entries))
-          filters.concat(build_raw_filters(stale_entries, partition: partition))
-
-          filters << compiled.call(partition: partition) if compiled
-          filters.compact!
-          filters.reject! { |f| f.to_s.strip.empty? }
-          if filters.empty?
-            puts('Cleanup — skip (no stale configuration)')
-            return 0
-          end
-
-          merged_filter = merge_filters(filters)
-          puts("Cleanup — filter=#{merged_filter.inspect}")
-
-          deleted = SearchEngine::Deletion.delete_by(
-            klass: self,
-            filter: merged_filter,
-            into: into,
-            partition: partition
-          )
-
-          puts("Cleanup — deleted=#{deleted}")
-          deleted
-        rescue StandardError => error
-          warn(
-            "Cleanup — error=#{error.class}: #{error.message.to_s[0, 200]}"
-          )
-          0
-        ensure
-          puts(%(>>>>>> Cleanup Done))
-        end
-
-        private
-
-        def build_scope_filters(entries, partition: nil)
-          filters = entries
-                    .select { |entry| entry[:type] == :scope }
-                    .map do |entry|
-                      scope = entry[:name]
-                      next unless respond_to?(scope)
-
-                      rel = invoke_scope(scope, partition)
-                      next unless rel.is_a?(SearchEngine::Relation)
-
-                      rel.filter_params
-                    end
-          filters.compact
-        rescue StandardError
-          []
-        end
-
-        def build_attribute_filters(entries)
-          filters = entries
-                    .select { |entry| entry[:type] == :attribute }
-                    .map do |entry|
-                      attr = entry[:name]
-                      val = entry[:value]
-                      relation_for({ attr => val })&.filter_params
-                    end
-          filters.compact
-        rescue StandardError
-          []
-        end
-
-        def build_hash_filters(entries)
-          filters = entries
-                    .select { |entry| entry[:type] == :hash }
-                    .map { |entry| relation_for(entry[:hash])&.filter_params }
-          filters.compact
-        rescue StandardError
-          []
-        end
-
-        def build_raw_filters(entries, partition: nil)
-          raw = entries.select { |entry| %i[filter relation block].include?(entry[:type]) }
-
-          filters = raw.flat_map do |entry|
-            case entry[:type]
-            when :filter then entry[:value]
-            when :relation then entry[:relation]&.filter_params
-            when :block
-              evaluate_block_entry(entry[:block], partition: partition)
-            end
-          end
-          Array(filters).compact
-        rescue StandardError
-          []
-        end
-
-        def merge_filters(filters)
-          return filters.first if filters.size == 1
-
-          fragments = filters.map do |filter|
-            next if filter.to_s.strip.empty?
-
-            "(#{filter})"
-          end.compact
-
-          fragments.join(' || ')
-        end
-
-        def relation_for(hash)
-          SearchEngine::Relation.new(self).where(hash)
-        end
-
-        def evaluate_block_entry(block, partition: nil)
-          params = block.parameters
-          result = if params.any? { |(kind, name)| %i[key keyreq].include?(kind) && name == :partition }
-                     instance_exec(partition: partition, &block)
-                   elsif block.arity.positive?
-                     instance_exec(partition, &block)
-                   else
-                     instance_exec(&block)
-                   end
-
-          case result
-          when String then result
-          when Hash then relation_for(result)&.filter_params
-          when SearchEngine::Relation then result.filter_params
-          end
-        rescue StandardError
-          nil
-        end
-
-        def invoke_scope(scope, partition)
-          method_obj = method(scope)
-          params = method_obj.parameters
-          if params.empty?
-            public_send(scope)
-          elsif params.any? { |(kind, name)| %i[key keyreq].include?(kind) && %i[partition _partition].include?(name) }
-            public_send(scope, partition: partition)
-          elsif params.first && %i[req opt].include?(params.first.first)
-            public_send(scope, partition)
-          else
-            public_send(scope)
-          end
-        rescue ArgumentError
-          public_send(scope)
-        end
-      end
-
-      class_methods do
-        # Run indexing workflow for this collection.
-        # @param partition [Object, Array<Object>, nil]
-        # @param client [SearchEngine::Client, nil]
-        # @param pre [Symbol, nil] :ensure (ensure presence) or :index (ensure + fix drift)
-        # @return [void]
-        def indexate(partition: nil, client: nil, pre: nil)
-          logical = respond_to?(:collection) ? collection.to_s : name.to_s
-          puts
-          puts(%(>>>>>> Indexating Collection "#{logical}"))
-          client_obj = client || (SearchEngine.config.respond_to?(:client) && SearchEngine.config.client) || SearchEngine::Client.new
-
-          if partition.nil?
-            __se_indexate_full(client: client_obj, pre: pre)
-          else
-            __se_indexate_partial(partition: partition, client: client_obj, pre: pre)
-          end
-          nil
-        end
-      end
-
-      class_methods do
-        # Drop the collection and then run full indexation.
-        # @param pre [Symbol, nil] :ensure or :index
-        # @return [void]
-        def reindexate!(pre: nil)
-          drop_collection!
-          indexate(pre: pre)
-        end
-      end
-
-      class_methods do
-        # Rebuild one or many partitions inline using the Indexer.
-        # @param partition [Object, Array<Object>, nil]
-        # @param into [String, nil]
-        # @param pre [Symbol, nil] optional dependency preflight (:ensure or :index)
-        # @return [SearchEngine::Indexer::Summary, Array<SearchEngine::Indexer::Summary>]
-        def rebuild_partition!(partition:, into: nil, pre: nil)
-          if pre
-            client_obj = (SearchEngine.config.respond_to?(:client) && SearchEngine.config.client) || SearchEngine::Client.new
-            __se_preflight_dependencies!(mode: pre, client: client_obj)
-          end
-          parts = if partition.nil? || (partition.respond_to?(:empty?) && partition.empty?)
-                    [nil]
-                  else
-                    Array(partition)
-                  end
-
-          return SearchEngine::Indexer.rebuild_partition!(self, partition: parts.first, into: into) if parts.size == 1
-
-          parts.map { |p| SearchEngine::Indexer.rebuild_partition!(self, partition: p, into: into) }
-        end
-      end
-
-      class_methods do
-        # Return the compiled Typesense schema for this collection model.
-        # @return [Hash]
-        def schema
-          SearchEngine::Schema.compile(self)
-        end
-      end
-
-      class_methods do
-        # Retrieve the current live schema of the Typesense collection.
-        # @return [Hash, nil]
-        def current_schema
-          client = (SearchEngine.config.respond_to?(:client) && SearchEngine.config.client) || SearchEngine::Client.new
-          logical = respond_to?(:collection) ? collection.to_s : name.to_s
-          physical = client.resolve_alias(logical) || logical
-          client.retrieve_collection_schema(physical)
-        end
-      end
-
-      class_methods do
-        # Compute the diff between the model's compiled schema and the live schema.
-        # @return [Hash]
-        def schema_diff
-          client = (SearchEngine.config.respond_to?(:client) && SearchEngine.config.client) || SearchEngine::Client.new
-          res = SearchEngine::Schema.diff(self, client: client)
-          res[:diff]
-        end
-      end
-
-      class_methods do
-        # Drop this model's Typesense collection.
-        # @return [void]
-        def drop_collection!
-          client = (SearchEngine.config.respond_to?(:client) && SearchEngine.config.client) || SearchEngine::Client.new
-          logical = respond_to?(:collection) ? collection.to_s : name.to_s
-
-          alias_target = client.resolve_alias(logical)
-          physical = if alias_target && !alias_target.to_s.strip.empty?
-                       alias_target.to_s
-                     else
-                       live = client.retrieve_collection_schema(logical)
-                       live ? logical : nil
-                     end
-
-          if physical.nil?
-            puts('Drop Collection — skip (not present)')
-            return
-          end
-
-          # New required lifecycle log wrappers
-          puts
-          puts(%(>>>>>> Dropping Collection "#{logical}"))
-          puts("Drop Collection — processing (logical=#{logical} physical=#{physical})")
-          client.delete_collection(physical)
-          puts('Drop Collection — done')
-          puts(%(>>>>>> Dropped Collection "#{logical}"))
-          nil
-        end
-      end
-
-      class_methods do
-        # Recreate this model's Typesense collection (drop if present, then create).
-        # @return [void]
-        def recreate_collection!
-          client = (SearchEngine.config.respond_to?(:client) && SearchEngine.config.client) || SearchEngine::Client.new
-          logical = respond_to?(:collection) ? collection.to_s : name.to_s
-
-          alias_target = client.resolve_alias(logical)
-          physical = if alias_target && !alias_target.to_s.strip.empty?
-                       alias_target.to_s
-                     else
-                       live = client.retrieve_collection_schema(logical)
-                       live ? logical : nil
-                     end
-
-          if physical
-            puts("Recreate Collection — dropping existing (logical=#{logical} physical=#{physical})")
-            client.delete_collection(physical)
-          else
-            puts('Recreate Collection — no existing collection (skip drop)')
-          end
-
-          schema = SearchEngine::Schema.compile(self)
-          puts("Recreate Collection — creating collection with schema (logical=#{logical})")
-          client.create_collection(schema)
-          puts('Recreate Collection — done')
-          nil
-        end
-      end
-
-      class_methods do
-        # --------------------------- Full flow ---------------------------
-        def __se_indexate_full(client:, pre: nil)
-          logical = respond_to?(:collection) ? collection.to_s : name.to_s
-          # Optional: preflight dependency indexation for belongs_to chains
-          __se_preflight_dependencies!(mode: pre, client: client) if pre
-
-          # Step 1: Presence
-          diff = SearchEngine::Schema.diff(self, client: client)[:diff] || {}
-          missing = __se_schema_missing?(diff)
-          puts("Step 1: Presence — processing → #{missing ? 'missing' : 'present'}")
-
-          applied, indexed_inside_apply = __se_full_apply_if_missing(client, missing)
-          drift = __se_full_check_drift(diff, missing)
-          applied, indexed_inside_apply = __se_full_apply_if_drift(client, drift, applied, indexed_inside_apply)
-          __se_full_indexation(applied, indexed_inside_apply)
-          __se_full_retention(applied, logical, client)
-        end
-      end
-
-      class_methods do
-        # Step 2: Create + apply schema if missing
-        def __se_full_apply_if_missing(client, missing)
-          applied = false
-          indexed_inside_apply = false
-          if missing
-            puts('Step 2: Create+Apply Schema — processing')
-            SearchEngine::Schema.apply!(self, client: client) do |new_physical|
-              indexed_inside_apply = __se_index_partitions!(into: new_physical)
-            end
-            applied = true
-            puts('Step 2: Create+Apply Schema — done')
-          else
-            puts('Step 2: Create+Apply Schema — skip (collection present)')
-          end
-          [applied, indexed_inside_apply]
-        end
-      end
-
-      class_methods do
-        # Step 3: Check schema status (only when present initially)
-        def __se_full_check_drift(diff, missing)
-          unless missing
-            puts('Step 3: Check Schema Status — processing')
-            drift = __se_schema_drift?(diff)
-            puts("Step 3: Check Schema Status — #{drift ? 'drift' : 'in_sync'}")
-            return drift
-          end
-          puts('Step 3: Check Schema Status — skip (just created)')
-          false
-        end
-      end
-
-      class_methods do
-        # Step 4: Apply new schema when drift detected
-        def __se_full_apply_if_drift(client, drift, applied, indexed_inside_apply)
-          if drift
-            puts('Step 4: Apply New Schema — processing')
-            SearchEngine::Schema.apply!(self, client: client) do |new_physical|
-              indexed_inside_apply = __se_index_partitions!(into: new_physical)
-            end
-            applied = true
-            puts('Step 4: Apply New Schema — done')
-          else
-            puts('Step 4: Apply New Schema — skip')
-          end
-          [applied, indexed_inside_apply]
-        end
-      end
-
-      class_methods do
-        # Step 5: Indexation (when nothing was applied)
-        def __se_full_indexation(applied, indexed_inside_apply)
-          cascade_ok = false
-          if applied && indexed_inside_apply
-            puts('Step 5: Indexation — skip (performed during schema apply)')
-            begin
-              cascade_ok = indexed_inside_apply.to_sym == :ok
-            rescue StandardError
-              cascade_ok = false
-            end
-          else
-            puts('Step 5: Indexation — processing')
-            idx_status = __se_index_partitions!(into: nil)
-            puts('Step 5: Indexation — done')
-            cascade_ok = (idx_status == :ok)
-          end
-          # Trigger cascade for referencers only when main indexation succeeded
-          __se_cascade_after_indexation!(context: :full) if cascade_ok
-        end
-      end
-
-      class_methods do
-        # Step 6: Retention cleanup
-        def __se_full_retention(applied, logical, client)
-          if applied
-            puts('Step 6: Retention Cleanup — skip (handled by schema apply)')
-          else
-            puts('Step 6: Retention Cleanup — processing')
-            dropped = __se_retention_cleanup!(logical: logical, client: client)
-            puts("Step 6: Retention Cleanup — dropped=#{dropped.inspect}")
-          end
-        end
-      end
-
-      class_methods do
-        # -------------------------- Partial flow -------------------------
-        def __se_indexate_partial(partition:, client:, pre: nil)
-          partitions = Array(partition)
-          diff_res = SearchEngine::Schema.diff(self, client: client)
-          diff = diff_res[:diff] || {}
-
-          # Step 1: Presence
-          missing = __se_schema_missing?(diff)
-          puts("Step 1: Presence — processing → #{missing ? 'missing' : 'present'}")
-          if missing
-            puts('Partial: collection is not present. Quit early.')
-            return
-          end
-
-          # Step 2: Schema status
-          puts('Step 2: Check Schema Status — processing')
-          drift = __se_schema_drift?(diff)
-          if drift
-            puts('Partial: schema is not up-to-date. Quit early (run full indexation).')
-            return
-          end
-          puts('Step 2: Check Schema Status — in_sync')
-
-          # Optional: preflight dependencies prior to partial indexation
-          __se_preflight_dependencies!(mode: pre, client: client) if pre
-
-          # Step 3: Partial indexing
-          puts('Step 3: Partial Indexation — processing')
-          all_ok = true
-          partitions.each do |p|
-            summary = SearchEngine::Indexer.rebuild_partition!(self, partition: p, into: nil)
-            puts(SearchEngine::Logging::PartitionProgress.line(p, summary))
-            begin
-              all_ok &&= (summary.status == :ok)
-            rescue StandardError
-              all_ok &&= false
-            end
-          end
-          puts('Step 3: Partial Indexation — done')
-          # After partial indexation, trigger full fallback cascade for referencers only if all partitions succeeded
-          __se_cascade_after_indexation!(context: :full) if all_ok
-        end
-      end
+      include IndexMaintenance::Cleanup
+      include IndexMaintenance::Lifecycle
+      include IndexMaintenance::Schema
 
       class_methods do
         # ---------------------- Preflight dependencies ----------------------
@@ -707,8 +352,6 @@ module SearchEngine
           added.any? || removed.any? || !changed.empty? || !coll_opts.empty?
         end
       end
-      # rubocop:enable Metrics/BlockLength
-
       class_methods do
         def __se_extract_sample_error(summary)
           failed = begin

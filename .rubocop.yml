@@ -73,6 +73,7 @@ Metrics/BlockLength:
   Exclude:
     - spec/**/*
     - lib/tasks/**/*
+  AllowedMethods: ['describe', 'context', 'class_methods']
 
 Metrics/ParameterLists:
   Max: 10

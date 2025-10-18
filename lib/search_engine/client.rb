@@ -3,6 +3,8 @@
 require 'search_engine/client_options'
 require 'search_engine/errors'
 require 'search_engine/observability'
+require 'search_engine/client/request_builder'
+require 'search_engine/client/services'
 
 module SearchEngine
   # Thin wrapper on top of the official `typesense` gem.
@@ -15,6 +17,7 @@ module SearchEngine
     def initialize(config: SearchEngine.config, typesense_client: nil)
       @config = config
       @typesense = typesense_client
+      @services = Services.build(self)
     end
 
     # Execute a single search against a collection.
@@ -27,58 +30,7 @@ module SearchEngine
     # @see `https://github.com/lstpsche/search-engine-for-typesense/wiki/Client`
     # @see `https://typesense.org/docs/latest/api/documents.html#search-document`
     def search(collection:, params:, url_opts: {})
-      params_obj = SearchEngine::CompiledParams.from(params)
-      validate_single!(collection, params_obj.to_h)
-
-      cache_params = derive_cache_opts(url_opts)
-      ts = typesense
-
-      start = current_monotonic_ms
-      payload = sanitize_body_params(params_obj.to_h)
-      path = [Client::RequestBuilder::COLLECTIONS_PREFIX, collection.to_s, Client::RequestBuilder::DOCUMENTS_SEARCH_SUFFIX].join
-
-      # Observability event payload (pre-built; redacted)
-      if defined?(ActiveSupport::Notifications)
-        se_payload = build_search_event_payload(
-          collection: collection,
-          params: params_obj.to_h,
-          cache_params: cache_params
-        )
-
-        result = nil
-        SearchEngine::Instrumentation.instrument('search_engine.search', se_payload) do |ctx|
-          ctx[:params_preview] = SearchEngine::Instrumentation.redact(params_obj.to_h)
-          result = with_exception_mapping(:post, path, cache_params, start) do
-            docs = ts.collections[collection].documents
-            documents_search(docs, payload, cache_params)
-          end
-          ctx[:status] = :ok
-        rescue Errors::Api => error
-          ctx[:status] = error.status
-          ctx[:error_class] = error.class.name
-          raise
-        rescue Errors::Error => error
-          ctx[:status] = :error
-          ctx[:error_class] = error.class.name
-          raise
-        end
-      else
-        result = with_exception_mapping(:post, path, cache_params, start) do
-          docs = ts.collections[collection].documents
-          documents_search(docs, payload, cache_params)
-        end
-      end
-
-      duration = current_monotonic_ms - start
-      instrument(:post, path, duration, cache_params)
-      log_success(:post, path, start, cache_params)
-      # Wrap raw response into a Result with safe registry lookup for klass
-      klass = begin
-        SearchEngine.collection_for(collection)
-      rescue ArgumentError
-        nil
-      end
-      SearchEngine::Result.new(result, klass: klass)
+      services.fetch(:search).call(collection: collection, params: params, url_opts: url_opts)
     end
 
     # Resolve a logical collection name that might be an alias to the physical collection name.
@@ -89,22 +41,7 @@ module SearchEngine
     # @see `https://github.com/lstpsche/search-engine-for-typesense/wiki/Schema`
     # @see `https://typesense.org/docs/latest/api/aliases.html`
     def resolve_alias(logical_name)
-      name = logical_name.to_s
-      ts = typesense
-      start = current_monotonic_ms
-      path = [Client::RequestBuilder::ALIASES_PREFIX, name].join
-
-      result = with_exception_mapping(:get, path, {}, start) do
-        ts.aliases[name].retrieve
-      end
-
-      (result && (result['collection_name'] || result[:collection_name])).to_s
-    rescue Errors::Api => error
-      return nil if error.status.to_i == 404
-
-      raise
-    ensure
-      instrument(:get, path, (start ? (current_monotonic_ms - start) : 0.0), {})
+      services.fetch(:collections).resolve_alias(logical_name)
     end
 
     # Retrieve the live schema for a physical collection name.
@@ -115,22 +52,7 @@ module SearchEngine
     # @see `https://github.com/lstpsche/search-engine-for-typesense/wiki/Schema`
     # @see `https://typesense.org/docs/latest/api/collections.html`
     def retrieve_collection_schema(collection_name)
-      name = collection_name.to_s
-      ts = typesense
-      start = current_monotonic_ms
-      path = [Client::RequestBuilder::COLLECTIONS_PREFIX, name].join
-
-      result = with_exception_mapping(:get, path, {}, start) do
-        ts.collections[name].retrieve
-      end
-
-      symbolize_keys_deep(result)
-    rescue Errors::Api => error
-      return nil if error.status.to_i == 404
-
-      raise
-    ensure
-      instrument(:get, path, (start ? (current_monotonic_ms - start) : 0.0), {})
+      services.fetch(:collections).retrieve_schema(collection_name)
     end
 
     # Upsert an alias to point to the provided physical collection (atomic server-side swap).
@@ -140,21 +62,7 @@ module SearchEngine
     # @see `https://github.com/lstpsche/search-engine-for-typesense/wiki/Schema#lifecycle`
     # @see `https://typesense.org/docs/latest/api/aliases.html#upsert-an-alias`
     def upsert_alias(alias_name, physical_name)
-      a = alias_name.to_s
-      p = physical_name.to_s
-      ts = typesense
-      start = current_monotonic_ms
-      path = [Client::RequestBuilder::ALIASES_PREFIX, a].join
-
-      result = with_exception_mapping(:put, path, {}, start) do
-        # Minimal supported client: typesense-ruby >= 4.1.0
-        # API: ts.aliases.upsert(alias_name, collection_name: "...")
-        ts.aliases.upsert(a, collection_name: p)
-      end
-
-      symbolize_keys_deep(result)
-    ensure
-      instrument(:put, path, (start ? (current_monotonic_ms - start) : 0.0), {})
+      services.fetch(:collections).upsert_alias(alias_name, physical_name)
     end
 
     # Create a new physical collection with the given schema.
@@ -163,18 +71,7 @@ module SearchEngine
     # @see `https://github.com/lstpsche/search-engine-for-typesense/wiki/Schema#lifecycle`
     # @see `https://typesense.org/docs/latest/api/collections.html#create-a-collection`
     def create_collection(schema)
-      ts = typesense
-      start = current_monotonic_ms
-      body = schema.dup
-      path = Client::RequestBuilder::COLLECTIONS_ROOT
-
-      result = with_exception_mapping(:post, path, {}, start) do
-        ts.collections.create(body)
-      end
-
-      symbolize_keys_deep(result)
-    ensure
-      instrument(:post, path, (start ? (current_monotonic_ms - start) : 0.0), {})
+      services.fetch(:collections).create(schema)
     end
 
     # Delete a physical collection by name.
@@ -183,23 +80,7 @@ module SearchEngine
     # @see `https://github.com/lstpsche/search-engine-for-typesense/wiki/Schema#lifecycle`
     # @see `https://typesense.org/docs/latest/api/collections.html#delete-a-collection`
     def delete_collection(name)
-      n = name.to_s
-      ts = typesense
-      start = current_monotonic_ms
-      path = Client::RequestBuilder::COLLECTIONS_PREFIX + n
-
-      result = with_exception_mapping(:delete, path, {}, start) do
-        ts.collections[n].delete
-      end
-
-      symbolize_keys_deep(result)
-    rescue Errors::Api => error
-      # If already gone, treat as success for idempotency
-      return { status: 404 } if error.status.to_i == 404
-
-      raise
-    ensure
-      instrument(:delete, path, (start ? (current_monotonic_ms - start) : 0.0), {})
+      services.fetch(:collections).delete(name)
     end
 
     # List all collections.
@@ -207,17 +88,7 @@ module SearchEngine
     # @see `https://github.com/lstpsche/search-engine-for-typesense/wiki/Schema`
     # @see `https://typesense.org/docs/latest/api/collections.html#list-all-collections`
     def list_collections
-      ts = typesense
-      start = current_monotonic_ms
-      path = Client::RequestBuilder::COLLECTIONS_ROOT
-
-      result = with_exception_mapping(:get, path, {}, start) do
-        ts.collections.retrieve
-      end
-
-      symbolize_keys_deep(result)
-    ensure
-      instrument(:get, path, (start ? (current_monotonic_ms - start) : 0.0), {})
+      services.fetch(:collections).list
     end
 
     # Perform a server health check.
@@ -225,17 +96,7 @@ module SearchEngine
     # @see `https://github.com/lstpsche/search-engine-for-typesense/wiki/Troubleshooting`
     # @see `https://typesense.org/docs/latest/api/cluster-operations.html#health`
     def health
-      ts = typesense
-      start = current_monotonic_ms
-      path = Client::RequestBuilder::HEALTH_PATH
-
-      result = with_exception_mapping(:get, path, {}, start) do
-        ts.health.retrieve
-      end
-
-      symbolize_keys_deep(result)
-    ensure
-      instrument(:get, path, (start ? (current_monotonic_ms - start) : 0.0), {})
+      services.fetch(:operations).health
     end
 
     # --- Admin: API Keys ------------------------------------------------------
@@ -245,30 +106,7 @@ module SearchEngine
     # @return [Array<Hash>] list of keys with symbolized fields when possible
     # @see `https://typesense.org/docs/latest/api/api-keys.html#list-keys`
     def list_api_keys
-      ts = typesense
-      start = current_monotonic_ms
-      path = '/keys'
-
-      result = with_exception_mapping(:get, path, {}, start) do
-        # Minimal supported client: typesense-ruby >= 4.1.0
-        # API shape: `ts.keys.retrieve` returns { "keys" : [ { ... }, ... ] } or Array depending on version
-        res = begin
-          ts.keys.retrieve
-        rescue NoMethodError
-          # Some client versions expose .keys.list
-          ts.keys.list
-        end
-        # Normalize to Array of Hashes
-        if res.is_a?(Hash)
-          Array(res[:keys] || res['keys'])
-        else
-          Array(res)
-        end
-      end
-
-      symbolize_keys_deep(result)
-    ensure
-      instrument(:get, path, (start ? (current_monotonic_ms - start) : 0.0), {})
+      services.fetch(:operations).list_api_keys
     end
 
     # --- Admin: Synonyms ----------------------------------------------------
@@ -440,22 +278,7 @@ module SearchEngine
     # @see `https://github.com/lstpsche/search-engine-for-typesense/wiki/Indexer`
     # @see `https://typesense.org/docs/latest/api/documents.html#import-documents`
     def import_documents(collection:, jsonl:, action: :upsert)
-      unless collection.is_a?(String) && !collection.strip.empty?
-        raise Errors::InvalidParams, 'collection must be a non-empty String'
-      end
-      raise Errors::InvalidParams, 'jsonl must be a String' unless jsonl.is_a?(String)
-
-      ts = typesense_for_import
-      start = current_monotonic_ms
-      path = Client::RequestBuilder::COLLECTIONS_PREFIX + collection.to_s + Client::RequestBuilder::DOCUMENTS_IMPORT_SUFFIX
-
-      result = with_exception_mapping(:post, path, {}, start) do
-        # The official client accepts (documents, action: "upsert") and appends query params.
-        ts.collections[collection].documents.import(jsonl, action: action.to_s)
-      end
-
-      instrument(:post, path, current_monotonic_ms - start, {})
-      result
+      services.fetch(:documents).import(collection: collection, jsonl: jsonl, action: action)
     end
 
     # Delete documents by filter from a collection.
@@ -466,23 +289,7 @@ module SearchEngine
     # @see `https://github.com/lstpsche/search-engine-for-typesense/wiki/Indexer#stale-deletes`
     # @see `https://typesense.org/docs/latest/api/documents.html#delete-documents-by-query`
     def delete_documents_by_filter(collection:, filter_by:, timeout_ms: nil)
-      unless collection.is_a?(String) && !collection.strip.empty?
-        raise Errors::InvalidParams, 'collection must be a non-empty String'
-      end
-      unless filter_by.is_a?(String) && !filter_by.strip.empty?
-        raise Errors::InvalidParams, 'filter_by must be a non-empty String'
-      end
-
-      ts = timeout_ms&.to_i&.positive? ? build_typesense_client_with_read_timeout(timeout_ms.to_i / 1000.0) : typesense
-      start = current_monotonic_ms
-      path = Client::RequestBuilder::COLLECTIONS_PREFIX + collection.to_s + Client::RequestBuilder::DOCUMENTS_SUFFIX
-
-      result = with_exception_mapping(:delete, path, {}, start) do
-        ts.collections[collection].documents.delete(filter_by: filter_by)
-      end
-
-      instrument(:delete, path, current_monotonic_ms - start, {})
-      symbolize_keys_deep(result)
+      services.fetch(:documents).delete_by_filter(collection: collection, filter_by: filter_by, timeout_ms: timeout_ms)
     end
 
     # Delete a single document by id from a collection.
@@ -493,28 +300,7 @@ module SearchEngine
     # @return [Hash, nil] response from Typesense client (symbolized) or nil when 404
     # @see `https://typesense.org/docs/latest/api/documents.html#delete-a-document`
     def delete_document(collection:, id:, timeout_ms: nil)
-      unless collection.is_a?(String) && !collection.strip.empty?
-        raise Errors::InvalidParams, 'collection must be a non-empty String'
-      end
-
-      s = id.to_s
-      raise Errors::InvalidParams, 'id must be a non-empty String' if s.strip.empty?
-
-      ts = timeout_ms&.to_i&.positive? ? build_typesense_client_with_read_timeout(timeout_ms.to_i / 1000.0) : typesense
-      start = current_monotonic_ms
-      path = Client::RequestBuilder::COLLECTIONS_PREFIX + collection.to_s +
-             Client::RequestBuilder::DOCUMENTS_SUFFIX + "/#{s}"
-
-      result = with_exception_mapping(:delete, path, {}, start) do
-        ts.collections[collection].documents[s].delete
-      end
-      symbolize_keys_deep(result)
-    rescue Errors::Api => error
-      return nil if error.status.to_i == 404
-
-      raise
-    ensure
-      instrument(:delete, path, current_monotonic_ms - start, {}) if defined?(start)
+      services.fetch(:documents).delete(collection: collection, id: id, timeout_ms: timeout_ms)
     end
 
     # Partially update a single document by id.
@@ -526,25 +312,7 @@ module SearchEngine
     # @return [Hash] response from Typesense client (symbolized)
     # @see `https://typesense.org/docs/latest/api/documents.html#update-a-document`
     def update_document(collection:, id:, fields:, timeout_ms: nil)
-      unless collection.is_a?(String) && !collection.strip.empty?
-        raise Errors::InvalidParams, 'collection must be a non-empty String'
-      end
-
-      s = id.to_s
-      raise Errors::InvalidParams, 'id must be a non-empty String' if s.strip.empty?
-
-      raise Errors::InvalidParams, 'fields must be a Hash' unless fields.is_a?(Hash)
-
-      ts = timeout_ms&.to_i&.positive? ? build_typesense_client_with_read_timeout(timeout_ms.to_i / 1000.0) : typesense
-      start = current_monotonic_ms
-      path = Client::RequestBuilder::COLLECTIONS_PREFIX + collection.to_s +
-             Client::RequestBuilder::DOCUMENTS_SUFFIX + "/#{s}"
-
-      result = with_exception_mapping(:patch, path, {}, start) do
-        ts.collections[collection].documents[s].update(fields)
-      end
-      instrument(:patch, path, current_monotonic_ms - start, {})
-      symbolize_keys_deep(result)
+      services.fetch(:documents).update(collection: collection, id: id, fields: fields, timeout_ms: timeout_ms)
     end
 
     # Partially update documents that match a filter.
@@ -556,24 +324,9 @@ module SearchEngine
     # @return [Hash] response from Typesense client (symbolized)
     # @see `https://typesense.org/docs/latest/api/documents.html#update-documents-by-query`
     def update_documents_by_filter(collection:, filter_by:, fields:, timeout_ms: nil)
-      unless collection.is_a?(String) && !collection.strip.empty?
-        raise Errors::InvalidParams, 'collection must be a non-empty String'
-      end
-      unless filter_by.is_a?(String) && !filter_by.strip.empty?
-        raise Errors::InvalidParams, 'filter_by must be a non-empty String'
-      end
-      raise Errors::InvalidParams, 'fields must be a Hash' unless fields.is_a?(Hash)
-
-      ts = timeout_ms&.to_i&.positive? ? build_typesense_client_with_read_timeout(timeout_ms.to_i / 1000.0) : typesense
-      start = current_monotonic_ms
-      path = Client::RequestBuilder::COLLECTIONS_PREFIX + collection.to_s + Client::RequestBuilder::DOCUMENTS_SUFFIX
-
-      result = with_exception_mapping(:patch, path, {}, start) do
-        ts.collections[collection].documents.update(fields, filter_by: filter_by)
-      end
-
-      instrument(:patch, path, current_monotonic_ms - start, {})
-      symbolize_keys_deep(result)
+      services.fetch(:documents).update_by_filter(collection: collection, filter_by: filter_by, fields: fields,
+                                                  timeout_ms: timeout_ms
+      )
     end
 
     # Create a single document in a collection.
@@ -584,21 +337,7 @@ module SearchEngine
     # @raise [SearchEngine::Errors::InvalidParams, SearchEngine::Errors::*]
     # @see `https://typesense.org/docs/latest/api/documents.html#create-a-document`
     def create_document(collection:, document:)
-      unless collection.is_a?(String) && !collection.strip.empty?
-        raise Errors::InvalidParams, 'collection must be a non-empty String'
-      end
-      raise Errors::InvalidParams, 'document must be a Hash' unless document.is_a?(Hash)
-
-      ts = typesense
-      start = current_monotonic_ms
-      path = Client::RequestBuilder::COLLECTIONS_PREFIX + collection.to_s + Client::RequestBuilder::DOCUMENTS_SUFFIX
-
-      result = with_exception_mapping(:post, path, {}, start) do
-        ts.collections[collection].documents.create(document)
-      end
-
-      instrument(:post, path, current_monotonic_ms - start, {})
-      symbolize_keys_deep(result)
+      services.fetch(:documents).create(collection: collection, document: document)
     end
 
     # Execute a multi-search across multiple collections.
@@ -610,22 +349,7 @@ module SearchEngine
     # @see `https://github.com/lstpsche/search-engine-for-typesense/wiki/Multi-search-Guide`
     # @see `https://typesense.org/docs/latest/api/#multi-search`
     def multi_search(searches:, url_opts: {})
-      validate_multi!(searches)
-
-      cache_params = derive_cache_opts(url_opts)
-      ts = typesense
-      start = current_monotonic_ms
-      path = '/multi_search'
-
-      # Sanitize each body from internal-only keys deterministically
-      bodies = Array(searches).map { |s| RequestBuilder.send(:sanitize_body_params, s) }
-
-      result = with_exception_mapping(:post, path, cache_params, start) do
-        ts.multi_search.perform({ searches: bodies }, common_params: cache_params)
-      end
-
-      instrument(:post, path, current_monotonic_ms - start, cache_params)
-      symbolize_keys_deep(result)
+      services.fetch(:search).multi(searches: searches, url_opts: url_opts)
     end
 
     # Clear the Typesense server-side search cache.
@@ -633,110 +357,12 @@ module SearchEngine
     # @return [Hash] response payload from Typesense (symbolized keys)
     # @see `https://typesense.org/docs/latest/api/cluster-operations.html#clear-cache`
     def clear_cache
-      ts = typesense
-      start = current_monotonic_ms
-      path = '/operations/cache/clear'
-
-      result = with_exception_mapping(:post, path, {}, start) do
-        ts.operations.perform('cache/clear')
-      end
-
-      instrument(:post, path, current_monotonic_ms - start, {})
-      symbolize_keys_deep(result)
+      services.fetch(:operations).clear_cache
     end
 
     private
 
-    attr_reader :config
-
-    def adapter
-      @adapter ||= SearchEngine::Client::HttpAdapter.new(typesense)
-    end
-
-    # Execute a documents.search call against the Typesense client, adapting to the
-    # installed client version. Typesense 4.1.0 expects a single positional arg.
-    # When keyword support exists, pass common_params for cache controls.
-    def documents_search(docs, payload, common_params)
-      if documents_search_supports_common_params?(docs)
-        docs.search(payload, common_params: common_params)
-      else
-        docs.search(payload)
-      end
-    end
-
-    def documents_search_supports_common_params?(docs)
-      m = docs.method(:search)
-      params = m.parameters
-      params.any? { |(kind, _)| %i[key keyreq keyrest].include?(kind) }
-    rescue StandardError
-      false
-    end
-
-    # Remove internal-only keys from the HTTP payload
-    def sanitize_body_params(params)
-      # Delegate to centralized sanitizer to keep behavior consistent
-      Client::RequestBuilder.send(:sanitize_body_params, params)
-    end
-
-    # Build the search event payload including selection and preset segments
-    def build_search_event_payload(collection:, params:, cache_params: {})
-      sel = params[:_selection].is_a?(Hash) ? params[:_selection] : {}
-      base = {
-        collection: collection,
-        params: Observability.redact(params),
-        url_opts: Observability.filtered_url_opts(cache_params),
-        status: nil,
-        error_class: nil,
-        retries: nil,
-        selection_include_count: sel[:include_count],
-        selection_exclude_count: sel[:exclude_count],
-        selection_nested_assoc_count: sel[:nested_assoc_count]
-      }
-      base.merge(build_preset_segment(params)).merge(build_curation_segment(params))
-    end
-
-    # Build preset segment (counts/keys only) from compiled params
-    # @param params [Hash]
-    # @return [Hash]
-    def build_preset_segment(params)
-      preset_mode = params[:_preset_mode]
-      pruned = Array(params[:_preset_pruned_keys]).map { |k| k.respond_to?(:to_sym) ? k.to_sym : k }.grep(Symbol)
-      locked_count = begin
-        SearchEngine.config.presets.locked_domains.size
-      rescue StandardError
-        nil
-      end
-      {
-        preset_name: params[:preset],
-        preset_mode: preset_mode,
-        preset_pruned_keys_count: pruned.empty? ? nil : pruned.size,
-        preset_locked_domains_count: locked_count,
-        preset_pruned_keys: pruned.empty? ? nil : pruned
-      }
-    end
-
-    # Build curation segment (counts/flags only) from compiled params
-    # @param params [Hash]
-    # @return [Hash]
-    def build_curation_segment(params)
-      # Counts/flags only; IDs/tags redacted. See docs/curation.md.
-      pinned_str = params[:pinned_hits].to_s
-      hidden_str = params[:hidden_hits].to_s
-      tags_str   = params[:override_tags].to_s
-      pinned_count = pinned_str.empty? ? 0 : (pinned_str.count(',') + 1)
-      hidden_count = hidden_str.empty? ? 0 : (hidden_str.count(',') + 1)
-      has_override = !tags_str.empty?
-      conflict_type = params[:_curation_conflict_type]
-      conflict_count = params[:_curation_conflict_count]
-      out = {}
-      out[:curation_pinned_count] = pinned_count if pinned_count.positive?
-      out[:curation_hidden_count] = hidden_count if hidden_count.positive?
-      out[:curation_has_override_tags] = true if has_override
-      out[:curation_filter_flag] = params[:filter_curated_hits] if params.key?(:filter_curated_hits)
-      out[:curation_conflict_type] = conflict_type.to_s if conflict_type
-      out[:curation_conflict_count] = conflict_count if conflict_count
-      out
-    end
+    attr_reader :config, :services
 
     def typesense
       @typesense ||= build_typesense_client

@@ -151,59 +151,12 @@ module SearchEngine
     # @see `https://github.com/lstpsche/search-engine-for-typesense/wiki/Indexer`
     # @see `https://typesense.org/docs/latest/api/documents.html#import-documents`
     def self.import!(klass, into:, enum:, batch_size: nil, action: :upsert)
-      raise Errors::InvalidParams, 'klass must be a Class' unless klass.is_a?(Class)
-      unless into.is_a?(String) && !into.strip.empty?
-        raise Errors::InvalidParams, 'into must be a non-empty String (physical collection name)'
-      end
-      raise Errors::InvalidParams, 'enum must be an Enumerable' unless enum.respond_to?(:each)
-
-      allowed_actions = %i[upsert create update]
-      act = action.to_sym
-      unless allowed_actions.include?(act)
-        raise Errors::InvalidParams, "action must be one of #{allowed_actions.inspect}"
-      end
-
-      cfg = SearchEngine.config.indexer
-      _effective_batch_size = (batch_size || cfg&.batch_size || 2000).to_i
-
-      client = SearchEngine::Client.new
-      started_ms = monotonic_ms
-      batches_stats = []
-      docs_total = 0
-      success_total = 0
-      failed_total = 0
-      call_index = 0
-      next_index = -> { call_index += 1 }
-
-      enum.each do |batch|
-        docs = to_array(batch)
-        stats_list = import_batch_with_handling(client, into, docs, act, next_index)
-        stats_list.each do |s|
-          batches_stats << s
-          docs_total += s[:docs_count]
-          success_total += s[:success_count]
-          failed_total += s[:failure_count]
-        end
-      end
-
-      duration = monotonic_ms - started_ms
-      status = if failed_total.zero?
-                 :ok
-               elsif success_total.positive?
-                 :partial
-               else
-                 :failed
-               end
-
-      Summary.new(
-        collection: into,
-        status: status,
-        batches_total: batches_stats.size,
-        docs_total: docs_total,
-        success_total: success_total,
-        failed_total: failed_total,
-        duration_ms_total: duration.round(1),
-        batches: batches_stats
+      SearchEngine::Indexer::BulkImport.call(
+        klass: klass,
+        into: into,
+        enum: enum,
+        batch_size: batch_size,
+        action: action
       )
     end
 
