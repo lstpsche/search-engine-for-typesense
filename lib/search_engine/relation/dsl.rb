@@ -11,8 +11,14 @@ module SearchEngine
       include SearchEngine::Relation::DSL::Filters
       include SearchEngine::Relation::DSL::Selection
 
-      # Append ordering expressions. Accepts Hash or String forms.
-      # @param value [Hash, String]
+      # Append ordering expressions. Accepts Hash/String/Array/Symbol forms.
+      #
+      # Supports an alias for Typesense text relevance ordering:
+      #   - order(text_match: :asc|:desc) → "_text_match:asc|desc"
+      #   - order(:text_match)           → "_text_match:asc"
+      # The legacy string form still works as-is: "_text_match:desc".
+      #
+      # @param value [Hash, String, Array, Symbol]
       # @return [SearchEngine::Relation]
       def order(value)
         additions = normalize_order(value)
@@ -456,7 +462,9 @@ module SearchEngine
                     "order: direction must be :asc or :desc (got #{dir.inspect} for field #{k.inspect})"
             end
 
-            "#{field}:#{direction}"
+            # Map DSL alias to Typesense special token for text relevance
+            token = (field == 'text_match' ? '_text_match' : field)
+            "#{token}:#{direction}"
           end
         end
       end
@@ -474,7 +482,9 @@ module SearchEngine
                   "order: direction must be :asc or :desc (got #{direction.inspect} for field #{name.inspect})"
           end
 
-          "#{name}:#{downcased}"
+          # Map DSL alias to Typesense special token for text relevance
+          field = (name == 'text_match' ? '_text_match' : name)
+          "#{field}:#{downcased}"
         end
       end
 
@@ -486,7 +496,8 @@ module SearchEngine
         field = value.to_s.strip
         raise ArgumentError, 'order: field name must be non-empty' if field.empty?
 
-        ["#{field}:asc"]
+        token = (field == 'text_match' ? '_text_match' : field)
+        ["#{token}:asc"]
       end
 
       # Dedupe by field with last-wins semantics while preserving last positions.
