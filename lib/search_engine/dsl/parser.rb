@@ -324,14 +324,35 @@ module SearchEngine
           nil
         end
         coerced = coerce_value(value, type_hint: type, field: field, klass: klass)
-        return coerced unless coerced.equal?(:__no_coercion__)
+        unless coerced.equal?(:__no_coercion__)
+          # For time-like hints, normalize the coerced Time to epoch seconds or ISO8601
+          if coerced.is_a?(Time)
+            case type
+            when :time, 'time', :datetime, 'datetime'
+              return coerced.to_i
+            when :time_string, 'time_string', :datetime_string, 'datetime_string'
+              return coerced.iso8601
+            end
+          end
+          return coerced
+        end
 
         # If coerce_value returned :__no_coercion__, try to coerce based on type hint
         case type
         when :boolean
           coerce_boolean(value, type)
-        when :time
-          coerce_time(value, type, field: field, klass: klass)
+        when :time, :datetime, :time_string, :datetime_string
+          t = coerce_time(value, type, field: field, klass: klass)
+          return t if t.equal?(:__no_coercion__)
+
+          case type
+          when :time, :datetime
+            t.to_i
+          when :time_string, :datetime_string
+            t.iso8601
+          else
+            t
+          end
         when :integer
           coerce_numeric(value, type, field: field, klass: klass)
         when :float, :decimal
@@ -375,16 +396,25 @@ module SearchEngine
         when Date then return value.to_time.utc
         when Time then return (value.utc? ? value : value.utc)
         else
-          if type_time?(type_hint) && value.is_a?(String)
-            begin
-              require 'time'
-              return Time.parse(value).utc
-            rescue StandardError
-              raise SearchEngine::Errors::InvalidType.new(
-                invalid_type_message(field: field, klass: klass, expectation: 'time', got: value),
-                doc: 'docs/query_dsl.md#troubleshooting',
-                details: { field: field, got: value }
-              )
+          if type_time?(type_hint)
+            # Epoch seconds as Integer / Numeric / digits-only String
+            if value.is_a?(Integer)
+              return Time.at(value).utc
+            elsif value.is_a?(Numeric)
+              return Time.at(value.to_i).utc
+            elsif value.is_a?(String)
+              begin
+                return Time.at(Integer(value, 10)).utc if value.match?(/^\d+$/)
+
+                require 'time'
+                return Time.parse(value).utc
+              rescue StandardError
+                raise SearchEngine::Errors::InvalidType.new(
+                  invalid_type_message(field: field, klass: klass, expectation: 'time', got: value),
+                  doc: 'docs/query_dsl.md#troubleshooting',
+                  details: { field: field, got: value }
+                )
+              end
             end
           end
         end
@@ -466,7 +496,7 @@ module SearchEngine
 
       def type_time?(hint)
         case hint
-        when :time, 'time', Time, Date, DateTime then true
+        when :time, 'time', :datetime, 'datetime', :time_string, 'time_string', :datetime_string, 'datetime_string', Time, Date, DateTime then true
         else false
         end
       end

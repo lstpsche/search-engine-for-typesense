@@ -15,7 +15,8 @@ module SearchEngine
     # - :float/:decimal -> "float"
     # - :string -> "string"
     # - :boolean -> "bool"
-    # - :time/:datetime -> "string" (ISO8601 serialized timestamps)
+    # - :time/:datetime -> "int64" (epoch seconds)
+    # - :time_string/:datetime_string -> "string" (ISO8601 timestamps)
     # - Array types (e.g. [:string]) -> "string[]" (when present)
     TYPE_MAPPING = {
       string: 'string',
@@ -23,8 +24,10 @@ module SearchEngine
       float: 'float',
       decimal: 'float',
       boolean: 'bool',
-      time: 'string',
-      datetime: 'string'
+      time: 'int64',
+      datetime: 'int64',
+      time_string: 'string',
+      datetime_string: 'string'
     }.freeze
 
     FIELD_COMPARE_KEYS = %i[type reference async_reference locale sort optional infix].freeze

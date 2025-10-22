@@ -537,12 +537,24 @@ module SearchEngine
         # Returns [valid(Boolean), coerced_value_or_nil, error_message]
         case expected_type
         when 'int64', 'int32'
+          # Accept Time universally by coercing to epoch seconds
+          return [true, value.to_i, true] if value.is_a?(Time)
+
           validate_integer(value, field)
         when 'float'
           validate_float(value, field)
         when 'bool'
           validate_bool(value, field)
         when 'string'
+          # Accept Time/Date/DateTime universally by coercing to ISO8601
+          if value.is_a?(Time)
+            return [true, value.iso8601, true]
+          elsif defined?(DateTime) && value.is_a?(DateTime)
+            return [true, value.to_time.utc.iso8601, true]
+          elsif defined?(Date) && value.is_a?(Date)
+            return [true, value.to_time.utc.iso8601, true]
+          end
+
           [value.is_a?(String), nil, invalid_type_message(field, 'String', value)]
         when 'string[]'
           return [true, nil, nil] if value.is_a?(Array) && value.all? { |v| v.is_a?(String) }

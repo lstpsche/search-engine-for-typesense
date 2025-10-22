@@ -169,8 +169,13 @@ module SearchEngine
             __se_cascade_after_indexation!(context: :full) if all_ok
           end
 
-          # rubocop:disable Metrics/PerceivedComplexity
+          # rubocop:disable Metrics/PerceivedComplexity, Metrics/AbcSize
           def __se_cascade_after_indexation!(context: :full)
+            if SearchEngine::Instrumentation.context&.[](:bulk_suppress_cascade)
+              puts
+              puts('>>>>>> Cascade Referencers — suppressed (bulk)')
+              return
+            end
             puts
             puts(%(>>>>>> Cascade Referencers))
             results = SearchEngine::Cascade.cascade_reindex!(source: self, ids: nil, context: context)
@@ -221,7 +226,7 @@ module SearchEngine
               warn(base)
             end
           end
-          # rubocop:enable Metrics/PerceivedComplexity
+          # rubocop:enable Metrics/PerceivedComplexity, Metrics/AbcSize
 
           def __se_retention_cleanup!(*_)
             SearchEngine::Schema.prune_history!(self)
