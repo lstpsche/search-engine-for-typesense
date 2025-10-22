@@ -20,7 +20,7 @@ class SchemaCompileTest < Minitest::Test
       { name: 'name', type: 'string' },
       { name: 'active', type: 'bool' },
       { name: 'price', type: 'float' },
-      { name: 'created_at', type: 'string' }
+      { name: 'created_at', type: 'int64' }
     ], schema[:fields]
 
     assert schema.frozen?
