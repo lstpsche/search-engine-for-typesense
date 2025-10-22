@@ -18,6 +18,11 @@ module SearchEngine
       #   - order(:text_match)           → "_text_match:asc"
       # The legacy string form still works as-is: "_text_match:desc".
       #
+      # When passing a String, raw Typesense tokens are accepted, including
+      # `_eval(...)` expressions. Commas and colons that appear inside
+      # parentheses are handled, so inputs like
+      # "_eval(locked:true):desc" are parsed correctly.
+      #
       # @param value [Hash, String, Array, Symbol]
       # @return [SearchEngine::Relation]
       def order(value)
@@ -426,6 +431,37 @@ module SearchEngine
         raise ArgumentError, "order: unsupported input #{value.class}"
       end
 
+      # Split order tokens by top-level commas, ignoring commas inside
+      # parentheses. Returns trimmed, non-empty chunks.
+      def split_order_tokens(value)
+        str = value.to_s
+        return [] if str.strip.empty?
+
+        parts = []
+        buf = +''
+        depth = 0
+        str.each_char do |ch|
+          case ch
+          when '('
+            depth += 1
+          when ')'
+            depth -= 1 if depth.positive?
+          when ','
+            if depth.zero?
+              token = buf.strip
+              parts << token unless token.empty?
+              buf.clear
+              next
+            end
+          end
+          buf << ch
+        end
+
+        last = buf.strip
+        parts << last unless last.empty?
+        parts
+      end
+
       def normalize_order_hash(value)
         value.flat_map do |k, dir|
           if dir.is_a?(Hash)
@@ -470,21 +506,21 @@ module SearchEngine
       end
 
       def normalize_order_string(value)
-        value.split(',').map(&:strip).reject(&:empty?).map do |chunk|
-          name, direction = chunk.split(':', 2).map { |p| p.to_s.strip }
-          if name.empty? || direction.empty?
-            raise ArgumentError, "order: expected 'field:direction' (got #{chunk.inspect})"
-          end
+        split_order_tokens(value).map do |chunk|
+          # Extract trailing direction anchored at the end; whitespace tolerant
+          m = chunk.match(/\A\s*(.+?):\s*(asc|desc)\s*\z/i)
+          raise ArgumentError, "order: expected 'field:direction' (got #{chunk.inspect})" unless m
 
-          downcased = direction.downcase
-          unless %w[asc desc].include?(downcased)
+          name = m[1].to_s.strip
+          direction = m[2].to_s.strip.downcase
+          unless %w[asc desc].include?(direction)
             raise ArgumentError,
                   "order: direction must be :asc or :desc (got #{direction.inspect} for field #{name.inspect})"
           end
 
-          # Map DSL alias to Typesense special token for text relevance
+          # Preserve alias for text relevance
           field = (name == 'text_match' ? '_text_match' : name)
-          "#{field}:#{downcased}"
+          "#{field}:#{direction}"
         end
       end
 
@@ -506,7 +542,8 @@ module SearchEngine
 
         last_by_field = {}
         list.each_with_index do |entry, idx|
-          field, dir = entry.split(':', 2)
+          # Split by the last colon so complex field expressions remain intact
+          field, _sep, dir = entry.rpartition(':')
           last_by_field[field] = { idx: idx, str: "#{field}:#{dir}" }
         end
         last_by_field.values.sort_by { |h| h[:idx] }.map { |h| h[:str] }
