@@ -110,8 +110,8 @@ module SearchEngine
       end
 
       def each(relation, &block)
-        result = execute(relation)
-        block_given? ? result.each(&block) : result.each
+        arr = to_a(relation)
+        block_given? ? arr.each(&block) : arr.each
       end
 
       def first(relation, n = nil)

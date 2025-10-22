@@ -9,9 +9,12 @@ module SearchEngine
     # materialized results for convenience. Restricting this list prevents
     # accidental network calls during reflection/printing in non‑interactive contexts.
     ARRAY_DELEGATED_METHODS = %i[
-      to_a each map collect select reject find detect any? all? none? one? empty?
+      to_a each map collect select filter reject find find_all detect any? all? none? one? empty?
       size length include? first last take drop [] at slice reduce inject sum uniq
-      compact flatten each_with_index
+      compact flatten each_with_index each_with_object index_by group_by partition grep grep_v flat_map collect_concat
+      each_slice each_cons reverse_each sort sort_by min max min_by max_by minmax minmax_by
+      take_while drop_while chunk chunk_while slice_when slice_before slice_after lazy
+      find_index index rindex values_at sample shuffle rotate
     ].freeze
     # Keys considered essential for :only preset mode.
     ESSENTIAL_PARAM_KEYS = %i[q page per_page].freeze
