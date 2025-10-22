@@ -15,7 +15,7 @@ module SearchEngine
     # - :float/:decimal -> "float"
     # - :string -> "string"
     # - :boolean -> "bool"
-    # - :time/:datetime -> "int64" (epoch seconds)
+    # - :time/:datetime -> "string" (ISO8601 timestamps)
     # - :time_string/:datetime_string -> "string" (ISO8601 timestamps)
     # - Array types (e.g. [:string]) -> "string[]" (when present)
     TYPE_MAPPING = {
@@ -24,8 +24,8 @@ module SearchEngine
       float: 'float',
       decimal: 'float',
       boolean: 'bool',
-      time: 'int64',
-      datetime: 'int64',
+      time: 'string',
+      datetime: 'string',
       time_string: 'string',
       datetime_string: 'string'
     }.freeze
