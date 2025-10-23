@@ -274,9 +274,21 @@ module SearchEngine
       def safe_attributes_map(klass)
         if klass.respond_to?(:attributes)
           base = klass.attributes || {}
-          base.key?(:id) ? base : base.merge(id: :integer)
+          return base if base.key?(:id)
+
+          # Infer implicit id type:
+          # - When identify_by is declared as :id, keep integer to preserve numeric coercions in tests
+          # - Otherwise, default to :string (composed or custom ids)
+          if klass.instance_variable_defined?(:@__identify_by_kind__) &&
+             klass.instance_variable_get(:@__identify_by_kind__) == :symbol &&
+             klass.instance_variable_defined?(:@__identify_by_symbol__) &&
+             klass.instance_variable_get(:@__identify_by_symbol__) == :id
+            base.merge(id: :integer)
+          else
+            base.merge(id: :string)
+          end
         else
-          { id: :integer }
+          { id: :string }
         end
       end
 

@@ -101,7 +101,7 @@ module SearchEngine
       def __se_append_declared_id!(pairs, declared)
         return unless declared.key?(:id) && instance_variable_defined?('@id')
 
-        pairs << ['id', instance_variable_get('@id')]
+        pairs << ['id', __se_coerce_id_for_display(instance_variable_get('@id'))]
       end
 
       # Render only declared attributes that were present in the hydrated document
@@ -202,7 +202,7 @@ module SearchEngine
         return if declared.key?(:id)
 
         id_v = extras['id'] || extras[:id]
-        pairs.unshift(['id', id_v]) unless id_v.nil?
+        pairs.unshift(['id', __se_coerce_id_for_display(id_v)]) unless id_v.nil?
       end
 
       # Return selection context for nested assocs used during render
@@ -275,6 +275,42 @@ module SearchEngine
         else
           value
         end
+      end
+
+      # Coerce id for display: if it's a numeric-looking string and model's id source is integer-like,
+      # render as Integer; otherwise render as-is. This does not mutate underlying value.
+      def __se_coerce_id_for_display(value)
+        v = value
+        return v if v.nil?
+
+        # Determine if this collection is ActiveRecord-sourced with integer/bigint PK and no custom identify_by
+        begin
+          dsl = self.class.instance_variable_get(:@__mapper_dsl__)
+          src = dsl&.dig(:source, :type)
+          if src.to_s == 'active_record' && !self.class.instance_variable_defined?(:@identify_by_proc)
+            model = dsl&.dig(:source, :options, :model)
+            if model && model.respond_to?(:columns_hash)
+              pk = begin
+                model.primary_key
+              rescue StandardError
+                'id'
+              end
+              col = begin
+                model.columns_hash[pk.to_s]
+              rescue StandardError
+                nil
+              end
+              if col && %i[integer bigint].include?(col.type) && v.is_a?(String) && v.match?(/^[-+]?\d+$/)
+                # Try to display numeric-looking strings as Integer
+                return Integer(v)
+              end
+            end
+          end
+        rescue StandardError
+          # fall through
+        end
+
+        v
       end
     end
   end

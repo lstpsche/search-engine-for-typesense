@@ -445,9 +445,19 @@ module SearchEngine
     def safe_attributes_map
       if @klass.respond_to?(:attributes)
         base = @klass.attributes || {}
-        base.key?(:id) ? base : base.merge(id: :integer)
+        return base if base.key?(:id)
+
+        # Mirror parser logic for implicit id type
+        if @klass.instance_variable_defined?(:@__identify_by_kind__) &&
+           @klass.instance_variable_get(:@__identify_by_kind__) == :symbol &&
+           @klass.instance_variable_defined?(:@__identify_by_symbol__) &&
+           @klass.instance_variable_get(:@__identify_by_symbol__) == :id
+          base.merge(id: :integer)
+        else
+          base.merge(id: :string)
+        end
       else
-        { id: :integer }
+        { id: :string }
       end
     end
 

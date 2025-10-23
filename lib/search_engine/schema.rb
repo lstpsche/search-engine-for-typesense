@@ -48,10 +48,18 @@ module SearchEngine
         collection_name = collection_name_for!(klass)
 
         fields_array, needs_nested_fields = compile_fields_for(klass)
+        # Do NOT include implicit `id` in compiled schema: Typesense treats `id` as
+        # a special string identifier and it is not declared in collection schema.
+        # Keeping it out avoids confusing diffs and mismatches with live schema.
         coerce_doc_updated_at_type!(fields_array)
 
         schema = build_schema_hash(collection_name, fields_array, needs_nested_fields)
         deep_freeze(schema)
+      end
+
+      # No longer used: id is not included in compiled schema.
+      def infer_id_field_type(_klass)
+        'string'
       end
 
       # Diff the compiled schema for +klass+ against the live physical collection
@@ -433,7 +441,6 @@ module SearchEngine
         normalized_fields = {}
         fields.each do |field|
           fname = (field[:name] || field['name']).to_s
-          next if fname == 'id'
 
           ftype = (field[:type] || field['type']).to_s
           fref = field[:reference] || field['reference']

@@ -403,6 +403,13 @@ module SearchEngine
           return unless instance_variable_defined?(:@identify_by_proc)
 
           subclass.instance_variable_set(:@identify_by_proc, @identify_by_proc)
+          # Propagate identify_by metadata for type hints
+          if instance_variable_defined?(:@__identify_by_kind__)
+            subclass.instance_variable_set(:@__identify_by_kind__, @__identify_by_kind__)
+          end
+          return unless instance_variable_defined?(:@__identify_by_symbol__)
+
+          subclass.instance_variable_set(:@__identify_by_symbol__, @__identify_by_symbol__)
         end
       end
     end

@@ -303,6 +303,16 @@ module SearchEngine
       services.fetch(:documents).delete(collection: collection, id: id, timeout_ms: timeout_ms)
     end
 
+    # Retrieve a single document by id from a collection.
+    # @param collection [String]
+    # @param id [String, #to_s]
+    # @param timeout_ms [Integer, nil]
+    # @return [Hash, nil] document hash or nil when 404
+    # @see `https://typesense.org/docs/latest/api/documents.html#retrieve-a-document`
+    def retrieve_document(collection:, id:, timeout_ms: nil)
+      services.fetch(:documents).retrieve(collection: collection, id: id, timeout_ms: timeout_ms)
+    end
+
     # Partially update a single document by id.
     #
     # @param collection [String] physical collection name

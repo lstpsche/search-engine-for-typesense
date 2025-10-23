@@ -166,6 +166,39 @@ module SearchEngine
           symbolize_keys_deep(result)
         end
 
+        # Retrieve a single document by id.
+        # @param collection [String]
+        # @param id [String, #to_s]
+        # @param timeout_ms [Integer, nil]
+        # @return [Hash, nil] document hash or nil when 404
+        def retrieve(collection:, id:, timeout_ms: nil)
+          unless collection.is_a?(String) && !collection.strip.empty?
+            raise Errors::InvalidParams, 'collection must be a non-empty String'
+          end
+
+          s = id.to_s
+          raise Errors::InvalidParams, 'id must be a non-empty String' if s.strip.empty?
+
+          ts = if timeout_ms&.to_i&.positive?
+                 build_typesense_client_with_read_timeout(timeout_ms.to_i / 1000.0)
+               else
+                 typesense
+               end
+          start = current_monotonic_ms
+          path = document_member_path(collection, s)
+
+          result = with_exception_mapping(:get, path, {}, start) do
+            ts.collections[collection].documents[s].retrieve
+          end
+          symbolize_keys_deep(result)
+        rescue Errors::Api => error
+          return nil if error.status.to_i == 404
+
+          raise
+        ensure
+          instrument(:get, path, (start ? (current_monotonic_ms - start) : 0.0), {}) if defined?(start)
+        end
+
         private
 
         def documents_path(collection)

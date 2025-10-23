@@ -115,6 +115,15 @@ module SearchEngine
       end
 
       def first(relation, n = nil)
+        # Fast path: when relation has a single equality predicate on id and n=nil, use document GET
+        if n.nil?
+          id_value = detect_equality_id_predicate_value(relation)
+          if id_value
+            doc = retrieve_document_by_id(relation, id_value)
+            return doc unless doc.nil?
+          end
+        end
+
         arr = to_a(relation)
         return arr.first if n.nil?
 
@@ -363,6 +372,33 @@ module SearchEngine
         { fields: fields.freeze, queries: queries.freeze }.freeze
       end
       module_function :build_facets_context_from_state
+
+      # Detect a simple AST eq(:id, value) predicate with no other filters.
+      def detect_equality_id_predicate_value(relation)
+        state = relation.instance_variable_get(:@state) || {}
+        ast_nodes = Array(state[:ast]).flatten.compact
+        return nil unless ast_nodes.size == 1
+
+        node = ast_nodes.first
+        return nil unless node.is_a?(SearchEngine::AST::Eq)
+        return nil unless node.field.to_s == 'id'
+
+        node.value
+      rescue StandardError
+        nil
+      end
+
+      # Use the Typesense retrieve-by-id endpoint and hydrate the document.
+      def retrieve_document_by_id(relation, id_value)
+        collection = relation.send(:collection_name_for_klass)
+        client = relation.send(:client)
+        raw = client.retrieve_document(collection: collection, id: id_value)
+        return nil unless raw.is_a?(Hash)
+
+        SearchEngine::Base::Creation::Helpers.hydrate_from_document(relation.klass, raw)
+      rescue StandardError
+        nil
+      end
     end
   end
 end

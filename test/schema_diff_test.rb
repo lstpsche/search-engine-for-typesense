@@ -85,7 +85,6 @@ class SchemaDiffTest < Minitest::Test
 
   def compiled_fields
     [
-      { 'name' => 'id', 'type' => 'int64' },
       { 'name' => 'name', 'type' => 'string' },
       { 'name' => 'active', 'type' => 'bool' },
       { 'name' => 'price', 'type' => 'float' },
@@ -115,7 +114,6 @@ class SchemaDiffTest < Minitest::Test
 
   def test_diff_added_removed_changed_fields
     live_fields = [
-      { 'name' => 'id', 'type' => 'int64' },
       { 'name' => 'name', 'type' => 'string' },
       # active removed
       { 'name' => 'price', 'type' => 'int32' }, # changed type

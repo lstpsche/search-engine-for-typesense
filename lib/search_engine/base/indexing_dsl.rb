@@ -63,6 +63,15 @@ module SearchEngine
             val = callable.call(record)
             val.is_a?(String) ? val : val.to_s
           end
+
+          # Persist minimal metadata about the raw strategy to inform type hints
+          if strategy.is_a?(Symbol) || strategy.is_a?(String)
+            @__identify_by_kind__ = :symbol
+            @__identify_by_symbol__ = strategy.to_sym
+          else
+            @__identify_by_kind__ = :proc
+            @__identify_by_symbol__ = nil
+          end
           self
         end
       end
