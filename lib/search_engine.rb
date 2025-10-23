@@ -43,7 +43,7 @@ require 'search_engine/collections_graph'
 require 'search_engine/bulk'
 require 'search_engine/cache'
 require 'search_engine/engine'
-require 'search_engine/syncable'
+require 'search_engine/active_record_syncable'
 
 # Top-level namespace for the SearchEngine gem.
 # Provides Typesense integration points for Rails applications.

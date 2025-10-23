@@ -159,6 +159,23 @@ module SearchEngine
           nil
         end
 
+        def prune_nil_optional_fields!(klass, document)
+          begin
+            opts = klass.respond_to?(:attribute_options) ? (klass.attribute_options || {}) : {}
+          rescue StandardError
+            opts = {}
+          end
+
+          opts.each do |fname, conf|
+            next unless conf.is_a?(Hash) && conf[:optional]
+
+            key = fname.to_s
+            document.delete(key) if document[key].nil?
+          end
+
+          nil
+        end
+
         def strict_unknown_keys_enabled?
           SearchEngine.config&.mapper&.strict_unknown_keys ? true : false
         rescue StandardError
@@ -172,10 +189,24 @@ module SearchEngine
           false
         end
 
-        def validate_and_coerce_types!(document, types_by_field, coercions_enabled)
+        def validate_and_coerce_types!(klass, document, types_by_field, coercions_enabled)
+          # Collect optional fields from the model DSL to allow nil values for them
+          optional_fields =
+            begin
+              opts = klass.respond_to?(:attribute_options) ? (klass.attribute_options || {}) : {}
+              opts.each_with_object(Set.new) do |(fname, conf), acc|
+                acc << fname.to_s if conf.is_a?(Hash) && conf[:optional]
+              end
+            rescue StandardError
+              Set.new
+            end
+
           document.each do |key, value|
             expected = types_by_field[key.to_s]
             next unless expected
+
+            # Skip type validation for nil values of optional fields
+            next if value.nil? && optional_fields.include?(key.to_s)
 
             valid, coerced, err = validate_value_for_type(expected, value, coercions_enabled: coercions_enabled)
             if coerced
@@ -359,10 +390,11 @@ module SearchEngine
           ensure_document_id!(klass, document)
           update_doc_updated_at!(document)
           append_hidden_flags!(klass, document, allowed_keys)
+          prune_nil_optional_fields!(klass, document)
 
           present = document.keys.map(&:to_s).to_set
           validate_required_and_unknown!(klass, present, allowed_keys, required_keys)
-          validate_and_coerce_types!(document, types_by_field, coercions_enabled?)
+          validate_and_coerce_types!(klass, document, types_by_field, coercions_enabled?)
           document
         end
 
@@ -547,7 +579,7 @@ module SearchEngine
 
           present = document.keys.map(&:to_s).to_set
           Helpers.validate_required_and_unknown!(self, present, allowed_keys, required_keys)
-          Helpers.validate_and_coerce_types!(document, types_by_field, Helpers.coercions_enabled?)
+          Helpers.validate_and_coerce_types!(self, document, types_by_field, Helpers.coercions_enabled?)
 
           client = SearchEngine::Client.new
           logical = respond_to?(:collection) ? collection.to_s : name.to_s

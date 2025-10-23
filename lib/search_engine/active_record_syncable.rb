@@ -10,10 +10,10 @@ module SearchEngine
   #
   # @example
   #   class Product < ApplicationRecord
-  #     include SearchEngine::Syncable
+  #     include SearchEngine::ActiveRecordSyncable
   #     search_engine_syncable on: %i[create update destroy], collection: :products
   #   end
-  module Syncable
+  module ActiveRecordSyncable
     extend ActiveSupport::Concern
 
     class_methods do
@@ -33,7 +33,7 @@ module SearchEngine
       def search_engine_syncable(collection: nil, on: nil)
         effective_actions = on
 
-        cfg = SearchEngine::Syncable.__normalize_config_for(
+        cfg = SearchEngine::ActiveRecordSyncable.__normalize_config_for(
           self,
           collection: collection,
           actions: effective_actions
@@ -42,7 +42,7 @@ module SearchEngine
         # Store config on the AR class (used by instance methods)
         instance_variable_set(:@__se_syncable_cfg__, cfg)
 
-        SearchEngine::Syncable.__register_callbacks_for(self, cfg)
+        SearchEngine::ActiveRecordSyncable.__register_callbacks_for(self, cfg)
         self
       end
     end
@@ -124,8 +124,19 @@ module SearchEngine
 
       doc_id = begin
         se_klass.compute_document_id(self)
-      rescue StandardError
-        respond_to?(:id) ? id.to_s : nil
+      rescue StandardError => error
+        # When a custom identify_by is configured on the SearchEngine model,
+        # do not fall back to the ActiveRecord id on computation errors as it
+        # may point to a different document. Only fall back to AR id when
+        # identify_by is not defined at all.
+        if se_klass.instance_variable_defined?(:@identify_by_proc)
+          SearchEngine.config.logger&.warn(
+            "search_engine_syncable: identify_by failed to compute id for '#{cfg[:logical]}' (#{error.class})"
+          )
+          nil
+        else
+          respond_to?(:id) ? id.to_s : nil
+        end
       end
       return nil if doc_id.nil? || doc_id.to_s.strip.empty?
 

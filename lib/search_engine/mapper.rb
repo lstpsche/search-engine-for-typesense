@@ -421,6 +421,9 @@ module SearchEngine
           expected = @types_by_field[fname]
           next unless expected
 
+          # Allow nil for attributes declared as optional in the model DSL
+          next if value.nil? && @__optional_blank_targets__.include?(fname)
+
           valid, coerced, err = validate_value(expected, value, field: fname)
           if coerced
             stats[:coerced_count] += 1
