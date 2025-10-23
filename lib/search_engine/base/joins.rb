@@ -62,6 +62,10 @@ module SearchEngine
             async_ref: normalized_async
           )
 
+          # Define an instance-level association reader for AR-like access.
+          # Example: product.brand => returns single associated record or nil; product.brands => Relation
+          __se_define_assoc_reader_if_needed!(assoc_name)
+
           nil
         end
       end
@@ -114,8 +118,78 @@ module SearchEngine
             kind: :has
           )
 
+          # Define an instance-level association reader for AR-like access.
+          # Example: author.books => Relation
+          __se_define_assoc_reader_if_needed!(assoc_name)
+
           nil
         end
+      end
+
+      class_methods do
+        # Define an instance reader for a declared association that resolves
+        # the referenced records through the join config.
+        #
+        # The reader follows these rules:
+        # - has :name => returns Relation scoped by foreign_key
+        # - belongs_to :singular => returns a single record or nil
+        # - belongs_to :plural (local_key array) => returns Relation
+        #
+        # For array-typed foreign keys on the target, a single local scalar
+        # value is wrapped into an Array to preserve IN semantics.
+        #
+        # @param assoc_name [Symbol]
+        # @return [void]
+        def __se_define_assoc_reader_if_needed!(assoc_name)
+          return if method_defined?(assoc_name)
+
+          define_method(assoc_name) do
+            cfg = self.class.join_for(assoc_name)
+            target_klass = SearchEngine.collection_for(cfg[:collection])
+
+            local_key = cfg[:local_key].to_sym
+            foreign_key = cfg[:foreign_key].to_sym
+            kind = (cfg[:kind] || :belongs_to).to_sym
+
+            # Prefer reader when available; fall back to ivar set during hydration
+            local_value = if respond_to?(local_key)
+                            public_send(local_key)
+                          else
+                            instance_variable_get("@#{local_key}")
+                          end
+
+            # When foreign key on target is an array type, wrap scalar local values
+            begin
+              attrs = target_klass.respond_to?(:attributes) ? (target_klass.attributes || {}) : {}
+              fk_is_array = attrs[foreign_key].is_a?(Array) && attrs[foreign_key].size == 1
+            rescue StandardError
+              fk_is_array = false
+            end
+
+            normalized = local_value
+            normalized = [normalized] if fk_is_array && !normalized.nil? && !normalized.is_a?(Array)
+
+            case kind
+            when :has
+              # For nil local values, return an always-empty relation via id:nil
+              return target_klass.where(id: nil) if normalized.nil?
+
+              target_klass.where(foreign_key => normalized)
+            else # :belongs_to
+              # Singular belongs_to: nil => nil; Array => Relation
+              return nil if normalized.nil?
+
+              if normalized.is_a?(Array)
+                # Empty local array => empty relation
+                return target_klass.where(id: nil) if normalized.empty?
+
+                return target_klass.where(foreign_key => normalized)
+              end
+              target_klass.find_by(foreign_key => normalized)
+            end
+          end
+        end
+        private :__se_define_assoc_reader_if_needed!
       end
 
       class_methods do
