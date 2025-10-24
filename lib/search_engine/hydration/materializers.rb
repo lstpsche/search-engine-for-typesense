@@ -26,7 +26,29 @@ module SearchEngine
           params = SearchEngine::CompiledParams.from(relation.to_typesense_params)
           url_opts = relation.send(:build_url_opts)
 
-          raw_result = relation.send(:client).search(collection: collection, params: params, url_opts: url_opts)
+          raw_result = nil
+          begin
+            raw_result = relation.send(:client).search(collection: collection, params: params, url_opts: url_opts)
+          rescue SearchEngine::Errors::Api => error
+            # Client-side join fallback: handle missing Typesense reference for joined filters
+            raise unless join_reference_missing_error?(error) && Array(relation.joins_list).any?
+
+            fallback_rel = build_client_side_join_fallback_relation(relation)
+            if fallback_rel.equal?(:__empty__)
+              # Short-circuit: no matches
+              empty = { 'hits' => [], 'found' => 0, 'out_of' => 0 }
+              raw_result = SearchEngine::Result.new(empty, klass: relation.klass)
+            else
+              # Retry with rewritten base relation
+              new_params = SearchEngine::CompiledParams.from(fallback_rel.to_typesense_params)
+              raw_result = relation.send(:client).search(collection: collection, params: new_params,
+                                                         url_opts: url_opts
+              )
+              instrument_client_side_fallback(relation)
+              # Replace relation for selection/facets context below
+              relation = fallback_rel
+            end
+          end
 
           selection_ctx = SearchEngine::Hydration::SelectionContext.build(relation)
           facets_ctx = build_facets_context_from_state(relation)
@@ -247,6 +269,177 @@ module SearchEngine
         count
       end
       module_function :fetch_found_only
+
+      # --- client-side join fallback helpers ---------------------------------
+
+      def join_reference_missing_error?(error)
+        return false unless error.is_a?(SearchEngine::Errors::Api)
+
+        body = error.body
+        msg = error.message.to_s
+        needle = 'No reference field found'
+        (body.is_a?(String) && body.include?(needle)) || msg.include?(needle)
+      rescue StandardError
+        false
+      end
+
+      def build_client_side_join_fallback_relation(relation)
+        state = relation.instance_variable_get(:@state) || {}
+        ast_nodes = Array(state[:ast]).flatten.compact
+        joins = Array(state[:joins]).flatten.compact
+        return relation if joins.empty?
+
+        # Guard: sorting or selection on joined fields not supported in v1
+        orders = Array(state[:orders]).map(&:to_s)
+        if orders.any? { |o| o.start_with?('$') }
+          raise SearchEngine::Errors::InvalidOption.new(
+            'Sorting by joined fields is not supported by client-side join fallback',
+            doc: 'docs/joins.md#client-side-fallback'
+          )
+        end
+        include_str = begin
+          relation.send(:compile_include_fields_string)
+        rescue StandardError
+          nil
+        end
+        if include_str && include_str.split(',').any? { |seg| seg.strip.start_with?('$') }
+          raise SearchEngine::Errors::InvalidOption.new(
+            'Selecting joined fields is not supported by client-side join fallback',
+            doc: 'docs/joins.md#client-side-fallback'
+          )
+        end
+
+        # For each applied assoc, collect inner predicates (Eq/In only)
+        per_assoc_inners = extract_join_inners(ast_nodes)
+        return relation if per_assoc_inners.empty?
+
+        # Resolve keys and fetch key sets via pre-query
+        key_sets = {}
+        base_klass = relation.klass
+        joins.each do |assoc|
+          cfg = base_klass.join_for(assoc)
+          inners = per_assoc_inners[assoc] || []
+          next if inners.empty?
+
+          keys = fetch_keys_for_assoc(base_klass, cfg, inners)
+          key_sets[assoc] = keys
+        end
+
+        # If any assoc produced no keys, the AND semantics imply empty
+        return :__empty__ if key_sets.values.any? { |arr| Array(arr).empty? }
+
+        # Rewrite AST: remove joined nodes and add base IN(local_key, keys) per assoc
+        rewritten_ast = rewrite_ast_with_key_sets(ast_nodes, key_sets, base_klass)
+
+        relation.send(:spawn) do |s|
+          s[:ast] = rewritten_ast
+          # NOTE: s[:filters] retained (base fragments only); joins preserved for DX
+        end
+      end
+
+      def extract_join_inners(ast_nodes)
+        map = {}
+        walker = lambda do |node|
+          return unless node.is_a?(SearchEngine::AST::Node)
+
+          node.children.each { |ch| walker.call(ch) } if node.respond_to?(:children) && node.children
+
+          if node.respond_to?(:field)
+            field = node.field.to_s
+            if (m = field.match(/^\$(\w+)\.(.+)$/))
+              assoc = m[1].to_sym
+              inner_field = m[2]
+              case node
+              when SearchEngine::AST::Eq
+                (map[assoc] ||= []) << [:eq, inner_field, node.value]
+              when SearchEngine::AST::In
+                (map[assoc] ||= []) << [:in, inner_field, node.values]
+              else
+                # Unsupported node type for fallback (e.g., ranges, not_eq, etc.)
+                raise SearchEngine::Errors::InvalidOption.new(
+                  'Only equality and IN predicates on joined fields are supported by client-side join fallback',
+                  doc: 'docs/joins.md#client-side-fallback'
+                )
+              end
+            end
+          end
+        end
+
+        Array(ast_nodes).each { |n| walker.call(n) }
+        map
+      end
+
+      def fetch_keys_for_assoc(base_klass, assoc_cfg, inners)
+        require 'search_engine/joins/resolver'
+        keys = SearchEngine::Joins::Resolver.resolve_keys(base_klass, assoc_cfg)
+        collection = assoc_cfg[:collection]
+        target_klass = SearchEngine.collection_for(collection)
+
+        # Build target relation by AND-ing inner predicates
+        rel = target_klass.all
+        inners.each do |(op, field, value)|
+          case op
+          when :eq
+            rel = rel.where(field.to_s => value)
+          when :in
+            rel = rel.where(field.to_s => Array(value))
+          end
+        end
+
+        vals = rel.pluck(keys[:foreign_key])
+        Array(vals).flatten.compact.uniq
+      end
+
+      def rewrite_ast_with_key_sets(ast_nodes, key_sets, base_klass)
+        # Remove joined predicates and append base IN(local_key, keys) for each assoc
+        stripped = strip_join_nodes(ast_nodes)
+        added = []
+        key_sets.each do |assoc, keys|
+          cfg = base_klass.join_for(assoc)
+          require 'search_engine/joins/resolver'
+          lk = SearchEngine::Joins::Resolver.resolve_keys(base_klass, cfg)[:local_key]
+          added << SearchEngine::AST.in_(lk.to_sym, keys)
+        end
+        (Array(stripped) + added).flatten.compact
+      end
+
+      def strip_join_nodes(nodes)
+        out = []
+        Array(nodes).each do |node|
+          next unless node.is_a?(SearchEngine::AST::Node)
+
+          case node
+          when SearchEngine::AST::And
+            children = strip_join_nodes(node.children)
+            out.concat(Array(children))
+          when SearchEngine::AST::Or
+            # Fallback does not support OR with joined nodes; reject early
+            raise SearchEngine::Errors::InvalidOption.new(
+              'OR with joined predicates is not supported by client-side join fallback',
+              doc: 'docs/joins.md#client-side-fallback'
+            )
+          else
+            if node.respond_to?(:field)
+              f = node.field.to_s
+              next if f.start_with?('$')
+            end
+            out << node
+          end
+        end
+        out
+      end
+
+      def instrument_client_side_fallback(relation)
+        return unless defined?(SearchEngine::Instrumentation)
+
+        SearchEngine::Instrumentation.instrument(
+          'search_engine.joins.client_side_fallback',
+          collection: (relation.klass.respond_to?(:collection) ? relation.klass.collection : nil),
+          joins: Array(relation.joins_list).map(&:to_s)
+        )
+      rescue StandardError
+        nil
+      end
 
       def effective_per_page(relation)
         state = relation.instance_variable_get(:@state) || {}

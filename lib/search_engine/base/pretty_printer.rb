@@ -208,11 +208,10 @@ module SearchEngine
       # Return selection context for nested assocs used during render
       # @return [Array<String>]
       def __se_selected_nested_assocs_for_render
-        if instance_variable_defined?(:@__se_selected_nested_assocs__)
-          Array(instance_variable_get(:@__se_selected_nested_assocs__)).map(&:to_s)
-        else
-          []
-        end
+        Array(
+          instance_variable_defined?(:@__se_selected_nested_assocs__) &&
+          instance_variable_get(:@__se_selected_nested_assocs__)
+        ).map(&:to_s)
       end
 
       # Render already nested structures for assoc keys (either "$assoc" or plain assoc)
@@ -252,8 +251,7 @@ module SearchEngine
       def __se_render_passthrough_unknowns!(pairs, passthrough)
         passthrough.each do |k, v|
           key = k.to_s
-          next if key == 'id'
-          next if key.start_with?('$')
+          next if key == 'id' || key.start_with?('$', '.')
           # Avoid duplicating assoc entries already rendered
           next if pairs.any? { |(name, _)| name == key }
 
@@ -289,7 +287,7 @@ module SearchEngine
           src = dsl&.dig(:source, :type)
           if src.to_s == 'active_record' && !self.class.instance_variable_defined?(:@identify_by_proc)
             model = dsl&.dig(:source, :options, :model)
-            if model && model.respond_to?(:columns_hash)
+            if model.respond_to?(:columns_hash)
               pk = begin
                 model.primary_key
               rescue StandardError

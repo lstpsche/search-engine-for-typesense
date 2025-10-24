@@ -632,9 +632,9 @@ module SearchEngine
         return refs unless klass.respond_to?(:joins_config)
 
         (klass.joins_config || {}).each_value do |cfg|
-          # Only belongs_to contributes references to schema (treat missing as belongs_to for back-compat)
+          # Only belongs_to/belongs_to_many contribute references to schema
           kind = (cfg[:kind] || :belongs_to).to_sym
-          next if kind == :has
+          next if %i[has_one has_many].include?(kind)
 
           lk = cfg[:local_key]
           coll = cfg[:collection]
@@ -660,7 +660,7 @@ module SearchEngine
 
         (klass.joins_config || {}).each_value do |cfg|
           kind = (cfg[:kind] || :belongs_to).to_sym
-          next if kind == :has
+          next if %i[has_one has_many].include?(kind)
 
           lk = cfg[:local_key]
           async = cfg[:async_ref]

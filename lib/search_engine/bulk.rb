@@ -21,11 +21,39 @@ module SearchEngine
         run!(mode: :index, targets: targets, client: client)
       end
 
+      # Index all registered/declared collections.
+      #
+      # Ensures models from the configured `search_engine_models` directory are
+      # loaded (via the engine's dedicated loader), discovers all collections,
+      # and runs indexing as if they were passed to {.index}.
+      #
+      # @param client [SearchEngine::Client, nil]
+      # @return [Hash] summary
+      def index_all(client: nil)
+        ensure_models_loaded_from_configured_path!
+        names = SearchEngine::CollectionResolver.models_map.keys
+        run!(mode: :index, targets: names, client: client)
+      end
+
       # Drop+index (destructive), mirroring {SearchEngine::Base.reindexate!}.
       # @param targets [Array<Symbol, String, Class>] collections or model classes
       # @return [Hash] summary
       def reindex!(*targets, client: nil)
         run!(mode: :reindex, targets: targets, client: client)
+      end
+
+      # Reindex all registered/declared collections.
+      #
+      # Ensures models from the configured `search_engine_models` directory are
+      # loaded (via the engine's dedicated loader), discovers all collections,
+      # and runs reindexing as if they were passed to {.reindex!}.
+      #
+      # @param client [SearchEngine::Client, nil]
+      # @return [Hash] summary
+      def reindex_all!(client: nil)
+        ensure_models_loaded_from_configured_path!
+        names = SearchEngine::CollectionResolver.models_map.keys
+        run!(mode: :reindex, targets: names, client: client)
       end
 
       private
@@ -204,6 +232,26 @@ module SearchEngine
       def safe_collection_class(name)
         SearchEngine.collection_for(name)
       rescue StandardError
+        nil
+      end
+
+      # Ensure host app SearchEngine models are loaded so registry and
+      # namespace scans see all declared collections.
+      # Uses the engine-managed Zeitwerk loader when available.
+      # @return [void]
+      def ensure_models_loaded_from_configured_path!
+        loader = SearchEngine.instance_variable_get(:@_models_loader)
+        return unless loader
+
+        unless SearchEngine.instance_variable_defined?(:@_models_loader_setup)
+          loader.setup
+          SearchEngine.instance_variable_set(:@_models_loader_setup, true)
+        end
+
+        loader.eager_load
+        nil
+      rescue StandardError
+        # Best-effort: proceed even if the dedicated loader is unavailable
         nil
       end
     end
