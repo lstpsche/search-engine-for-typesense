@@ -11,9 +11,10 @@
 # - Explore queries in `rails console` using SE helpers: `SE.q("milk")`
 #
 # Docs:
-# - Quickstart: docs/quickstart.md
-# - CLI (Doctor): docs/cli.md#doctor-flow
-# - DX helpers: docs/dx.md
+# - Quickstart: https://github.com/lstpsche/search-engine-for-typesense/wiki/Quickstart
+# - CLI (Doctor): https://github.com/lstpsche/search-engine-for-typesense/wiki/CLI
+# - DX helpers: https://github.com/lstpsche/search-engine-for-typesense/wiki/DX
+# - Configuration: https://github.com/lstpsche/search-engine-for-typesense/wiki/Configuration
 SearchEngine.configure do |c|
   c.host = ENV.fetch('TYPESENSE_HOST', 'localhost')
   c.port = Integer(ENV.fetch('TYPESENSE_PORT', 8108))
@@ -40,4 +41,189 @@ SearchEngine.configure do |c|
   # Rails.root. Set to nil/false to disable gem-managed loading.
   # Defaults to 'app/search_engine'.
   # c.search_engine_models = 'app/search_engine'
+
+  # --- Typesense transport -------------------------------------------------
+
+  # Request total timeout in milliseconds. Default: 5000
+  # c.timeout_ms = 5_000
+
+  # Connect/open timeout in milliseconds. Default: 1000
+  # c.open_timeout_ms = 1_000
+
+  # Retry policy for client requests. Default: { attempts: 2, backoff: 0.2 }
+  # c.retries = { attempts: 2, backoff: 0.2 }
+
+  # Default Typesense infix behavior for queries. Default: 'fallback'
+  # c.default_infix = 'fallback'
+
+  # --- URL-level caching ---------------------------------------------------
+
+  # Allow URL-level caching (passed as common params). Default: true
+  # c.use_cache = true
+
+  # Cache TTL in seconds (URL/common params). Default: 60
+  # c.cache_ttl_s = 60
+
+  # --- Field strictness & limits ------------------------------------------
+
+  # Enforce strict field validation at compile/hydration time.
+  # Default: true in development/test; false in production
+  # c.strict_fields = !Rails.env.production?
+
+  # Max number of searches in a single multi-search call. Default: 50
+  # c.multi_search_limit = 50
+
+  # Whether Relation#inspect pretty-prints by materializing a preview. Default: true
+  # c.relation_print_materializes = true
+
+  # Override the logger used by the engine (defaults to Rails.logger). Example:
+  # c.logger = Rails.logger
+
+  # --- Presets -------------------------------------------------------------
+  # See: https://github.com/lstpsche/search-engine-for-typesense/wiki/Presets
+
+  # Enable preset namespacing and resolution. Default: true
+  # c.presets.enabled = true
+
+  # Optional namespace to prepend to preset names. Default: nil
+  # c.presets.namespace = nil
+
+  # Limit which domains presets may modify. Default: %i[filter_by sort_by include_fields exclude_fields]
+  # c.presets.locked_domains = %i[filter_by sort_by include_fields exclude_fields]
+
+  # --- Selection & Grouping ------------------------------------------------
+  # See: https://github.com/lstpsche/search-engine-for-typesense/wiki/Field-Selection
+
+  # Raise when requested fields are missing during hydration. Default: false
+  # c.selection.strict_missing = false
+
+  # Emit warnings for ambiguous grouping combinations. Default: true
+  # c.grouping.warn_on_ambiguous = true
+
+  # --- Observability & Logging --------------------------------------------
+  # See: https://github.com/lstpsche/search-engine-for-typesense/wiki/Observability
+
+  # Enable the compact logging subscriber automatically. Default: true
+  # c.observability.enabled = true
+
+  # Log format for structured logs (:kv or :json). Default: :kv
+  # c.observability.log_format = :kv
+
+  # Max error message length included in logs. Default: 200
+  # c.observability.max_message_length = 200
+
+  # Include short error messages for batch/stale events. Default: false
+  # c.observability.include_error_messages = false
+
+  # Emit legacy event aliases alongside canonical ones. Default: true
+  # c.observability.emit_legacy_event_aliases = true
+
+  # Structured logging options used by the LoggingSubscriber. Defaults shown.
+  # c.logging.mode = :compact
+  # c.logging.level = :info
+  # c.logging.sample = 1.0
+  # c.logging.logger = c.logger
+
+  # OpenTelemetry integration (only when the SDK is present). Defaults shown.
+  # c.opentelemetry = { enabled: false, service_name: 'search_engine' }
+
+  # --- Schema lifecycle ----------------------------------------------------
+  # See: https://github.com/lstpsche/search-engine-for-typesense/wiki/Schema
+
+  # Retention: how many previous physical collections to keep after swap. Default: 0
+  # c.schema.retention.keep_last = 0
+
+  # --- Indexer -------------------------------------------------------------
+  # See: https://github.com/lstpsche/search-engine-for-typesense/wiki/Indexer
+
+  # Default batch size for imports when not provided. Default: 2000
+  # c.indexer.batch_size = 2000
+
+  # Optional read timeout override (ms) for imports. Default: nil
+  # c.indexer.timeout_ms = nil
+
+  # Retry policy for imports. Default: { attempts: 3, base: 0.5, max: 5.0, jitter_fraction: 0.2 }
+  # c.indexer.retries = { attempts: 3, base: 0.5, max: 5.0, jitter_fraction: 0.2 }
+
+  # Gzip JSONL payloads during import. Default: false
+  # c.indexer.gzip = false
+
+  # Dispatch mode for import jobs (:active_job or :inline). Default depends on ActiveJob presence
+  # c.indexer.dispatch = :active_job
+
+  # Queue name for ActiveJob dispatch. Default: 'search_index'
+  # c.indexer.queue_name = 'search_index'
+
+  # --- Sources -------------------------------------------------------------
+
+  # ActiveRecord source: default ORM batch size. Default: 2000
+  # c.sources.active_record.batch_size = 2000
+
+  # ActiveRecord source: mark relations as readonly. Default: true
+  # c.sources.active_record.readonly = true
+
+  # ActiveRecord source: wrap fetching in a read-only transaction. Default: false
+  # c.sources.active_record.use_transaction = false
+
+  # SQL source: server-side cursor fetch size. Default: 2000
+  # c.sources.sql.fetch_size = 2000
+
+  # SQL source: per-statement timeout (ms). Default: nil
+  # c.sources.sql.statement_timeout_ms = nil
+
+  # SQL source: preferred row shape (:auto, :hash). Default: :auto
+  # c.sources.sql.row_shape = :auto
+
+  # Lambda source: optional max batch size hint for validation/metrics. Default: nil
+  # c.sources.lambda.max_batch_size_hint = nil
+
+  # --- Mapper --------------------------------------------------------------
+
+  # Treat unknown keys as errors instead of warnings. Default: false
+  # c.mapper.strict_unknown_keys = false
+
+  # Nested coercions configuration. Default: { enabled: false, rules: {} }
+  # c.mapper.coercions = { enabled: false, rules: {} }
+
+  # Maximum number of error samples included in reports. Default: 5
+  # c.mapper.max_error_samples = 5
+
+  # --- Partitioning --------------------------------------------------------
+
+  # Optional resolver Proc for default physical collection. Default: nil
+  # c.partitioning.default_into_resolver = nil
+
+  # Before/after hook timeouts (ms) for partitioning callbacks. Default: nil
+  # c.partitioning.before_hook_timeout_ms = nil
+  # c.partitioning.after_hook_timeout_ms = nil
+
+  # Maximum error samples included in partition payloads. Default: 5
+  # c.partitioning.max_error_samples = 5
+
+  # --- Stale deletes -------------------------------------------------------
+  # See: https://github.com/lstpsche/search-engine-for-typesense/wiki/Deletion
+
+  # Global kill switch for stale delete workflows. Default: true
+  # c.stale_deletes.enabled = true
+
+  # Strict mode blocks suspicious filters. Default: false
+  # c.stale_deletes.strict_mode = false
+
+  # Timeout (ms) for delete requests. Default: nil
+  # c.stale_deletes.timeout_ms = nil
+
+  # Enable found estimation via search for stale deletes. Default: false
+  # c.stale_deletes.estimation_enabled = false
+
+  # --- Curation ------------------------------------------------------------
+  # See: https://github.com/lstpsche/search-engine-for-typesense/wiki/Presets-Curation-Playbook
+
+  # Maximum number of pinned IDs allowed. Default: 50
+  # c.curation.max_pins = 50
+
+  # Maximum number of hidden IDs allowed. Default: 200
+  # c.curation.max_hidden = 200
+
+  # Allowed curated ID pattern. Default: /\A[\w\-:.]+\z/
+  # c.curation.id_regex = /\A[\w\-:.]+\z/
 end
