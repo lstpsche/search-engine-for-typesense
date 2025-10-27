@@ -139,20 +139,26 @@ module SearchEngine
               path = "$#{key_sym}.#{field_sym}"
               SearchEngine::Joins::Guard.ensure_single_hop_path!(path)
 
-              # Best-effort validate joined fields
+              # Resolve target klass for joined-field type coercion and validate field best-effort
+              cfg = klass.join_for(key_sym)
+              target_klass = begin
+                SearchEngine.collection_for(cfg[:collection])
+              rescue StandardError
+                nil
+              end
               begin
-                cfg = klass.join_for(key_sym)
                 SearchEngine::Joins::Guard.validate_joined_field!(cfg, field_sym)
               rescue StandardError
                 # skip strictly when registry/attributes missing or join missing
               end
 
+              coercion_klass = target_klass || klass
               if array_like?(inner_value)
-                values = normalize_array_values(inner_value, field: field_sym, klass: klass)
-                ensure_non_empty_values!(values, field: field_sym, klass: klass)
+                values = normalize_array_values(inner_value, field: field_sym, klass: coercion_klass)
+                ensure_non_empty_values!(values, field: field_sym, klass: coercion_klass)
                 pairs << SearchEngine::AST.in_(path, values)
               else
-                coerced = coerce_value_for_field(inner_value, field: field_sym, klass: klass)
+                coerced = coerce_value_for_field(inner_value, field: field_sym, klass: coercion_klass)
                 pairs << SearchEngine::AST.eq(path, coerced)
               end
             end
@@ -337,25 +343,30 @@ module SearchEngine
       end
 
       def coerce_value_for_field(value, field:, klass:)
-        type = begin
-          safe_attributes_map(klass)[field.to_sym]
+        # Unwrap single-element array types to their inner hint (e.g., [:string] -> :string)
+        type_hint = begin
+          t = safe_attributes_map(klass)[field.to_sym]
+          t.is_a?(Array) && t.size == 1 ? t.first : t
         rescue StandardError
           nil
         end
-        coerced = coerce_value(value, type_hint: type, field: field, klass: klass)
+        coerced = coerce_value(value, type_hint: type_hint, field: field, klass: klass)
         return coerced unless coerced.equal?(:__no_coercion__)
 
         # If generic coercion returned :__no_coercion__, try to coerce based on type hint
-        case type
+        case type_hint
         when :boolean
-          coerce_boolean(value, type)
+          coerce_boolean(value, type_hint)
         when :time, :datetime, :time_string, :datetime_string
-          coerce_time(value, type, field: field, klass: klass)
+          coerce_time(value, type_hint, field: field, klass: klass)
 
         when :integer
-          coerce_numeric(value, type, field: field, klass: klass)
+          coerce_numeric(value, type_hint, field: field, klass: klass)
         when :float, :decimal
-          coerce_numeric(value, type, field: field, klass: klass)
+          coerce_numeric(value, type_hint, field: field, klass: klass)
+        when :string
+          # Ensure string-typed fields compare as strings (e.g., 1070 -> "1070")
+          value.to_s
         else
           value # No specific coercion for this type hint
         end

@@ -27,8 +27,16 @@ module SearchEngine
           url_opts = relation.send(:build_url_opts)
 
           raw_result = nil
+
+          # Preflight client-side fallback (extracted for readability)
+          preflight_raw, relation, params = preflight_join_fallback_if_needed(relation, params)
+
           begin
-            raw_result = relation.send(:client).search(collection: collection, params: params, url_opts: url_opts)
+            raw_result = preflight_raw || relation.send(:client).search(
+              collection: collection,
+              params: params,
+              url_opts: url_opts
+            )
           rescue SearchEngine::Errors::Api => error
             # Client-side join fallback: handle missing Typesense reference for joined filters
             raise unless join_reference_missing_error?(error) && Array(relation.joins_list).any?
@@ -102,15 +110,21 @@ module SearchEngine
           return Array(cached).first(limit)
         end
 
+        # Use the relation's effective per_page for the underlying request to keep
+        # ordering consistent with to_a; slice to the preview limit locally.
+        per_for_request = effective_per_page(relation)
+        per_for_request = limit if per_for_request.to_i <= 0
+
         preview_relation = relation.send(:spawn) do |state|
           state[:page] = 1
-          state[:per_page] = limit
+          state[:per_page] = per_for_request
         end
 
         collection = preview_relation.send(:collection_name_for_klass)
         params = SearchEngine::CompiledParams.from(preview_relation.to_typesense_params)
         url_opts = preview_relation.send(:build_url_opts)
-        raw_result = preview_relation.send(:client).search(collection: collection, params: params, url_opts: url_opts)
+
+        raw_result = perform_preview_search_with_fallback(preview_relation, collection, params, url_opts)
 
         selection_ctx = SearchEngine::Hydration::SelectionContext.build(preview_relation)
         facets_ctx = build_facets_context_from_state(preview_relation)
@@ -129,6 +143,38 @@ module SearchEngine
         array = Array(result.respond_to?(:to_a) ? result.to_a : result).first(limit)
         relation.instance_variable_set(:@__preview_memo, array)
         array
+      end
+
+      # Internal: perform preview search, applying client-side fallback when Typesense
+      # reports a missing reference for joined filters.
+      # @param preview_relation [SearchEngine::Relation]
+      # @param collection [String]
+      # @param params [SearchEngine::CompiledParams]
+      # @param url_opts [Hash]
+      # @return [Object] raw result from client
+      def perform_preview_search_with_fallback(preview_relation, collection, params, url_opts)
+        preview_relation.send(:client).search(
+          collection: collection,
+          params: params,
+          url_opts: url_opts
+        )
+      rescue SearchEngine::Errors::Api => error
+        raise unless join_reference_missing_error?(error) && Array(preview_relation.joins_list).any?
+
+        fallback_rel = build_client_side_join_fallback_relation(preview_relation)
+        if fallback_rel.equal?(:__empty__)
+          empty_raw = { 'hits' => [], 'found' => 0, 'out_of' => 0 }
+          return SearchEngine::Result.new(empty_raw, klass: preview_relation.klass)
+        end
+
+        new_params = SearchEngine::CompiledParams.from(fallback_rel.to_typesense_params)
+        res = preview_relation.send(:client).search(
+          collection: collection,
+          params: new_params,
+          url_opts: url_opts
+        )
+        instrument_client_side_fallback(preview_relation)
+        res
       end
 
       def each(relation, &block)
@@ -263,7 +309,25 @@ module SearchEngine
         minimal[:include_fields] = 'id'
 
         url_opts = relation.send(:build_url_opts)
-        result = relation.send(:client).search(collection: collection, params: minimal, url_opts: url_opts)
+        begin
+          result = relation.send(:client).search(collection: collection, params: minimal, url_opts: url_opts)
+        rescue SearchEngine::Errors::Api => error
+          # Client-side join fallback: handle missing Typesense reference for joined filters in count path
+          raise unless join_reference_missing_error?(error) && Array(relation.joins_list).any?
+
+          fallback_rel = build_client_side_join_fallback_relation(relation)
+          return 0 if fallback_rel.equal?(:__empty__)
+
+          new_params = SearchEngine::CompiledParams.from(fallback_rel.to_typesense_params).to_h
+          new_minimal = new_params.dup
+          new_minimal[:per_page] = 1
+          new_minimal[:page] = 1
+          new_minimal[:include_fields] = 'id'
+
+          result = relation.send(:client).search(collection: collection, params: new_minimal, url_opts: url_opts)
+          instrument_client_side_fallback(relation)
+        end
+
         count = result.found.to_i
         relation.send(:enforce_hit_validator_if_needed!, count, collection: collection)
         count
@@ -271,6 +335,100 @@ module SearchEngine
       module_function :fetch_found_only
 
       # --- client-side join fallback helpers ---------------------------------
+
+      # True when the relation uses joined fields in filters and the base
+      # collection schema lacks a matching reference for at least one of
+      # those associations.
+      def join_fallback_preflight_required?(relation)
+        state = relation.instance_variable_get(:@state) || {}
+        ast_nodes = Array(state[:ast]).flatten.compact
+        assocs = extract_join_assocs_from_ast(ast_nodes)
+        return false if assocs.empty?
+
+        base_klass = relation.klass
+        compiled = SearchEngine::Schema.compile(base_klass)
+        fields = Array(compiled[:fields])
+        by_name = {}
+        fields.each do |f|
+          name = (f[:name] || f['name']).to_s
+          by_name[name] = f
+        end
+
+        assocs.any? do |assoc|
+          begin
+            cfg = base_klass.join_for(assoc)
+            lk = (cfg[:local_key] || '').to_s
+            fk = (cfg[:foreign_key] || '').to_s
+            coll = (cfg[:collection] || '').to_s
+            expected = "#{coll}.#{fk}"
+            entry = by_name[lk]
+            actual = entry && (entry[:reference] || entry['reference'])
+            actual_str = actual.to_s
+            # Accept async suffix on actual
+            next true if actual_str.empty? || !actual_str.start_with?(expected)
+          rescue StandardError
+            next true
+          end
+          false
+        end
+      rescue StandardError
+        false
+      end
+
+      # Walk AST nodes and collect association names used via "$assoc.field".
+      def extract_join_assocs_from_ast(nodes)
+        list = Array(nodes).flatten.compact
+        return [] if list.empty?
+
+        seen = []
+        walker = lambda do |node|
+          return unless node.is_a?(SearchEngine::AST::Node)
+
+          if node.respond_to?(:field)
+            field = node.field.to_s
+            if field.start_with?('$')
+              m = field.match(/^\$(\w+)\./)
+              if m
+                name = m[1].to_sym
+                seen << name unless seen.include?(name)
+              end
+            end
+          end
+
+          Array(node.children).each { |child| walker.call(child) }
+        end
+        list.each { |n| walker.call(n) }
+        seen
+      end
+
+      # Attempt a client-side fallback rewrite before making a request when
+      # joined filters are present but the base schema lacks the needed reference.
+      # Returns [raw_result_or_nil, relation, params]
+      def preflight_join_fallback_if_needed(relation, params)
+        raw_result = nil
+        try_fallback = begin
+          join_fallback_preflight_required?(relation)
+        rescue StandardError
+          false
+        end
+
+        if try_fallback
+          begin
+            fallback_rel = build_client_side_join_fallback_relation(relation)
+            if fallback_rel.equal?(:__empty__)
+              empty = { 'hits' => [], 'found' => 0, 'out_of' => 0 }
+              raw_result = SearchEngine::Result.new(empty, klass: relation.klass)
+            else
+              relation = fallback_rel
+              params = SearchEngine::CompiledParams.from(relation.to_typesense_params)
+              instrument_client_side_fallback(relation)
+            end
+          rescue StandardError
+            # ignore and proceed
+          end
+        end
+        [raw_result, relation, params]
+      end
 
       def join_reference_missing_error?(error)
         return false unless error.is_a?(SearchEngine::Errors::Api)
@@ -302,7 +460,7 @@ module SearchEngine
         rescue StandardError
           nil
         end
-        if include_str && include_str.split(',').any? { |seg| seg.strip.start_with?('$') }
+        if include_str&.split(',')&.any? { |seg| seg.strip.start_with?('$') }
           raise SearchEngine::Errors::InvalidOption.new(
             'Selecting joined fields is not supported by client-side join fallback',
             doc: 'docs/joins.md#client-side-fallback'

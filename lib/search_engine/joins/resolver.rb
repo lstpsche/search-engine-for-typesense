@@ -69,11 +69,9 @@ module SearchEngine
       end
 
       def safe_attributes(klass)
-        if klass && klass.respond_to?(:attributes)
-          klass.attributes || {}
-        else
-          {}
-        end
+        return {} unless klass.respond_to?(:attributes)
+
+        klass.attributes || {}
       end
 
       def raise_ambiguous_keys!(base_klass, assoc_cfg, candidates)
