@@ -38,23 +38,29 @@ module SearchEngine
               url_opts: url_opts
             )
           rescue SearchEngine::Errors::Api => error
-            # Client-side join fallback: handle missing Typesense reference for joined filters
-            raise unless join_reference_missing_error?(error) && Array(relation.joins_list).any?
-
-            fallback_rel = build_client_side_join_fallback_relation(relation)
-            if fallback_rel.equal?(:__empty__)
-              # Short-circuit: no matches
+            # Graceful empty fallback for infix/prefix configuration errors
+            if infix_missing_error?(error)
               empty = { 'hits' => [], 'found' => 0, 'out_of' => 0 }
               raw_result = SearchEngine::Result.new(empty, klass: relation.klass)
             else
-              # Retry with rewritten base relation
-              new_params = SearchEngine::CompiledParams.from(fallback_rel.to_typesense_params)
-              raw_result = relation.send(:client).search(collection: collection, params: new_params,
-                                                         url_opts: url_opts
-              )
-              instrument_client_side_fallback(relation)
-              # Replace relation for selection/facets context below
-              relation = fallback_rel
+              # Client-side join fallback: handle missing Typesense reference for joined filters
+              raise unless join_reference_missing_error?(error) && Array(relation.joins_list).any?
+
+              fallback_rel = build_client_side_join_fallback_relation(relation)
+              if fallback_rel.equal?(:__empty__)
+                # Short-circuit: no matches
+                empty = { 'hits' => [], 'found' => 0, 'out_of' => 0 }
+                raw_result = SearchEngine::Result.new(empty, klass: relation.klass)
+              else
+                # Retry with rewritten base relation
+                new_params = SearchEngine::CompiledParams.from(fallback_rel.to_typesense_params)
+                raw_result = relation.send(:client).search(collection: collection, params: new_params,
+                                                           url_opts: url_opts
+                )
+                instrument_client_side_fallback(relation)
+                # Replace relation for selection/facets context below
+                relation = fallback_rel
+              end
             end
           end
 
@@ -159,6 +165,11 @@ module SearchEngine
           url_opts: url_opts
         )
       rescue SearchEngine::Errors::Api => error
+        # Graceful empty fallback for infix/prefix configuration errors
+        if infix_missing_error?(error)
+          empty_raw = { 'hits' => [], 'found' => 0, 'out_of' => 0 }
+          return SearchEngine::Result.new(empty_raw, klass: preview_relation.klass)
+        end
         raise unless join_reference_missing_error?(error) && Array(preview_relation.joins_list).any?
 
         fallback_rel = build_client_side_join_fallback_relation(preview_relation)
@@ -312,6 +323,7 @@ module SearchEngine
         begin
           result = relation.send(:client).search(collection: collection, params: minimal, url_opts: url_opts)
         rescue SearchEngine::Errors::Api => error
+          return 0 if infix_missing_error?(error)
           # Client-side join fallback: handle missing Typesense reference for joined filters in count path
           raise unless join_reference_missing_error?(error) && Array(relation.joins_list).any?
 
@@ -333,6 +345,31 @@ module SearchEngine
         count
       end
       module_function :fetch_found_only
+
+      # Detect Typesense 400 errors caused by missing infix/prefix configuration
+      # e.g., "Could not find `name` in the infix index. Make sure to enable infix search by specifying `infix: true` in the schema."
+      def infix_missing_error?(error)
+        return false unless error.is_a?(SearchEngine::Errors::Api)
+
+        status = error.status.to_i
+        return false unless status == 400
+
+        body = error.body
+        msg = error.message.to_s
+        # Match common phrasing from Typesense for missing infix/prefix index
+        need_infix = 'infix index'
+        enable_infix = 'enable infix'
+        could_not_find = 'Could not find'
+        missing_prefix = 'prefix index'
+        (
+          body.is_a?(String) && (body.include?(need_infix) ||
+          body.include?(enable_infix) || body.include?(missing_prefix))
+        ) ||
+          msg.include?(need_infix) || msg.include?(enable_infix) ||
+          msg.include?(missing_prefix) || msg.include?(could_not_find)
+      rescue StandardError
+        false
+      end
 
       # --- client-side join fallback helpers ---------------------------------
 
