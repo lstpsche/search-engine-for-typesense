@@ -61,6 +61,20 @@ module SearchEngine
         nil
       end
 
+      # Define a collection-level stale Typesense filter builder for cleanup.
+      # The block must accept a `partition:` keyword (or `:_partition`) and return
+      # a String (Typesense filter expression) or nil/blank to disable.
+      #
+      # @yieldparam partition [Object, nil]
+      # @yieldreturn [String, nil]
+      # @return [void]
+      def stale_filter_by(&block)
+        raise ArgumentError, 'stale_filter_by requires a block' unless block
+
+        @stale_filter_proc = block
+        nil
+      end
+
       # Delete documents by filter before/after a partition import or ad-hoc.
       # Accepts either a raw Typesense filter string or a hash which will be
       # converted to a filter string using the Filters::Sanitizer.
@@ -228,6 +242,7 @@ module SearchEngine
           before_partition: @before_partition_proc,
           after_partition: @after_partition_proc,
           partition_max_parallel: @partition_max_parallel,
+          stale_filter_proc: @stale_filter_proc,
           stale: @stale_entries.dup.freeze
         }.freeze
       end

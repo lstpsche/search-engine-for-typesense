@@ -32,6 +32,9 @@ module SearchEngine
 
           # Store definition on the class; Mapper.for will compile and cache
           instance_variable_set(:@__mapper_dsl__, definition)
+          if definition[:stale_filter_proc]
+            instance_variable_set(:@__stale_filter_proc__, definition[:stale_filter_proc])
+          end
           instance_variable_set(:@__stale_entries__, Array(definition[:stale]))
           nil
         end
@@ -117,6 +120,7 @@ module SearchEngine
         end
 
         # Define a stale filter builder for delete-by-filter operations.
+        # @deprecated Prefer defining inside `index do ... end` as `stale_filter_by { |partition:| ... }`.
         # @yieldparam partition [Object, nil]
         # @yieldreturn [String, nil]
         # @return [void]

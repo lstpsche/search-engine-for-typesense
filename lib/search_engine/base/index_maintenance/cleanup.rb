@@ -10,6 +10,27 @@ module SearchEngine
         extend ActiveSupport::Concern
 
         class_methods do
+          # Return a chainable Relation of stale documents per `stale_filter_by`.
+          #
+          # Uses only the `stale_filter_by` block (nested inside `index` or
+          # class-level) to compute a single Typesense filter string. When the
+          # filter is not defined or resolves to nil/blank for the given
+          # partition, returns an empty relation.
+          #
+          # @param partition [Object, nil] optional partition token passed to the filter block
+          # @return [SearchEngine::Relation]
+          def stale(partition: nil)
+            compiled = SearchEngine::StaleFilter.for(self)
+            filter = compiled&.call(partition: partition)
+
+            if filter.nil? || filter.to_s.strip.empty?
+              # Impossible predicate to ensure an empty Relation when stale filter is absent
+              return all.where('id:=null && id:!=null')
+            end
+
+            all.where(filter)
+          end
+
           # Delete stale documents from the collection according to DSL rules.
           #
           # Evaluates all stale definitions declared via the indexing DSL and
