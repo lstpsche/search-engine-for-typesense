@@ -4,8 +4,8 @@ module SearchEngine
   # Bulk index/reindex multiple collections with reference-aware ordering.
   #
   # Usage:
-  #   SearchEngine::Bulk.index(:shops, :promotions, :product_groups)
-  #   SearchEngine::Bulk.reindex!(SearchEngine::Promotion, SearchEngine::ProductGroup, SearchEngine::Shop)
+  #   SearchEngine::Bulk.index_collections(:shops, :promotions, :product_groups)
+  #   SearchEngine::Bulk.reindex_collections!(SearchEngine::Promotion, SearchEngine::ProductGroup, SearchEngine::Shop)
   #
   # Behavior:
   # - Stage 1: process inputs that are not referrers of other inputs (referenced-first order among inputs)
@@ -19,7 +19,7 @@ module SearchEngine
       # (models are eagerly loaded from the configured `search_engine_models` path).
       # @param targets [Array<Symbol, String, Class>] collections or model classes
       # @return [Hash] summary
-      def index(*targets, client: nil)
+      def index_collections(*targets, client: nil)
         run!(mode: :index, targets: targets, client: client)
       end
 
@@ -27,7 +27,7 @@ module SearchEngine
       #
       # Ensures models from the configured `search_engine_models` directory are
       # loaded (via the engine's dedicated loader), discovers all collections,
-      # and runs indexing as if they were passed to {.index}.
+      # and runs indexing as if they were passed to {.index_collections}.
       #
       # @param client [SearchEngine::Client, nil]
       # @return [Hash] summary
@@ -42,7 +42,7 @@ module SearchEngine
       # (models are eagerly loaded from the configured `search_engine_models` path).
       # @param targets [Array<Symbol, String, Class>] collections or model classes
       # @return [Hash] summary
-      def reindex!(*targets, client: nil)
+      def reindex_collections!(*targets, client: nil)
         run!(mode: :reindex, targets: targets, client: client)
       end
 
@@ -50,7 +50,7 @@ module SearchEngine
       #
       # Ensures models from the configured `search_engine_models` directory are
       # loaded (via the engine's dedicated loader), discovers all collections,
-      # and runs reindexing as if they were passed to {.reindex!}.
+      # and runs reindexing as if they were passed to {.reindex_collections!}.
       #
       # @param client [SearchEngine::Client, nil]
       # @return [Hash] summary
