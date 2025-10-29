@@ -37,7 +37,7 @@ module SearchEngine
           success_total = 0
           failed_total = 0
           batches_total = 0
-          duration_ms_total = 0.0
+          # Capture start time before processing any batches to measure total wall-clock duration
           started_at = monotonic_ms
 
           docs_enum.each do |raw_batch|
@@ -55,12 +55,14 @@ module SearchEngine
               docs_total += stats[:docs_count].to_i
               success_total += stats[:success_count].to_i
               failed_total += stats[:failure_count].to_i
-              duration_ms_total += stats[:duration_ms].to_f
               batches_total += 1
               batches << stats
               validate_soft_batch_size!(batch_size, stats[:docs_count])
             end
           end
+
+          # Calculate total duration as wall-clock time from start to finish (not sum of batch durations)
+          total_duration_ms = (monotonic_ms - started_at).round(1)
 
           Summary.new(
             collection: klass.respond_to?(:collection) ? klass.collection : klass.name.to_s,
@@ -69,7 +71,7 @@ module SearchEngine
             docs_total: docs_total,
             success_total: success_total,
             failed_total: failed_total,
-            duration_ms_total: (monotonic_ms - started_at).round(1),
+            duration_ms_total: total_duration_ms,
             batches: batches
           )
         end
