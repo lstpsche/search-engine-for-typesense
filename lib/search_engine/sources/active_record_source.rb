@@ -17,7 +17,7 @@ module SearchEngine
       include Base
 
       # @param model [Class] ActiveRecord model class
-      # @param scope [Proc, nil] optional proc evaluated on the model (returns a Relation)
+      # @param scope [Proc, nil] optional proc evaluated in the context of model.all (returns a Relation)
       # @param batch_size [Integer, nil] override batch size (defaults from config)
       # @param use_transaction [Boolean, nil] wrap in read-only transaction (best-effort)
       # @param readonly [Boolean, nil] mark relations readonly (default true)
@@ -109,7 +109,7 @@ module SearchEngine
 
       def base_relation
         rel = @model.all
-        rel = @scope_proc.call.instance_eval { self } if @scope_proc.respond_to?(:call)
+        rel = rel.instance_exec(&@scope_proc) if @scope_proc.respond_to?(:call)
         mark_readonly(rel)
       end
 
