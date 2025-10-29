@@ -155,12 +155,16 @@ module SearchEngine
 
       def compiled_url(collection)
         cfg = SearchEngine.config
-        "#{cfg.protocol}://#{cfg.host}:#{cfg.port}/collections/#{collection}/documents/search"
+        proto = cfg.protocol.to_s.strip.presence
+        base = [proto, "#{cfg.host}:#{cfg.port}"].compact.join('://')
+        "#{base}/collections/#{collection}/documents/search"
       end
 
       def compiled_multi_url
         cfg = SearchEngine.config
-        "#{cfg.protocol}://#{cfg.host}:#{cfg.port}/multi_search"
+        proto = cfg.protocol.to_s.strip.presence
+        base = [proto, "#{cfg.host}:#{cfg.port}"].compact.join('://')
+        "#{base}/multi_search"
       end
 
       def capture(method, url:, params:, url_opts: {})

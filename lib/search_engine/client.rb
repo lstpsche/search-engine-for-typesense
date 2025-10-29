@@ -36,23 +36,25 @@ module SearchEngine
     # Resolve a logical collection name that might be an alias to the physical collection name.
     #
     # @param logical_name [String]
+    # @param timeout_ms [Integer, nil] optional read-timeout override in ms
     # @return [String, nil] physical collection name when alias exists; nil when alias not found
     # @raise [SearchEngine::Errors::*] on network or API errors other than 404
     # @see `https://github.com/lstpsche/search-engine-for-typesense/wiki/Schema`
     # @see `https://typesense.org/docs/latest/api/aliases.html`
-    def resolve_alias(logical_name)
-      services.fetch(:collections).resolve_alias(logical_name)
+    def resolve_alias(logical_name, timeout_ms: nil)
+      services.fetch(:collections).resolve_alias(logical_name, timeout_ms: timeout_ms)
     end
 
     # Retrieve the live schema for a physical collection name.
     #
     # @param collection_name [String]
+    # @param timeout_ms [Integer, nil] optional read-timeout override in ms
     # @return [Hash, nil] schema hash when found; nil when collection not found (404)
     # @raise [SearchEngine::Errors::*] on other network or API errors
     # @see `https://github.com/lstpsche/search-engine-for-typesense/wiki/Schema`
     # @see `https://typesense.org/docs/latest/api/collections.html`
-    def retrieve_collection_schema(collection_name)
-      services.fetch(:collections).retrieve_schema(collection_name)
+    def retrieve_collection_schema(collection_name, timeout_ms: nil)
+      services.fetch(:collections).retrieve_schema(collection_name, timeout_ms: timeout_ms)
     end
 
     # Upsert an alias to point to the provided physical collection (atomic server-side swap).
@@ -76,19 +78,39 @@ module SearchEngine
 
     # Delete a physical collection by name.
     # @param name [String]
+    # @param timeout_ms [Integer, nil] optional read-timeout override in ms; when nil, a safer
+    #   default suitable for destructive operations is used (prefers indexer timeout, with
+    #   a minimum of 30s).
     # @return [Hash] Typesense delete response
     # @see `https://github.com/lstpsche/search-engine-for-typesense/wiki/Schema#lifecycle`
     # @see `https://typesense.org/docs/latest/api/collections.html#delete-a-collection`
-    def delete_collection(name)
-      services.fetch(:collections).delete(name)
+    def delete_collection(name, timeout_ms: nil)
+      effective_timeout_ms = begin
+        if timeout_ms&.to_i&.positive?
+          timeout_ms.to_i
+        else
+          # Prefer a longer timeout for potentially long-running delete operations
+          idx = begin
+            config.indexer&.timeout_ms
+          rescue StandardError
+            nil
+          end
+          base = idx.to_i.positive? ? idx.to_i : config.timeout_ms.to_i
+          base < 30_000 ? 30_000 : base
+        end
+      rescue StandardError
+        30_000
+      end
+      services.fetch(:collections).delete(name, timeout_ms: effective_timeout_ms)
     end
 
     # List all collections.
+    # @param timeout_ms [Integer, nil] optional read-timeout override in ms
     # @return [Array<Hash>] list of collection metadata
     # @see `https://github.com/lstpsche/search-engine-for-typesense/wiki/Schema`
     # @see `https://typesense.org/docs/latest/api/collections.html#list-all-collections`
-    def list_collections
-      services.fetch(:collections).list
+    def list_collections(timeout_ms: nil)
+      services.fetch(:collections).list(timeout_ms: timeout_ms)
     end
 
     # Perform a server health check.
@@ -97,6 +119,28 @@ module SearchEngine
     # @see `https://typesense.org/docs/latest/api/cluster-operations.html#health`
     def health
       services.fetch(:operations).health
+    end
+
+    # Retrieve server metrics (raw output).
+    #
+    # Returns the unmodified JSON object from the Typesense `/metrics.json`
+    # endpoint. Keys are not symbolized to preserve the raw shape.
+    #
+    # @return [Hash] Raw payload from `/metrics.json`
+    # @see `https://typesense.org/docs/latest/api/cluster-operations.html#metrics`
+    def metrics
+      services.fetch(:operations).metrics
+    end
+
+    # Retrieve server stats (raw output).
+    #
+    # Returns the unmodified JSON object from the Typesense `/stats.json`
+    # endpoint. Keys are not symbolized to preserve the raw shape.
+    #
+    # @return [Hash] Raw payload from `/stats.json`
+    # @see `https://typesense.org/docs/latest/api/cluster-operations.html#stats`
+    def stats
+      services.fetch(:operations).stats
     end
 
     # --- Admin: API Keys ------------------------------------------------------
@@ -397,11 +441,12 @@ module SearchEngine
       Typesense::Client.new(
         nodes: build_nodes,
         api_key: config.api_key,
-        connection_timeout_seconds: (config.open_timeout_ms.to_i / 1000.0),
-        read_timeout_seconds: read_timeout_seconds,
+        # typesense-ruby v4.1.0 uses a single connection timeout for both open+read
+        connection_timeout_seconds: read_timeout_seconds,
         num_retries: safe_retry_attempts,
         retry_interval_seconds: safe_retry_backoff,
-        logger: safe_logger
+        logger: safe_logger,
+        log_level: safe_typesense_log_level
       )
     end
 
@@ -411,20 +456,29 @@ module SearchEngine
       Typesense::Client.new(
         nodes: build_nodes,
         api_key: config.api_key,
-        connection_timeout_seconds: (config.open_timeout_ms.to_i / 1000.0),
-        read_timeout_seconds: (config.timeout_ms.to_i / 1000.0),
+        # Single timeout governs both open/read in typesense-ruby
+        connection_timeout_seconds: (config.timeout_ms.to_i / 1000.0),
         num_retries: safe_retry_attempts,
         retry_interval_seconds: safe_retry_backoff,
-        logger: safe_logger
+        logger: safe_logger,
+        log_level: safe_typesense_log_level
       )
+    rescue StandardError => error
+      raise error
     end
 
     def build_nodes
+      proto =
+        begin
+          config.protocol.to_s.strip.presence || 'http'
+        rescue StandardError
+          nil
+        end
       [
         {
           host: config.host,
           port: config.port,
-          protocol: config.protocol
+          protocol: proto
         }
       ]
     end
@@ -459,6 +513,41 @@ module SearchEngine
       v = r[:backoff]
       v = v.to_f if v.respond_to?(:to_f)
       v.is_a?(Float) && v >= 0.0 ? v : 0.0
+    end
+
+    def safe_typesense_log_level
+      lvl_sym = begin
+        SearchEngine.config.logging.level if SearchEngine.config.respond_to?(:logging) && SearchEngine.config.logging
+      rescue StandardError
+        nil
+      end
+      require 'logger'
+      mapping = {
+        debug: ::Logger::DEBUG,
+        info: ::Logger::INFO,
+        warn: ::Logger::WARN,
+        error: ::Logger::ERROR,
+        fatal: ::Logger::FATAL
+      }
+      resolved = mapping[lvl_sym.to_s.downcase.to_sym] || ::Logger::WARN
+      # Clamp noisy Typesense debug unless explicitly enabled via env.
+      if resolved == ::Logger::DEBUG && !debug_http_enabled_env?
+        ::Logger::INFO
+      else
+        resolved
+      end
+    end
+
+    def debug_http_enabled_env?
+      val = ENV['SEARCH_ENGINE_DEBUG_HTTP']
+      return false if val.nil?
+
+      s = val.to_s.strip.downcase
+      return false if s.empty?
+
+      %w[1 true yes on].include?(s)
+    rescue StandardError
+      false
     end
 
     def derive_cache_opts(url_opts)

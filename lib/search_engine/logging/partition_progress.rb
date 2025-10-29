@@ -15,12 +15,18 @@ module SearchEngine
       # @param summary [SearchEngine::Indexer::Summary] result of the import
       # @return [String]
       def line(partition, summary)
+        require 'search_engine/logging/color'
+
         sample_err = extract_sample_error(summary)
 
+        status_val = summary.status
+        status_color = SearchEngine::Logging::Color.for_status(status_val)
+
         parts = []
-        parts << "  partition=#{partition.inspect} → status=#{summary.status}"
-        parts << "docs=#{summary.docs_total}"
-        parts << "failed=#{summary.failed_total}"
+        parts << "  #{SearchEngine::Logging::Color.apply("partition=#{partition.inspect}", status_color)} " \
+                 "→ #{SearchEngine::Logging::Color.apply("status=#{status_val}", status_color)}"
+        parts << SearchEngine::Logging::Color.apply("docs=#{summary.docs_total}", :green)
+        parts << SearchEngine::Logging::Color.apply("failed=#{summary.failed_total}", :red)
         parts << "batches=#{summary.batches_total}"
         parts << "duration_ms=#{summary.duration_ms_total}"
         parts << "sample_error=#{sample_err.inspect}" if sample_err

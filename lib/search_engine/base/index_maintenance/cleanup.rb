@@ -10,25 +10,25 @@ module SearchEngine
         extend ActiveSupport::Concern
 
         class_methods do
-          # Return a chainable Relation of stale documents per `stale_filter_by`.
+          # Return a chainable Relation of stale documents compiled from `stale` rules.
           #
-          # Uses only the `stale_filter_by` block (nested inside `index` or
-          # class-level) to compute a single Typesense filter string. When the
-          # filter is not defined or resolves to nil/blank for the given
-          # partition, returns an empty relation.
+          # Compiles all `stale` entries declared in the indexing DSL for the
+          # given partition and returns a Relation for the merged filter (OR semantics).
+          # When no rules are present or the effective filter resolves to blank,
+          # returns an empty relation.
           #
           # @param partition [Object, nil] optional partition token passed to the filter block
           # @return [SearchEngine::Relation]
           def stale(partition: nil)
-            compiled = SearchEngine::StaleFilter.for(self)
-            filter = compiled&.call(partition: partition)
+            filters = SearchEngine::StaleRules.compile_filters(self, partition: partition)
+            merged = SearchEngine::StaleRules.merge_filters(filters)
 
-            if filter.nil? || filter.to_s.strip.empty?
-              # Impossible predicate to ensure an empty Relation when stale filter is absent
+            if merged.nil? || merged.to_s.strip.empty?
+              # Impossible predicate to ensure an empty Relation when there are no stale rules
               return all.where('id:=null && id:!=null')
             end
 
-            all.where(filter)
+            all.where(merged)
           end
 
           # Delete stale documents from the collection according to DSL rules.
@@ -46,17 +46,7 @@ module SearchEngine
             puts
             puts(%(>>>>>> Cleanup Collection "#{logical}"))
 
-            compiled = SearchEngine::StaleFilter.for(self)
-            stale_entries = Array(stale_entries()).map(&:dup)
-            filters = []
-
-            scope_filters = build_scope_filters(stale_entries, partition: partition)
-            filters.concat(scope_filters)
-            filters.concat(build_attribute_filters(stale_entries))
-            filters.concat(build_hash_filters(stale_entries))
-            filters.concat(build_raw_filters(stale_entries, partition: partition))
-
-            filters << compiled.call(partition: partition) if compiled
+            filters = SearchEngine::StaleRules.compile_filters(self, partition: partition)
             filters.compact!
             filters.reject! { |f| f.to_s.strip.empty? }
             if filters.empty?
@@ -64,7 +54,7 @@ module SearchEngine
               return 0
             end
 
-            merged_filter = merge_filters(filters)
+            merged_filter = SearchEngine::StaleRules.merge_filters(filters)
             puts("Cleanup — filter=#{merged_filter.inspect}")
 
             deleted = SearchEngine::Deletion.delete_by(

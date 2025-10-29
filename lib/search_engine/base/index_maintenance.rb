@@ -29,11 +29,12 @@ module SearchEngine
             client = (SearchEngine.config.respond_to?(:client) && SearchEngine.config.client) || SearchEngine::Client.new
             logical = respond_to?(:collection) ? collection.to_s : name.to_s
 
-            alias_target = client.resolve_alias(logical)
+            # Resolve alias with a safer timeout for control-plane operations
+            alias_target = client.resolve_alias(logical, timeout_ms: 10_000)
             physical = if alias_target && !alias_target.to_s.strip.empty?
                          alias_target.to_s
                        else
-                         live = client.retrieve_collection_schema(logical)
+                         live = client.retrieve_collection_schema(logical, timeout_ms: 10_000)
                          live ? logical : nil
                        end
 
@@ -45,7 +46,8 @@ module SearchEngine
             puts
             puts(%(>>>>>> Dropping Collection "#{logical}"))
             puts("Drop Collection — processing (logical=#{logical} physical=#{physical})")
-            client.delete_collection(physical)
+            # Use an extended timeout to accommodate large collection drops
+            client.delete_collection(physical, timeout_ms: 60_000)
             puts('Drop Collection — done')
             puts(%(>>>>>> Dropped Collection "#{logical}"))
             nil
@@ -102,6 +104,7 @@ require 'active_support/concern'
 require 'search_engine/base/index_maintenance/cleanup'
 require 'search_engine/base/index_maintenance/lifecycle'
 require 'search_engine/base/index_maintenance/schema'
+require 'search_engine/logging/color'
 
 module SearchEngine
   class Base
@@ -400,12 +403,16 @@ module SearchEngine
           else
             summary = SearchEngine::Indexer.rebuild_partition!(self, partition: nil, into: into)
             sample_err = __se_extract_sample_error(summary)
-            puts(
-              "  single → status=#{summary.status} docs=#{summary.docs_total} " \
-              "failed=#{summary.failed_total} batches=#{summary.batches_total} " \
-              "duration_ms=#{summary.duration_ms_total}" \
-              "#{sample_err ? " sample_error=#{sample_err.inspect}" : ''}"
-            )
+            status_val = summary.status
+            status_color = SearchEngine::Logging::Color.for_status(status_val)
+            line = +"  single → "
+            line << SearchEngine::Logging::Color.apply("status=#{status_val}", status_color) << ' '
+            line << SearchEngine::Logging::Color.apply("docs=#{summary.docs_total}", :green) << ' '
+            line << SearchEngine::Logging::Color.apply("failed=#{summary.failed_total}", :red) << ' '
+            line << "batches=#{summary.batches_total} "
+            line << "duration_ms=#{summary.duration_ms_total}"
+            line << (sample_err ? " sample_error=#{sample_err.inspect}" : '')
+            puts(line)
             summary.status
           end
         end
@@ -482,12 +489,16 @@ module SearchEngine
         def __se_index_single!(into)
           summary = SearchEngine::Indexer.rebuild_partition!(self, partition: nil, into: into)
           sample_err = __se_extract_sample_error(summary)
-          puts(
-            "  single → status=#{summary.status} docs=#{summary.docs_total} " \
-            "failed=#{summary.failed_total} batches=#{summary.batches_total} " \
-            "duration_ms=#{summary.duration_ms_total}" \
-            "#{sample_err ? " sample_error=#{sample_err.inspect}" : ''}"
-          )
+          status_val = summary.status
+          status_color = SearchEngine::Logging::Color.for_status(status_val)
+          line = +"  single → "
+          line << SearchEngine::Logging::Color.apply("status=#{status_val}", status_color) << ' '
+          line << SearchEngine::Logging::Color.apply("docs=#{summary.docs_total}", :green) << ' '
+          line << SearchEngine::Logging::Color.apply("failed=#{summary.failed_total}", :red) << ' '
+          line << "batches=#{summary.batches_total} "
+          line << "duration_ms=#{summary.duration_ms_total}"
+          line << (sample_err ? " sample_error=#{sample_err.inspect}" : '')
+          puts(line)
         end
       end
 
@@ -502,8 +513,16 @@ module SearchEngine
           end
           keep = 0 if keep.nil? || keep.to_i.negative?
 
-          alias_target = client.resolve_alias(logical)
-          names = Array(client.list_collections).map { |c| (c[:name] || c['name']).to_s }
+          meta_timeout = begin
+            t = SearchEngine.config.timeout_ms.to_i
+            t = 5_000 if t <= 0
+            t < 10_000 ? 10_000 : t
+          rescue StandardError
+            10_000
+          end
+
+          alias_target = client.resolve_alias(logical, timeout_ms: meta_timeout)
+          names = Array(client.list_collections(timeout_ms: meta_timeout)).map { |c| (c[:name] || c['name']).to_s }
           re = /^#{Regexp.escape(logical)}_\d{8}_\d{6}_\d{3}$/
           physicals = names.select { |n| re.match?(n) }
 
@@ -515,7 +534,7 @@ module SearchEngine
 
           candidates = ordered.reject { |n| n == alias_target }
           to_drop = candidates.drop(keep)
-          to_drop.each { |n| client.delete_collection(n) }
+          to_drop.each { |n| client.delete_collection(n, timeout_ms: 60_000) }
           to_drop
         end
         private :__se_retention_cleanup!

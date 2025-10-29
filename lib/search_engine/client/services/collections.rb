@@ -7,13 +7,19 @@ module SearchEngine
       class Collections < Base
         # @param logical_name [String]
         # @return [String, nil]
-        def resolve_alias(logical_name)
+        def resolve_alias(logical_name, timeout_ms: nil)
           name = logical_name.to_s
           start = current_monotonic_ms
           path = [Client::RequestBuilder::ALIASES_PREFIX, name].join
 
+          ts = if timeout_ms&.to_i&.positive?
+                 build_typesense_client_with_read_timeout(timeout_ms.to_i / 1000.0)
+               else
+                 typesense
+               end
+
           result = with_exception_mapping(:get, path, {}, start) do
-            typesense.aliases[name].retrieve
+            ts.aliases[name].retrieve
           end
 
           (result && (result['collection_name'] || result[:collection_name])).to_s
@@ -27,13 +33,19 @@ module SearchEngine
 
         # @param collection_name [String]
         # @return [Hash, nil]
-        def retrieve_schema(collection_name)
+        def retrieve_schema(collection_name, timeout_ms: nil)
           name = collection_name.to_s
           start = current_monotonic_ms
           path = [Client::RequestBuilder::COLLECTIONS_PREFIX, name].join
 
+          ts = if timeout_ms&.to_i&.positive?
+                 build_typesense_client_with_read_timeout(timeout_ms.to_i / 1000.0)
+               else
+                 typesense
+               end
+
           result = with_exception_mapping(:get, path, {}, start) do
-            typesense.collections[name].retrieve
+            ts.collections[name].retrieve
           end
 
           symbolize_keys_deep(result)
@@ -80,14 +92,21 @@ module SearchEngine
         end
 
         # @param name [String]
+        # @param timeout_ms [Integer, nil]
         # @return [Hash]
-        def delete(name)
+        def delete(name, timeout_ms: nil)
           n = name.to_s
           start = current_monotonic_ms
           path = Client::RequestBuilder::COLLECTIONS_PREFIX + n
 
+          ts = if timeout_ms&.to_i&.positive?
+                 build_typesense_client_with_read_timeout(timeout_ms.to_i / 1000.0)
+               else
+                 typesense
+               end
+
           result = with_exception_mapping(:delete, path, {}, start) do
-            typesense.collections[n].delete
+            ts.collections[n].delete
           end
 
           symbolize_keys_deep(result)
@@ -100,12 +119,18 @@ module SearchEngine
         end
 
         # @return [Array<Hash>]
-        def list
+        def list(timeout_ms: nil)
           start = current_monotonic_ms
           path = Client::RequestBuilder::COLLECTIONS_ROOT
 
+          ts = if timeout_ms&.to_i&.positive?
+                 build_typesense_client_with_read_timeout(timeout_ms.to_i / 1000.0)
+               else
+                 typesense
+               end
+
           result = with_exception_mapping(:get, path, {}, start) do
-            typesense.collections.retrieve
+            ts.collections.retrieve
           end
 
           symbolize_keys_deep(result)

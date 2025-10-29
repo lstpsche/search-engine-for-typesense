@@ -44,14 +44,17 @@ SearchEngine.configure do |c|
 
   # --- Typesense transport -------------------------------------------------
 
-  # Request total timeout in milliseconds. Default: 5000
-  # c.timeout_ms = 5_000
+  # Request total timeout in milliseconds. Default: 3_600_000 (60 minutes)
+  # c.timeout_ms = 3_600_000
 
   # Connect/open timeout in milliseconds. Default: 1000
   # c.open_timeout_ms = 1_000
 
-  # Retry policy for client requests. Default: { attempts: 2, backoff: 0.2 }
-  # c.retries = { attempts: 2, backoff: 0.2 }
+  # Retry policy for client requests. Default: { attempts: 2, backoff: 10.0..60.0 }
+  # Use a Range for backoff to introduce jitter between retries (seconds).
+  # c.retries = { attempts: 2, backoff: 10.0..60.0 }
+  # Recommendation: keep a 60-minute timeout and add jitter for long-running writes.
+  # See wiki: Configuration → Timeouts & retries
 
   # Default Typesense infix behavior for queries. Default: 'fallback'
   # c.default_infix = 'fallback'
@@ -103,26 +106,24 @@ SearchEngine.configure do |c|
   # --- Observability & Logging --------------------------------------------
   # See: https://github.com/lstpsche/search-engine-for-typesense/wiki/Observability
 
-  # Enable the compact logging subscriber automatically. Default: true
-  # c.observability.enabled = true
+  # Quiet by default: structured instrumentation logs ([se.*]) are OFF unless
+  # explicitly enabled below.
 
-  # Log format for structured logs (:kv or :json). Default: :kv
-  # c.observability.log_format = :kv
-
-  # Max error message length included in logs. Default: 200
-  # c.observability.max_message_length = 200
-
-  # Include short error messages for batch/stale events. Default: false
-  # c.observability.include_error_messages = false
-
-  # Emit legacy event aliases alongside canonical ones. Default: true
-  # c.observability.emit_legacy_event_aliases = true
-
-  # Structured logging options used by the LoggingSubscriber. Defaults shown.
-  # c.logging.mode = :compact
-  # c.logging.level = :info
-  # c.logging.sample = 1.0
+  # Preferred (new) structured logs via LoggingSubscriber (opt-in):
+  # - :compact (single-line) or :json
+  # - optional sampling to reduce noise
+  # c.logging.mode   = :compact   # Default: nil (OFF)
+  # c.logging.level  = :info      # :debug | :info | :warn | :error
+  # c.logging.sample = 1.0        # e.g., 0.1 to sample 10%
   # c.logging.logger = c.logger
+
+  # Legacy compact logger (fallback, also opt-in):
+  # Enable only if you prefer the legacy subscriber instead of LoggingSubscriber.
+  # c.observability.enabled = false   # Default: false (OFF)
+  # c.observability.log_format = :kv  # :kv or :json
+  # c.observability.max_message_length = 200
+  # c.observability.include_error_messages = false
+  # c.observability.emit_legacy_event_aliases = true
 
   # OpenTelemetry integration (only when the SDK is present). Defaults shown.
   # c.opentelemetry = { enabled: false, service_name: 'search_engine' }

@@ -99,7 +99,9 @@ module SearchEngine
       def compiled_url
         collection = collection_name_for_klass
         cfg = SearchEngine.config
-        "#{cfg.protocol}://#{cfg.host}:#{cfg.port}/collections/#{collection}/documents/search"
+        proto = cfg.protocol.to_s.strip.presence
+        base = [proto, "#{cfg.host}:#{cfg.port}"].compact.join('://')
+        "#{base}/collections/#{collection}/documents/search"
       end
 
       def compiled_url_opts

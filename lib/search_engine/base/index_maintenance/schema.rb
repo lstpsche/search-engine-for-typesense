@@ -29,11 +29,12 @@ module SearchEngine
             client = (SearchEngine.config.respond_to?(:client) && SearchEngine.config.client) || SearchEngine::Client.new
             logical = respond_to?(:collection) ? collection.to_s : name.to_s
 
-            alias_target = client.resolve_alias(logical)
+            # Resolve alias with a safer timeout for control-plane operations
+            alias_target = client.resolve_alias(logical, timeout_ms: 10_000)
             physical = if alias_target && !alias_target.to_s.strip.empty?
                          alias_target.to_s
                        else
-                         live = client.retrieve_collection_schema(logical)
+                         live = client.retrieve_collection_schema(logical, timeout_ms: 10_000)
                          live ? logical : nil
                        end
 
@@ -45,7 +46,8 @@ module SearchEngine
             puts
             puts(%(>>>>>> Dropping Collection "#{logical}"))
             puts("Drop Collection — processing (logical=#{logical} physical=#{physical})")
-            client.delete_collection(physical)
+            # Use an extended timeout to accommodate large collection drops
+            client.delete_collection(physical, timeout_ms: 60_000)
             puts('Drop Collection — done')
             puts(%(>>>>>> Dropped Collection "#{logical}"))
             nil

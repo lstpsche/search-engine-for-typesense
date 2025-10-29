@@ -44,7 +44,18 @@ module SearchEngine
         unless attempts.is_a?(Integer) && !attempts.negative?
           errors << 'retries[:attempts] must be a non-negative Integer'
         end
-        errors << 'retries[:backoff] must be a non-negative Float' unless backoff.is_a?(Numeric) && !backoff.negative?
+
+        if backoff.is_a?(Numeric)
+          errors << 'retries[:backoff] must be a non-negative Float or Range of non-negative Floats' if backoff.negative?
+        elsif backoff.is_a?(Range)
+          b = backoff.begin
+          e = backoff.end
+          valid = b.is_a?(Numeric) && e.is_a?(Numeric) && b >= 0 && e >= 0 && b <= e
+          errors << 'retries[:backoff] must be a non-negative Float or Range of non-negative Floats' unless valid
+        else
+          errors << 'retries[:backoff] must be a non-negative Float or Range of non-negative Floats'
+        end
+
         errors
       end
 

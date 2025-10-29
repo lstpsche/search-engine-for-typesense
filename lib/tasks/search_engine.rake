@@ -4,6 +4,7 @@ require 'json'
 require 'time'
 require 'search_engine'
 require 'search_engine/cli'
+require 'search_engine/logging/color'
 
 namespace :search_engine do
   # ------------------------- Schema tasks -------------------------
@@ -242,13 +243,19 @@ namespace :search_engine do
           docs_total = sum.respond_to?(:docs_total) ? sum.docs_total : sum[:docs_total]
           batches_total = sum.respond_to?(:batches_total) ? sum.batches_total : sum[:batches_total]
           duration_ms_total = sum.respond_to?(:duration_ms_total) ? sum.duration_ms_total : sum[:duration_ms_total]
-          puts(
-            "Imported partition=#{a[:partition].inspect} " \
-            "status=#{status} " \
-            "docs=#{docs_total} " \
-            "batches=#{batches_total} " \
-            "duration_ms=#{duration_ms_total}"
-          )
+          status_color = SearchEngine::Logging::Color.for_status(status)
+          line = +''
+          line << SearchEngine::Logging::Color.apply("Imported partition=#{a[:partition].inspect}", status_color)
+          line << ' '
+          line << SearchEngine::Logging::Color.apply("status=#{status}", status_color)
+          line << ' '
+          line << SearchEngine::Logging::Color.apply("docs=#{docs_total}", :green)
+          line << ' '
+          line << SearchEngine::Logging::Color.apply("failed=#{sum.respond_to?(:failed_total) ? sum.failed_total : sum[:failed_total]}", :red) if (sum.respond_to?(:failed_total) ? sum.failed_total : sum[:failed_total]).to_i.positive?
+          line << ' '
+          line << "batches=#{batches_total} "
+          line << "duration_ms=#{duration_ms_total}"
+          puts(line)
 
           print_failures_if_any(status, sum)
         end
@@ -316,13 +323,19 @@ namespace :search_engine do
         docs_total = sum.respond_to?(:docs_total) ? sum.docs_total : sum[:docs_total]
         batches_total = sum.respond_to?(:batches_total) ? sum.batches_total : sum[:batches_total]
         duration_ms_total = sum.respond_to?(:duration_ms_total) ? sum.duration_ms_total : sum[:duration_ms_total]
-        puts(
-          "Imported partition=#{partition.inspect} " \
-          "status=#{status} " \
-          "docs=#{docs_total} " \
-          "batches=#{batches_total} " \
-          "duration_ms=#{duration_ms_total}"
-        )
+        status_color = SearchEngine::Logging::Color.for_status(status)
+        line = +''
+        line << SearchEngine::Logging::Color.apply("Imported partition=#{partition.inspect}", status_color)
+        line << ' '
+        line << SearchEngine::Logging::Color.apply("status=#{status}", status_color)
+        line << ' '
+        line << SearchEngine::Logging::Color.apply("docs=#{docs_total}", :green)
+        line << ' '
+        line << SearchEngine::Logging::Color.apply("failed=#{sum.respond_to?(:failed_total) ? sum.failed_total : sum[:failed_total]}", :red) if (sum.respond_to?(:failed_total) ? sum.failed_total : sum[:failed_total]).to_i.positive?
+        line << ' '
+        line << "batches=#{batches_total} "
+        line << "duration_ms=#{duration_ms_total}"
+        puts(line)
         print_failures_if_any(status, sum)
       end
 
@@ -400,7 +413,17 @@ namespace :search_engine do
 
     error_samples = build_error_samples_from_summary(summary)
     sample_errors = error_samples && !error_samples.empty? ? " sample_errors=#{error_samples.join(' | ')}" : ''
-    puts("Failures=#{failed_total}#{sample_errors}")
+    begin
+      require 'search_engine/logging/color'
+    rescue LoadError
+      # no-op
+    end
+    if defined?(SearchEngine::Logging::Color)
+      line = SearchEngine::Logging::Color.apply("Failures=#{failed_total}", :red) + sample_errors
+      puts(line)
+    else
+      puts("Failures=#{failed_total}#{sample_errors}")
+    end
   end
 
   def build_error_samples_from_summary(sum)

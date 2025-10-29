@@ -218,11 +218,19 @@ into: nil
 
       def build_from_typesense(client)
         graph = Hash.new { |h, k| h[k] = [] }
-        collections = Array(client.list_collections)
+        # Use a slightly longer timeout for metadata requests to avoid noisy timeouts
+        meta_timeout = begin
+          t = SearchEngine.config.timeout_ms.to_i
+          t = 5_000 if t <= 0
+          t < 10_000 ? 10_000 : t
+        rescue StandardError
+          10_000
+        end
+        collections = Array(client.list_collections(timeout_ms: meta_timeout))
         names = collections.map { |c| (c[:name] || c['name']).to_s }.reject(&:empty?)
         names.each do |name|
           begin
-            schema = client.retrieve_collection_schema(name)
+            schema = client.retrieve_collection_schema(name, timeout_ms: meta_timeout)
           rescue StandardError
             schema = nil
           end

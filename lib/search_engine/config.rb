@@ -31,7 +31,7 @@ module SearchEngine
     # @!attribute [rw] open_timeout_ms
     #   @return [Integer] connect/open timeout in milliseconds
     # @!attribute [rw] retries
-    #   @return [Hash] retry policy with keys { attempts: Integer, backoff: Float }
+    #   @return [Hash] retry policy with keys { attempts: Integer, backoff: Float or Range<Float> }
     # @!attribute [rw] logger
     #   @return [#info,#warn,#error] logger to use; defaults to Rails.logger
     # @!attribute [rw] default_query_by
@@ -233,6 +233,10 @@ module SearchEngine
 
     # Lightweight nested configuration for observability/logging.
     # Kept for backward compatibility during refactor; delegates to external class.
+    #
+    # Defaults are quiet by design:
+    # - enabled: false (no legacy compact logger unless explicitly turned on)
+    # Enable by setting `config.observability.enabled = true` in the initializer.
     class ObservabilityConfig < Observability
       # @return [Boolean] enable the compact logging subscriber automatically
       attr_accessor :enabled
@@ -248,7 +252,7 @@ module SearchEngine
       def initialize
         super()
 
-        @enabled = true
+        @enabled = false
         @log_format = :kv
         @max_message_length = 200
         @include_error_messages = false
@@ -331,9 +335,9 @@ module SearchEngine
       typesense.host = 'localhost'
       typesense.port = 8108
       typesense.protocol = 'http'
-      typesense.timeout_ms = 5_000
+      typesense.timeout_ms = 3_600_000
       typesense.open_timeout_ms = 1_000
-      typesense.retries = { attempts: 2, backoff: 0.2 }
+      typesense.retries = { attempts: 2, backoff: (10.0..60.0) }
       @default_query_by = nil
       @default_infix = 'fallback'
       @use_cache = true
@@ -443,10 +447,13 @@ module SearchEngine
     end
 
     # Expose structured logging configuration.
+    #
+    # By default `mode` is nil which disables the structured `LoggingSubscriber`.
+    # Opt-in by setting `config.logging.mode = :compact` (or `:json`).
     # @return [OpenStruct]
     def logging
       require 'ostruct'
-      @logging ||= OpenStruct.new(mode: :compact, level: :info, sample: 1.0, logger: logger)
+      @logging ||= OpenStruct.new(mode: nil, level: :info, sample: 1.0, logger: logger)
     end
 
     # Expose OpenTelemetry configuration. Optional and disabled by default.

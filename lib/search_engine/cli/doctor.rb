@@ -32,6 +32,8 @@ module SearchEngine
         # @since M8
         # @see docs/cli.md#doctor
         def run
+          puts 'Executing doctor checks...'
+
           runner = Runner.new
           result = runner.execute
 
@@ -126,15 +128,13 @@ module SearchEngine
           missing = []
           missing << 'host' if cfg.host.to_s.strip.empty?
           missing << 'port' unless cfg.port.is_a?(Integer) && cfg.port.positive?
-          missing << 'protocol' unless %w[http https].include?(cfg.protocol.to_s)
+          missing << 'protocol' unless %w[http https].include?(cfg.protocol.to_s.strip.presence)
           missing << 'api_key' if cfg.api_key.to_s.strip.empty?
           missing << 'timeout_ms' unless cfg.timeout_ms.is_a?(Integer)
           missing << 'open_timeout_ms' unless cfg.open_timeout_ms.is_a?(Integer)
 
           ok = missing.empty?
-          hint = if ok
-                   nil
-                 else
+          hint = unless ok
                    'Set TYPESENSE_* envs or configure in an initializer. ' \
                    'See docs/installation.md#configuration'
                  end
@@ -474,12 +474,12 @@ module SearchEngine
         def client_with_overrides
           base = SearchEngine.config
           cfg = SearchEngine::Config.new
-          cfg.host = override_or(base.host, ENV['HOST'])
-          cfg.port = override_or(base.port, env_int('PORT'))
-          cfg.protocol = override_or(base.protocol, ENV['PROTOCOL'])
+          cfg.host = override_or(base.host, ENV['TYPESENSE_HOST'])
+          cfg.port = override_or(base.port, env_int('TYPESENSE_PORT'))
+          cfg.protocol = base.protocol.to_s.strip || '' # nil is allowed
           cfg.api_key = base.api_key
 
-          timeout_s = env_int('TIMEOUT')
+          timeout_s = env_int('TYPESENSE_TIMEOUT')
           cfg.timeout_ms = (timeout_s ? Integer(timeout_s) * 1000 : base.timeout_ms)
           cfg.open_timeout_ms = base.open_timeout_ms
           cfg.retries = base.retries
@@ -553,6 +553,10 @@ module SearchEngine
           started = monotonic_ms
           callable.call
         rescue StandardError => error
+          puts "error: #{error.backtrace.join("\n")}"
+          puts '--------------------------------'
+          puts '--------------------------------'
+          puts '--------------------------------'
           failure(callable.name, started, error, hint: 'Unexpected error', doc: nil)
         end
       end

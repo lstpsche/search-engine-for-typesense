@@ -268,17 +268,35 @@ module SearchEngine
 
       # Enumerate all physicals that match the naming pattern for the logical name.
       def list_physicals(logical, client:)
-        collections = Array(client.list_collections)
+        meta_timeout = begin
+          t = SearchEngine.config.timeout_ms.to_i
+          t = 5_000 if t <= 0
+          t < 10_000 ? 10_000 : t
+        rescue StandardError
+          10_000
+        end
+        collections = Array(client.list_collections(timeout_ms: meta_timeout))
         re = /^#{Regexp.escape(logical)}_\d{8}_\d{6}_\d{3}$/
         names = collections.map { |c| (c[:name] || c['name']).to_s }
         names.select { |n| re.match?(n) }
+      rescue StandardError
+        []
       end
 
       # Internal: list physicals that share the same timestamp prefix (for sequence calculation)
       def list_physicals_starting_with(prefix, client:)
-        collections = Array(client.list_collections)
+        meta_timeout = begin
+          t = SearchEngine.config.timeout_ms.to_i
+          t = 5_000 if t <= 0
+          t < 10_000 ? 10_000 : t
+        rescue StandardError
+          10_000
+        end
+        collections = Array(client.list_collections(timeout_ms: meta_timeout))
         names = collections.map { |c| (c[:name] || c['name']).to_s }
         names.select { |n| n.start_with?(prefix) }
+      rescue StandardError
+        []
       end
 
       def enforce_retention!(logical, new_target, client:, keep_last:)

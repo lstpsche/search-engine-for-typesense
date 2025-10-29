@@ -15,6 +15,8 @@ module SearchEngine
   module Bulk
     class << self
       # Blue/green indexing (non-destructive), mirroring {SearchEngine::Base.indexate}.
+      # When no targets are provided, all declared/registered collections are indexed
+      # (models are eagerly loaded from the configured `search_engine_models` path).
       # @param targets [Array<Symbol, String, Class>] collections or model classes
       # @return [Hash] summary
       def index(*targets, client: nil)
@@ -36,6 +38,8 @@ module SearchEngine
       end
 
       # Drop+index (destructive), mirroring {SearchEngine::Base.reindexate!}.
+      # When no targets are provided, all declared/registered collections are reindexed
+      # (models are eagerly loaded from the configured `search_engine_models` path).
       # @param targets [Array<Symbol, String, Class>] collections or model classes
       # @return [Hash] summary
       def reindex!(*targets, client: nil)
@@ -67,6 +71,12 @@ module SearchEngine
 
         ts_client = client || (SearchEngine.config.respond_to?(:client) && SearchEngine.config.client) || SearchEngine::Client.new
         input_names = normalize_targets(targets)
+
+        # Fallback to all declared/registered collections when no explicit targets are given.
+        if input_names.empty?
+          ensure_models_loaded_from_configured_path!
+          input_names = SearchEngine::CollectionResolver.models_map.keys
+        end
 
         reverse_graph = SearchEngine::Cascade.build_reverse_graph(client: ts_client)
         input_set = input_names.to_h { |n| [n, true] }

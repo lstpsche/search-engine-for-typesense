@@ -18,12 +18,12 @@ module SearchEngine
       # @return [Integer] TCP port for the Typesense server
       attr_accessor :port
       # @return [String] one of "http" or "https"
-      attr_accessor :protocol
+      attr_reader :protocol
       # @return [Integer] request total timeout in milliseconds
       attr_accessor :timeout_ms
       # @return [Integer] connect/open timeout in milliseconds
       attr_accessor :open_timeout_ms
-      # @return [Hash] retry policy with keys { attempts: Integer, backoff: Float }
+      # @return [Hash] retry policy with keys { attempts: Integer, backoff: Float or Range<Float> }
       attr_accessor :retries
 
       def initialize
@@ -31,9 +31,17 @@ module SearchEngine
         @host = 'localhost'
         @port = 8108
         @protocol = 'http'
-        @timeout_ms = 5_000
+        @timeout_ms = 3_600_000
         @open_timeout_ms = 1_000
-        @retries = { attempts: 2, backoff: 0.2 }
+        @retries = { attempts: 2, backoff: (10.0..60.0) }
+      end
+
+      # Normalize protocol assignment to default to 'http' when blank.
+      # @param value [String, nil]
+      # @return [void]
+      def protocol=(value)
+        s = value.to_s
+        @protocol = s.strip.present? ? s : 'http'
       end
     end
   end

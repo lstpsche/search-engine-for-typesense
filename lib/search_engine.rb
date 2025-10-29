@@ -42,6 +42,7 @@ require 'search_engine/update'
 require 'search_engine/collections_graph'
 require 'search_engine/bulk'
 require 'search_engine/cache'
+require 'search_engine/operations'
 require 'search_engine/engine'
 require 'search_engine/active_record_syncable'
 
@@ -67,6 +68,12 @@ module SearchEngine
         config.validate!
       end
       config
+    end
+
+    # Convenience accessor for operational helpers.
+    # @return [Module] {SearchEngine::Operations}
+    def operations
+      Operations
     end
 
     # Execute a federated multi-search using the Multi builder.
