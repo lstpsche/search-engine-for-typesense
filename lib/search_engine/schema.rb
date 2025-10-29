@@ -36,8 +36,9 @@ module SearchEngine
       # Build a Typesense-compatible schema hash from a model class DSL.
       #
       # The output includes only keys that are supported and declared via the DSL.
-      # Since attribute-level flags (facet/index/optional/sort) are not supported
-      # by the current DSL, they are omitted to avoid noisy diffs.
+      # Fields explicitly marked with `index: false` are intentionally omitted
+      # from the compiled schema (they can still be sent in documents and will
+      # be hydrated/displayed, but are not indexed in memory).
       #
       # @param klass [Class] model class inheriting from {SearchEngine::Base}
       # @return [Hash] frozen schema hash with symbol keys
@@ -368,8 +369,17 @@ module SearchEngine
         attributes_map.each do |attribute_name, type_descriptor|
           validate_attribute_type!(attribute_name, type_descriptor)
 
-          ts_type = typesense_type_for(type_descriptor)
           opts = attribute_options[attribute_name.to_sym] || {}
+          # Skip non-indexed attributes and any nested fields under a non-indexed base
+          base_index_false = false
+          if attribute_name.to_s.include?('.')
+            base_sym = attribute_name.to_s.split('.', 2).first.to_sym
+            base_opts = attribute_options[base_sym] || {}
+            base_index_false = (base_opts[:index] == false)
+          end
+          next if opts[:index] == false || base_index_false
+
+          ts_type = typesense_type_for(type_descriptor)
           needs_nested_fields ||= nested_type?(ts_type)
 
           fields_array << build_field_entry(

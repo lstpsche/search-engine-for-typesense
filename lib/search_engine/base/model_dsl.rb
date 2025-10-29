@@ -92,6 +92,7 @@ module SearchEngine
         #
         # @param name [#to_sym]
         # @param type [Object] type descriptor (e.g., :string, :integer)
+        # @param index [Boolean, nil] when false, omit from compiled Typesense schema (still hydrated/displayed)
         # @param locale [String, nil]
         # @param optional [Boolean, nil]
         # @param sort [Boolean, nil]
@@ -99,13 +100,13 @@ module SearchEngine
         # @param empty_filtering [Boolean, nil]
         # @param nested [Hash, nil]
         # @return [void]
-        def attribute(name, type = :string, locale: nil, optional: nil, sort: nil, infix: nil, empty_filtering: nil,
-                      nested: nil)
+        def attribute(name, type = :string, index: nil, locale: nil, optional: nil, sort: nil, infix: nil,
+                      empty_filtering: nil, nested: nil)
           n = name.to_sym
           __se_validate_attribute_name!(n)
           __se_assign_attribute!(n, type)
           __se_update_attribute_options!(n, type, locale: locale, optional: optional, sort: sort, infix: infix,
-                                         empty_filtering: empty_filtering
+                                         empty_filtering: empty_filtering, index: index
           )
           __se_define_reader_if_needed!(n)
           __se_expand_nested_fields!(n, type, nested)
@@ -132,13 +133,13 @@ module SearchEngine
 
       class_methods do
         # Update per-attribute options from keyword arguments.
-        def __se_update_attribute_options!(name_sym, type, locale:, optional:, sort:, infix:, empty_filtering:)
-          has_opts = [locale, optional, sort, infix, empty_filtering].any? { |v| !v.nil? }
+        def __se_update_attribute_options!(name_sym, type, locale:, optional:, sort:, infix:, empty_filtering:, index:)
+          has_opts = [locale, optional, sort, infix, empty_filtering, index].any? { |v| !v.nil? }
           if has_opts
             @attribute_options ||= {}
             new_opts = __se_build_attribute_options_for(
               name_sym, type,
-              locale: locale, optional: optional, sort: sort, infix: infix, empty_filtering: empty_filtering
+              locale: locale, optional: optional, sort: sort, infix: infix, empty_filtering: empty_filtering, index: index
             )
 
             if new_opts.empty?
@@ -261,7 +262,7 @@ module SearchEngine
 
         def __se_build_attribute_options_for(
           n, type, locale:,
-          optional: nil, sort: nil, infix: nil, empty_filtering: nil
+          optional: nil, sort: nil, infix: nil, empty_filtering: nil, index: nil
         )
           new_opts = (@attribute_options[n] || {}).dup
 
@@ -278,7 +279,7 @@ module SearchEngine
             new_opts[:locale] = locale.to_s
           end
 
-          __se_apply_optional_sort_empty_filtering(
+          new_opts = __se_apply_optional_sort_empty_filtering(
             new_opts,
             type,
             optional: optional,
@@ -286,6 +287,14 @@ module SearchEngine
             infix: infix,
             empty_filtering: empty_filtering
           )
+
+          # index flag (default is true; only store when provided)
+          unless index.nil?
+            __se_ensure_boolean!(:index, index)
+            new_opts[:index] = index ? true : false
+          end
+
+          new_opts
         end
 
         private :__se_build_attribute_options_for

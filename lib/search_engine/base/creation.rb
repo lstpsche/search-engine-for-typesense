@@ -128,6 +128,26 @@ module SearchEngine
           base
         end
 
+        def compute_allowed_keys_from_schema_and_dsl(klass, compiled_schema)
+          # Start with all compiled field names (including hidden and dotted)
+          all = Array(compiled_schema[:fields]).map { |f| (f[:name] || f['name']).to_s }.to_set
+
+          # Include declared attributes explicitly marked as unindexed (index: false)
+          begin
+            opts = klass.respond_to?(:attribute_options) ? (klass.attribute_options || {}) : {}
+          rescue StandardError
+            opts = {}
+          end
+
+          opts.each do |fname, conf|
+            next unless conf.is_a?(Hash)
+
+            all << fname.to_s if conf[:index] == false
+          end
+
+          all
+        end
+
         def append_hidden_flags!(klass, document, allowed_keys)
           begin
             opts = klass.respond_to?(:attribute_options) ? (klass.attribute_options || {}) : {}
@@ -462,7 +482,7 @@ module SearchEngine
 
           compiled = SearchEngine::Schema.compile(klass)
           types_by_field = build_types_by_field_from_schema(compiled)
-          allowed_keys = compute_required_keys_from_schema(klass, compiled)
+          allowed_keys = compute_allowed_keys_from_schema_and_dsl(klass, compiled)
           required_keys = compute_required_keys_from_schema(klass, compiled)
 
           source_docs.map do |doc|
@@ -558,7 +578,7 @@ module SearchEngine
 
           compiled = SearchEngine::Schema.compile(self)
           types_by_field = Helpers.build_types_by_field_from_schema(compiled)
-          allowed_keys = Helpers.compute_required_keys_from_schema(self, compiled)
+          allowed_keys = Helpers.compute_allowed_keys_from_schema_and_dsl(self, compiled)
           required_keys = Helpers.compute_required_keys_from_schema(self, compiled)
 
           # Normalize incoming attributes (Hash or kwargs) to a unified document
