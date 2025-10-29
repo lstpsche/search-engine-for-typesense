@@ -14,7 +14,7 @@ module SearchEngine
   #   (also suppressed for nested cascades to avoid duplicates).
   module Bulk
     class << self
-      # Blue/green indexing (non-destructive), mirroring {SearchEngine::Base.indexate}.
+      # Blue/green indexing (non-destructive), mirroring {SearchEngine::Base.index_collection}.
       # When no targets are provided, all declared/registered collections are indexed
       # (models are eagerly loaded from the configured `search_engine_models` path).
       # @param targets [Array<Symbol, String, Class>] collections or model classes
@@ -37,7 +37,7 @@ module SearchEngine
         run!(mode: :index, targets: names, client: client)
       end
 
-      # Drop+index (destructive), mirroring {SearchEngine::Base.reindexate!}.
+      # Drop+index (destructive), mirroring {SearchEngine::Base.reindex_collection!}.
       # When no targets are provided, all declared/registered collections are reindexed
       # (models are eagerly loaded from the configured `search_engine_models` path).
       # @param targets [Array<Symbol, String, Class>] collections or model classes
@@ -114,9 +114,9 @@ module SearchEngine
 
               case mode.to_sym
               when :index
-                klass.indexate
+                klass.index_collection
               else
-                klass.reindexate!
+                klass.reindex_collection!
               end
             end
 
@@ -127,9 +127,9 @@ module SearchEngine
 
               case mode.to_sym
               when :index
-                klass.indexate
+                klass.index_collection
               else
-                klass.reindexate!
+                klass.reindex_collection!
               end
             end
           end

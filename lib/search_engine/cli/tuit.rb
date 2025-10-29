@@ -188,10 +188,10 @@ module SearchEngine
           # Conditional reindex options based on partitioning
           compiled = SearchEngine::Partitioner.for(klass)
           if compiled
-            actions << ['(Re)Indexate full collection', :reindexate_full]
-            actions << ['(Re)Indexate partition', :reindexate_partition]
+            actions << ['(Re)Index full collection', :reindex_full]
+            actions << ['(Re)Index partition', :reindex_partition]
           else
-            actions << ['(Re)Indexate', :reindexate]
+            actions << ['(Re)Index', :reindex]
           end
 
           pairs = actions + [['Back', :back]]
@@ -205,11 +205,11 @@ module SearchEngine
             confirm_and_run(prompt, 'Drop this collection? This cannot be undone.') { klass.drop_collection! }
             # Return to Collections list after drop
             return
-          when :reindexate
-            confirm_and_run(prompt, 'Drop and reindex the collection?') { klass.reindexate! }
-          when :reindexate_full
-            confirm_and_run(prompt, 'Drop and reindex the full collection?') { klass.reindexate! }
-          when :reindexate_partition
+          when :reindex
+            confirm_and_run(prompt, 'Drop and reindex the collection?') { klass.reindex_collection! }
+          when :reindex_full
+            confirm_and_run(prompt, 'Drop and reindex the full collection?') { klass.reindex_collection! }
+          when :reindex_partition
             parts = prompt_for_partitions(prompt)
             klass.rebuild_partition!(partition: parts) if parts
           end

@@ -100,6 +100,7 @@ module SearchEngine
     end
   end
 end
+
 require 'active_support/concern'
 require 'search_engine/base/index_maintenance/cleanup'
 require 'search_engine/base/index_maintenance/lifecycle'
@@ -255,18 +256,18 @@ module SearchEngine
           case mode.to_s
           when 'ensure'
             if missing
-              puts(%(  "#{dep_coll}" → ensure (missing) → indexate))
+              puts(%(  "#{dep_coll}" → ensure (missing) → index_collection))
               # Avoid nested preflight to prevent redundant recursion cycles
-              dep_klass.indexate(client: client)
+              dep_klass.index_collection(client: client)
             else
               puts(%(  "#{dep_coll}" → present (skip)))
             end
           when 'index'
             if missing || drift
               reason = missing ? 'missing' : 'drift'
-              puts(%(  "#{dep_coll}" → index (#{reason}) → indexate))
+              puts(%(  "#{dep_coll}" → index (#{reason}) → index_collection))
               # Avoid nested preflight to prevent redundant recursion cycles
-              dep_klass.indexate(client: client)
+              dep_klass.index_collection(client: client)
             else
               puts(%(  "#{dep_coll}" → in_sync (skip)))
             end
@@ -274,6 +275,7 @@ module SearchEngine
             puts(%(  "#{dep_coll}" → skipped (unknown mode: #{mode})))
           end
         end
+
         private :__se_current_collection_name,
                 :__se_fetch_joins_config,
                 :__se_belongs_to_dependencies,
@@ -286,67 +288,6 @@ module SearchEngine
       end
 
       class_methods do
-        # ----------------------------- Helpers ---------------------------
-        # rubocop:disable Metrics/PerceivedComplexity, Metrics/AbcSize
-        def __se_cascade_after_indexation!(context: :full)
-          if SearchEngine::Instrumentation.context&.[](:bulk_suppress_cascade)
-            puts
-            puts('>>>>>> Cascade Referencers — suppressed (bulk)')
-            return
-          end
-          puts
-          puts(%(>>>>>> Cascade Referencers))
-          results = SearchEngine::Cascade.cascade_reindex!(source: self, ids: nil, context: context)
-          outcomes = Array(results[:outcomes])
-          if outcomes.empty?
-            puts('  none')
-          else
-            outcomes.each do |o|
-              coll = o[:collection] || o['collection']
-              mode = (o[:mode] || o['mode']).to_s
-              case mode
-              when 'partial'
-                puts(%(  Referencer "#{coll}" → partial reindex))
-              when 'full'
-                puts(%(  Referencer "#{coll}" → full reindex))
-              when 'skipped_unregistered'
-                puts(%(  Referencer "#{coll}" → skipped (unregistered)))
-              when 'skipped_cycle'
-                puts(%(  Referencer "#{coll}" → skipped (cycle)))
-              else
-                puts(%(  Referencer "#{coll}" → #{mode}))
-              end
-            end
-          end
-          puts('>>>>>> Cascade Done')
-        rescue StandardError => error
-          # Provide more verbose error output for debugging
-          base = "Cascade — error=#{error.class}: #{error.message.to_s[0, 200]}"
-          if error.respond_to?(:status) || error.respond_to?(:body)
-            status = begin
-              error.respond_to?(:status) ? error.status : nil
-            rescue StandardError
-              nil
-            end
-            body_preview = begin
-              b = error.respond_to?(:body) ? error.body : nil
-              if b.is_a?(String)
-                b[0, 500]
-              elsif b.is_a?(Hash)
-                b.inspect[0, 500]
-              else
-                b.to_s[0, 500]
-              end
-            rescue StandardError
-              nil
-            end
-            warn([base, ("status=#{status}" if status), ("body=#{body_preview}" if body_preview)].compact.join(' '))
-          else
-            warn(base)
-          end
-        end
-        # rubocop:enable Metrics/PerceivedComplexity, Metrics/AbcSize
-
         def __se_schema_missing?(diff)
           opts = diff[:collection_options]
           opts.is_a?(Hash) && opts[:live] == :missing
@@ -360,6 +301,7 @@ module SearchEngine
           added.any? || removed.any? || !changed.empty? || !coll_opts.empty?
         end
       end
+
       class_methods do
         def __se_extract_sample_error(summary)
           failed = begin
@@ -405,7 +347,7 @@ module SearchEngine
             sample_err = __se_extract_sample_error(summary)
             status_val = summary.status
             status_color = SearchEngine::Logging::Color.for_status(status_val)
-            line = +"  single → "
+            line = + '  single → '
             line << SearchEngine::Logging::Color.apply("status=#{status_val}", status_color) << ' '
             line << SearchEngine::Logging::Color.apply("docs=#{summary.docs_total}", :green) << ' '
             line << SearchEngine::Logging::Color.apply("failed=#{summary.failed_total}", :red) << ' '
@@ -491,7 +433,7 @@ module SearchEngine
           sample_err = __se_extract_sample_error(summary)
           status_val = summary.status
           status_color = SearchEngine::Logging::Color.for_status(status_val)
-          line = +"  single → "
+          line = + '  single → '
           line << SearchEngine::Logging::Color.apply("status=#{status_val}", status_color) << ' '
           line << SearchEngine::Logging::Color.apply("docs=#{summary.docs_total}", :green) << ' '
           line << SearchEngine::Logging::Color.apply("failed=#{summary.failed_total}", :red) << ' '
@@ -537,6 +479,7 @@ module SearchEngine
           to_drop.each { |n| client.delete_collection(n, timeout_ms: 60_000) }
           to_drop
         end
+
         private :__se_retention_cleanup!
       end
 

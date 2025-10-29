@@ -13,23 +13,23 @@ module SearchEngine
           # @param client [SearchEngine::Client, nil]
           # @param pre [Symbol, nil] :ensure (ensure presence) or :index (ensure + fix drift)
           # @return [void]
-          def indexate(partition: nil, client: nil, pre: nil)
+          def index_collection(partition: nil, client: nil, pre: nil)
             logical = respond_to?(:collection) ? collection.to_s : name.to_s
             puts
             puts(%(>>>>>> Indexating Collection "#{logical}"))
             client_obj = client || (SearchEngine.config.respond_to?(:client) && SearchEngine.config.client) || SearchEngine::Client.new
 
             if partition.nil?
-              __se_indexate_full(client: client_obj, pre: pre)
+              __se_index_full(client: client_obj, pre: pre)
             else
-              __se_indexate_partial(partition: partition, client: client_obj, pre: pre)
+              __se_index_partial(partition: partition, client: client_obj, pre: pre)
             end
             nil
           end
 
-          def reindexate!(pre: nil)
+          def reindex_collection!(pre: nil)
             drop_collection!
-            indexate(pre: pre)
+            index_collection(pre: pre)
           end
 
           def rebuild_partition!(partition:, into: nil, pre: nil)
@@ -48,7 +48,7 @@ module SearchEngine
             parts.map { |p| SearchEngine::Indexer.rebuild_partition!(self, partition: p, into: into) }
           end
 
-          def __se_indexate_full(client:, pre: nil)
+          def __se_index_full(client:, pre: nil)
             logical = respond_to?(:collection) ? collection.to_s : name.to_s
             __se_preflight_dependencies!(mode: pre, client: client) if pre
 
@@ -132,7 +132,7 @@ module SearchEngine
             end
           end
 
-          def __se_indexate_partial(partition:, client:, pre: nil)
+          def __se_index_partial(partition:, client:, pre: nil)
             partitions = Array(partition)
             diff_res = SearchEngine::Schema.diff(self, client: client)
             diff = diff_res[:diff] || {}
