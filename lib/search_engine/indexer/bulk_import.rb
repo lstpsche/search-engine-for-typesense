@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require 'search_engine/logging/color'
+
 module SearchEngine
   class Indexer
     # Orchestrates streaming JSONL bulk imports for partition rebuilds.
@@ -21,9 +23,10 @@ module SearchEngine
         # @param enum [Enumerable] yields batch-like objects convertible to Array
         # @param batch_size [Integer, nil] soft guard for logging when exceeded
         # @param action [Symbol] :upsert (default), :create, or :update
+        # @param log_batches [Boolean] whether to log each batch as it completes (default: true)
         # @return [SearchEngine::Indexer::Summary]
         # @raise [SearchEngine::Errors::InvalidParams]
-        def call(klass:, into:, enum:, batch_size:, action: DEFAULT_ACTION)
+        def call(klass:, into:, enum:, batch_size:, action: DEFAULT_ACTION, log_batches: true)
           validate_args!(klass, into, enum, action)
 
           docs_enum = normalize_enum(enum)
@@ -58,6 +61,7 @@ module SearchEngine
               batches_total += 1
               batches << stats
               validate_soft_batch_size!(batch_size, stats[:docs_count])
+              log_batch(stats, batches_total) if log_batches
             end
           end
 
@@ -194,6 +198,51 @@ module SearchEngine
 
         def monotonic_ms
           SearchEngine::Instrumentation.monotonic_ms
+        end
+
+        def log_batch(stats, batch_number)
+          batch_status = batch_status_from_stats(stats)
+          status_color = SearchEngine::Logging::Color.for_status(batch_status)
+
+          prefix = batch_number == 1 ? '  single → ' : '          '
+          line = +prefix
+          line << SearchEngine::Logging::Color.apply("status=#{batch_status}", status_color) << ' '
+          line << SearchEngine::Logging::Color.apply("docs=#{stats[:docs_count]}", :green) << ' '
+          failed_count = stats[:failure_count].to_i
+          failed_str = "failed=#{failed_count}"
+          line << (failed_count.positive? ? SearchEngine::Logging::Color.apply(failed_str, :red) : failed_str) << ' '
+          line << "batch=#{batch_number} "
+          line << "duration_ms=#{stats[:duration_ms]}"
+
+          # Extract sample error from batch stats
+          sample_err = extract_batch_sample_error(stats)
+          line << " sample_error=#{sample_err.inspect}" if sample_err
+
+          puts(line)
+        end
+
+        def extract_batch_sample_error(stats)
+          samples = stats[:errors_sample] || stats['errors_sample']
+          return nil unless samples.is_a?(Array) && samples.any?
+
+          samples.each do |msg|
+            s = msg.to_s
+            return s unless s.strip.empty?
+          end
+          nil
+        end
+
+        def batch_status_from_stats(stats)
+          success_count = stats[:success_count].to_i
+          failure_count = stats[:failure_count].to_i
+
+          if failure_count.positive? && success_count.positive?
+            :partial
+          elsif failure_count.positive?
+            :failed
+          else
+            :ok
+          end
         end
       end
     end

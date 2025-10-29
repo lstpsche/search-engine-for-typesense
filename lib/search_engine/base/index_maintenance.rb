@@ -276,6 +276,58 @@ module SearchEngine
           end
         end
 
+        def __se_log_batches_from_summary(batches)
+          return unless batches.is_a?(Array)
+
+          batches.each_with_index do |batch_stats, idx|
+            batch_number = idx + 1
+            batch_status = __se_batch_status_from_stats(batch_stats)
+            status_color = SearchEngine::Logging::Color.for_status(batch_status)
+
+            prefix = batch_number == 1 ? '  single → ' : '          '
+            line = +prefix
+            line << SearchEngine::Logging::Color.apply("status=#{batch_status}", status_color) << ' '
+            docs_count = batch_stats[:docs_count] || batch_stats['docs_count'] || 0
+            line << SearchEngine::Logging::Color.apply("docs=#{docs_count}", :green) << ' '
+            failed_count = (batch_stats[:failure_count] || batch_stats['failure_count'] || 0).to_i
+            failed_str = "failed=#{failed_count}"
+            line << (failed_count.positive? ? SearchEngine::Logging::Color.apply(failed_str, :red) : failed_str) << ' '
+            line << "batch=#{batch_number} "
+            duration_ms = batch_stats[:duration_ms] || batch_stats['duration_ms'] || 0.0
+            line << "duration_ms=#{duration_ms}"
+
+            # Extract sample error from batch stats
+            sample_err = __se_extract_batch_sample_error(batch_stats)
+            line << " sample_error=#{sample_err.inspect}" if sample_err
+
+            puts(line)
+          end
+        end
+
+        def __se_batch_status_from_stats(stats)
+          success_count = (stats[:success_count] || stats['success_count'] || 0).to_i
+          failure_count = (stats[:failure_count] || stats['failure_count'] || 0).to_i
+
+          if failure_count.positive? && success_count.positive?
+            :partial
+          elsif failure_count.positive?
+            :failed
+          else
+            :ok
+          end
+        end
+
+        def __se_extract_batch_sample_error(stats)
+          samples = stats[:errors_sample] || stats['errors_sample']
+          return nil unless samples.is_a?(Array) && samples.any?
+
+          samples.each do |msg|
+            s = msg.to_s
+            return s unless s.strip.empty?
+          end
+          nil
+        end
+
         private :__se_current_collection_name,
                 :__se_fetch_joins_config,
                 :__se_belongs_to_dependencies,
@@ -284,7 +336,10 @@ module SearchEngine
                 :__se_preflight_recurse,
                 :__se_diff_for,
                 :__se_dependency_status,
-                :__se_handle_preflight_action
+                :__se_handle_preflight_action,
+                :__se_log_batches_from_summary,
+                :__se_batch_status_from_stats,
+                :__se_extract_batch_sample_error
       end
 
       class_methods do
@@ -344,17 +399,6 @@ module SearchEngine
             __se_index_partitions_parallel!(parts, into, max_p)
           else
             summary = SearchEngine::Indexer.rebuild_partition!(self, partition: nil, into: into)
-            sample_err = __se_extract_sample_error(summary)
-            status_val = summary.status
-            status_color = SearchEngine::Logging::Color.for_status(status_val)
-            line = + '  single → '
-            line << SearchEngine::Logging::Color.apply("status=#{status_val}", status_color) << ' '
-            line << SearchEngine::Logging::Color.apply("docs=#{summary.docs_total}", :green) << ' '
-            line << SearchEngine::Logging::Color.apply("failed=#{summary.failed_total}", :red) << ' '
-            line << "batches=#{summary.batches_total} "
-            line << "duration_ms=#{summary.duration_ms_total}"
-            line << (sample_err ? " sample_error=#{sample_err.inspect}" : '')
-            puts(line)
             summary.status
           end
         end
@@ -367,6 +411,8 @@ module SearchEngine
           parts.each do |part|
             summary = SearchEngine::Indexer.rebuild_partition!(self, partition: part, into: into)
             puts(SearchEngine::Logging::PartitionProgress.line(part, summary))
+            # Log batches individually if there are multiple batches
+            __se_log_batches_from_summary(summary.batches) if summary.batches_total.to_i > 1
             begin
               st = summary.status
               if st == :failed
@@ -397,6 +443,8 @@ module SearchEngine
                   summary = SearchEngine::Indexer.rebuild_partition!(self, partition: part, into: into)
                   mtx.synchronize do
                     puts(SearchEngine::Logging::PartitionProgress.line(part, summary))
+                    # Log batches individually if there are multiple batches
+                    __se_log_batches_from_summary(summary.batches) if summary.batches_total.to_i > 1
                     begin
                       st = summary.status
                       if st == :failed
@@ -429,18 +477,7 @@ module SearchEngine
       class_methods do
         # Single non-partitioned pass helper
         def __se_index_single!(into)
-          summary = SearchEngine::Indexer.rebuild_partition!(self, partition: nil, into: into)
-          sample_err = __se_extract_sample_error(summary)
-          status_val = summary.status
-          status_color = SearchEngine::Logging::Color.for_status(status_val)
-          line = + '  single → '
-          line << SearchEngine::Logging::Color.apply("status=#{status_val}", status_color) << ' '
-          line << SearchEngine::Logging::Color.apply("docs=#{summary.docs_total}", :green) << ' '
-          line << SearchEngine::Logging::Color.apply("failed=#{summary.failed_total}", :red) << ' '
-          line << "batches=#{summary.batches_total} "
-          line << "duration_ms=#{summary.duration_ms_total}"
-          line << (sample_err ? " sample_error=#{sample_err.inspect}" : '')
-          puts(line)
+          SearchEngine::Indexer.rebuild_partition!(self, partition: nil, into: into)
         end
       end
 

@@ -77,7 +77,8 @@ module SearchEngine
           into: target_into,
           enum: docs_enum,
           batch_size: nil,
-          action: :upsert
+          action: :upsert,
+          log_batches: partition.nil?
         )
 
         run_after_hook_if_present(after_hook, partition)
@@ -154,13 +155,14 @@ module SearchEngine
     # @raise [SearchEngine::Errors::InvalidParams]
     # @see `https://github.com/lstpsche/search-engine-for-typesense/wiki/Indexer`
     # @see `https://typesense.org/docs/latest/api/documents.html#import-documents`
-    def self.import!(klass, into:, enum:, batch_size: nil, action: :upsert)
+    def self.import!(klass, into:, enum:, batch_size: nil, action: :upsert, log_batches: true)
       SearchEngine::Indexer::BulkImport.call(
         klass: klass,
         into: into,
         enum: enum,
         batch_size: batch_size,
-        action: action
+        action: action,
+        log_batches: log_batches
       )
     end
 
