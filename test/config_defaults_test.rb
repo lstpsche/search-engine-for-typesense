@@ -12,9 +12,9 @@ class ConfigDefaultsTest < Minitest::Test
     assert_equal 'localhost', h[:host]
     assert_equal 8108, h[:port]
     assert_equal 'http', h[:protocol]
-    assert_equal 5_000, h[:timeout_ms]
+    assert_equal 3_600_000, h[:timeout_ms]
     assert_equal 1_000, h[:open_timeout_ms]
-    assert_equal({ attempts: 2, backoff: 0.2 }, h[:retries])
+    assert_equal({ attempts: 2, backoff: (10.0..60.0) }, h[:retries])
 
     # Core defaults
     assert_nil h[:default_query_by]

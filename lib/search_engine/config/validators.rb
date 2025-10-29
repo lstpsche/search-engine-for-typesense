@@ -46,7 +46,9 @@ module SearchEngine
         end
 
         if backoff.is_a?(Numeric)
-          errors << 'retries[:backoff] must be a non-negative Float or Range of non-negative Floats' if backoff.negative?
+          if backoff.negative?
+            errors << 'retries[:backoff] must be a non-negative Float or Range of non-negative Floats'
+          end
         elsif backoff.is_a?(Range)
           b = backoff.begin
           e = backoff.end

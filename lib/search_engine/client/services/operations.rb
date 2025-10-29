@@ -116,7 +116,7 @@ module SearchEngine
           rescue StandardError
             'http'
           end
-          proto = (proto.nil? || proto.empty?) ? 'http' : proto
+          proto = proto.nil? || proto.empty? ? 'http' : proto
 
           host = config.host
           port = config.port
@@ -140,11 +140,11 @@ module SearchEngine
           res = http.request(req)
           code = res.code.to_i
           body = res.body.to_s
-          if code >= 200 && code < 300
-            JSON.parse(body)
-          else
+          unless code >= 200 && code < 300
             raise SearchEngine::Errors::Api.new("typesense api error: #{code}", status: code, body: body)
           end
+
+          JSON.parse(body)
         end
       end
     end

@@ -139,7 +139,8 @@ module SearchEngine
             @attribute_options ||= {}
             new_opts = __se_build_attribute_options_for(
               name_sym, type,
-              locale: locale, optional: optional, sort: sort, infix: infix, empty_filtering: empty_filtering, index: index
+              locale: locale, optional: optional, sort: sort, infix: infix,
+              empty_filtering: empty_filtering, index: index
             )
 
             if new_opts.empty?

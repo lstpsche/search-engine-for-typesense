@@ -251,7 +251,8 @@ namespace :search_engine do
           line << ' '
           line << SearchEngine::Logging::Color.apply("docs=#{docs_total}", :green)
           line << ' '
-          line << SearchEngine::Logging::Color.apply("failed=#{sum.respond_to?(:failed_total) ? sum.failed_total : sum[:failed_total]}", :red) if (sum.respond_to?(:failed_total) ? sum.failed_total : sum[:failed_total]).to_i.positive?
+          failed_count = sum.respond_to?(:failed_total) ? sum.failed_total : sum[:failed_total]
+          line << SearchEngine::Logging::Color.apply("failed=#{failed_count}", :red) if failed_count.to_i.positive?
           line << ' '
           line << "batches=#{batches_total} "
           line << "duration_ms=#{duration_ms_total}"
@@ -331,7 +332,8 @@ namespace :search_engine do
         line << ' '
         line << SearchEngine::Logging::Color.apply("docs=#{docs_total}", :green)
         line << ' '
-        line << SearchEngine::Logging::Color.apply("failed=#{sum.respond_to?(:failed_total) ? sum.failed_total : sum[:failed_total]}", :red) if (sum.respond_to?(:failed_total) ? sum.failed_total : sum[:failed_total]).to_i.positive?
+        failed_count = sum.respond_to?(:failed_total) ? sum.failed_total : sum[:failed_total]
+        line << SearchEngine::Logging::Color.apply("failed=#{failed_count}", :red) if failed_count.to_i.positive?
         line << ' '
         line << "batches=#{batches_total} "
         line << "duration_ms=#{duration_ms_total}"

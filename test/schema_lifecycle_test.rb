@@ -44,7 +44,7 @@ class SchemaLifecycleTest < Minitest::Test
       { name: name, status: 200 }
     end
 
-    def list_collections
+    def list_collections(*)
       @collections
     end
 
