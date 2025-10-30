@@ -72,11 +72,13 @@ module SearchEngine
         ts_client = client || (SearchEngine.config.respond_to?(:client) && SearchEngine.config.client) || SearchEngine::Client.new
         input_names = normalize_targets(targets)
 
+        # Ensure models are loaded before resolving collection classes.
+        # This is needed whether targets are provided or not, so that collection
+        # name resolution can find the model classes.
+        ensure_models_loaded_from_configured_path!
+
         # Fallback to all declared/registered collections when no explicit targets are given.
-        if input_names.empty?
-          ensure_models_loaded_from_configured_path!
-          input_names = SearchEngine::CollectionResolver.models_map.keys
-        end
+        input_names = SearchEngine::CollectionResolver.models_map.keys if input_names.empty?
 
         reverse_graph = SearchEngine::Cascade.build_reverse_graph(client: ts_client)
         input_set = input_names.to_h { |n| [n, true] }
@@ -237,10 +239,12 @@ module SearchEngine
         order + remaining.sort
       end
 
+      # Resolve a collection model class from a collection name.
+      # Uses CollectionResolver for better fallback logic and model discovery.
       # @param name [String]
       # @return [Class, nil]
       def safe_collection_class(name)
-        SearchEngine.collection_for(name)
+        SearchEngine::CollectionResolver.model_for_logical(name)
       rescue StandardError
         nil
       end
