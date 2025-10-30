@@ -68,6 +68,9 @@ module SearchEngine
 
       docs_enum = build_docs_enum(rows_enum, mapper)
 
+      dsl = mapper_dsl_for(klass)
+      max_parallel = dsl&.dig(:max_parallel) || 1
+
       summary = nil
       SearchEngine::Instrumentation.with_context(into: target_into) do
         run_before_hook_if_present(before_hook, partition, klass)
@@ -78,7 +81,8 @@ module SearchEngine
           enum: docs_enum,
           batch_size: nil,
           action: :upsert,
-          log_batches: partition.nil?
+          log_batches: partition.nil?,
+          max_parallel: max_parallel
         )
 
         run_after_hook_if_present(after_hook, partition)
@@ -151,18 +155,21 @@ module SearchEngine
     # @param enum [Enumerable] yields batches (Array-like) of Hash documents
     # @param batch_size [Integer, nil] soft guard only; not used unless 413 handling
     # @param action [Symbol] :upsert (default), :create, or :update
+    # @param log_batches [Boolean] whether to log each batch as it completes (default: true)
+    # @param max_parallel [Integer] maximum parallel threads for batch processing (default: 1)
     # @return [Summary]
     # @raise [SearchEngine::Errors::InvalidParams]
     # @see `https://github.com/lstpsche/search-engine-for-typesense/wiki/Indexer`
     # @see `https://typesense.org/docs/latest/api/documents.html#import-documents`
-    def self.import!(klass, into:, enum:, batch_size: nil, action: :upsert, log_batches: true)
+    def self.import!(klass, into:, enum:, batch_size: nil, action: :upsert, log_batches: true, max_parallel: 1)
       SearchEngine::Indexer::BulkImport.call(
         klass: klass,
         into: into,
         enum: enum,
         batch_size: batch_size,
         action: action,
-        log_batches: log_batches
+        log_batches: log_batches,
+        max_parallel: max_parallel
       )
     end
 

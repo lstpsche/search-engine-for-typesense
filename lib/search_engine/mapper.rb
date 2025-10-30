@@ -30,6 +30,7 @@ module SearchEngine
         @partition_fetch_proc = nil
         @before_partition_proc = nil
         @after_partition_proc = nil
+        @max_parallel = 1
         @stale_entries = []
       end
 
@@ -165,6 +166,21 @@ module SearchEngine
         nil
       end
 
+      # Configure maximum parallel threads for batch processing within a partition (or non-partitioned import).
+      # Applies to batch-level parallelism, independent of partition-level parallelism.
+      # @param max_parallel [Integer]
+      # @return [void]
+      # @raise [SearchEngine::Errors::InvalidOption] when n is not a positive Integer
+      def max_parallel(max_parallel)
+        unless max_parallel.is_a?(Integer) && max_parallel.positive?
+          raise SearchEngine::Errors::InvalidOption,
+                'max_parallel must be a positive Integer (> 0)'
+        end
+
+        @max_parallel = max_parallel
+        nil
+      end
+
       # Partitioning: provide a per-partition batch enumerator.
       # The block receives the partition key and must return an Enumerable of batches (Arrays of records).
       # @yieldparam partition [Object]
@@ -242,6 +258,7 @@ module SearchEngine
           before_partition: @before_partition_proc,
           after_partition: @after_partition_proc,
           partition_max_parallel: @partition_max_parallel,
+          max_parallel: @max_parallel,
           stale_filter_proc: @stale_filter_proc,
           stale: @stale_entries.dup.freeze
         }.freeze
