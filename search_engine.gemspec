@@ -19,7 +19,13 @@ Gem::Specification.new do |spec|
   # spec.metadata['source_code_uri'] = 'https://github.com/lstpsche/search-engine-for-typesense'
   # spec.metadata['changelog_uri']   = 'https://github.com/lstpsche/search-engine-for-typesense/releases'
 
-  spec.files = Dir['{lib,app}/**/*', 'exe/*', 'README.md', 'LICENSE.txt', 'docs/**/*']
+  spec.files = Dir[
+    'lib/**/*',
+    'app/search_engine/**/*',
+    'exe/*',
+    'README.md',
+    'LICENSE'
+  ]
   spec.require_paths = ['lib']
   spec.bindir = 'exe'
   spec.executables = ['tuit']
