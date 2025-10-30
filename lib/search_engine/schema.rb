@@ -380,6 +380,24 @@ module SearchEngine
           next if opts[:index] == false || base_index_false
 
           ts_type = typesense_type_for(type_descriptor)
+
+          # Validate: reference fields must be typed as string/string[] in the DSL.
+          if references_by_local_key.key?(attribute_name.to_sym) &&
+             !%w[string string[]].include?(ts_type.to_s)
+            raise SearchEngine::Errors::InvalidOption.new(
+              "Reference field :#{attribute_name} must be declared as :string or [:string] " \
+              "(got #{type_descriptor.inspect}).",
+              hint: "Declare attribute :#{attribute_name}, :string in #{klass.name} to match " \
+                    'Typesense reference requirements.',
+              doc: 'docs/Joins.md#declaring-references',
+              details: {
+                field: attribute_name.to_s,
+                declared_type: type_descriptor,
+                compiled_type: ts_type,
+                reference: references_by_local_key[attribute_name.to_sym]
+              }
+            )
+          end
           needs_nested_fields ||= nested_type?(ts_type)
 
           fields_array << build_field_entry(

@@ -485,6 +485,8 @@ module SearchEngine
             i + 1
           end
         end
+
+        # (no-op helpers; reference field coercion is handled by the compiler and schema)
       end
     end
   end

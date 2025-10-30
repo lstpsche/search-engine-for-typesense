@@ -41,11 +41,11 @@ module SearchEngine
           source: :ast
         }
         SearchEngine::Instrumentation.instrument('search_engine.compile', payload) do |_ctx|
-          compiled = compile_node(root, parent_prec: 0)
+          compiled = compile_node(root, parent_prec: 0, klass: klass)
         end
         compiled
       else
-        compile_node(root, parent_prec: 0)
+        compile_node(root, parent_prec: 0, klass: klass)
       end
     end
 
@@ -68,30 +68,30 @@ module SearchEngine
     end
     private_class_method :coerce_root
 
-    def compile_node(node, parent_prec:)
+    def compile_node(node, parent_prec:, klass: nil)
       case node
       when SearchEngine::AST::Eq
-        compile_binary(node.field, ':=', node.value)
+        compile_binary(node.field, ':=', node.value, klass: klass)
       when SearchEngine::AST::NotEq
-        compile_binary(node.field, ':!=', node.value)
+        compile_binary(node.field, ':!=', node.value, klass: klass)
       when SearchEngine::AST::Gt
-        compile_binary(node.field, ':>', node.value)
+        compile_binary(node.field, ':>', node.value, klass: klass)
       when SearchEngine::AST::Gte
-        compile_binary(node.field, ':>=', node.value)
+        compile_binary(node.field, ':>=', node.value, klass: klass)
       when SearchEngine::AST::Lt
-        compile_binary(node.field, ':<', node.value)
+        compile_binary(node.field, ':<', node.value, klass: klass)
       when SearchEngine::AST::Lte
-        compile_binary(node.field, ':<=', node.value)
+        compile_binary(node.field, ':<=', node.value, klass: klass)
       when SearchEngine::AST::In
-        compile_binary(node.field, ':=', node.values)
+        compile_binary(node.field, ':=', node.values, klass: klass)
       when SearchEngine::AST::NotIn
-        compile_binary(node.field, ':!=', node.values)
+        compile_binary(node.field, ':!=', node.values, klass: klass)
       when SearchEngine::AST::And
-        compile_boolean(node.children, ' && ', parent_prec: parent_prec, my_prec: precedence(:and))
+        compile_boolean(node.children, ' && ', parent_prec: parent_prec, my_prec: precedence(:and), klass: klass)
       when SearchEngine::AST::Or
-        compile_or(node, parent_prec)
+        compile_or(node, parent_prec, klass: klass)
       when SearchEngine::AST::Group
-        "(#{compile_node(node.children.first, parent_prec: 0)})"
+        "(#{compile_node(node.children.first, parent_prec: 0, klass: klass)})"
       when SearchEngine::AST::Raw
         node.fragment
       when SearchEngine::AST::Matches
@@ -104,8 +104,14 @@ module SearchEngine
     end
     private_class_method :compile_node
 
-    def compile_or(node, parent_prec)
-      compiled = compile_boolean(node.children, ' || ', parent_prec: parent_prec, my_prec: precedence(:or))
+    def compile_or(node, parent_prec, klass: nil)
+      compiled = compile_boolean(
+        node.children,
+        ' || ',
+        parent_prec: parent_prec,
+        my_prec: precedence(:or),
+        klass: klass
+      )
       if node.children.length == 2 && node.children.last.is_a?(SearchEngine::AST::And)
         left_str, right_str = compiled.split(' || ', 2)
         compiled = "#{left_str} || (#{right_str})"
@@ -114,15 +120,23 @@ module SearchEngine
     end
     private_class_method :compile_or
 
-    def compile_binary(field, op, value)
-      rhs = quote(value)
+    def compile_binary(field, op, value, klass: nil)
       fstr = field.to_s
       if (m = fstr.match(/^\$(\w+)\.(.+)$/))
         assoc = m[1]
         inner = m[2]
         # Render joined field as $assoc(inner OP value) per expected Typesense join filter syntax
+        target_klass = begin
+          cfg = klass.respond_to?(:join_for) ? klass.join_for(assoc.to_sym) : nil
+          coll = cfg ? cfg[:collection] : nil
+          coll ? SearchEngine.collection_for(coll) : nil
+        rescue StandardError
+          nil
+        end
+        rhs = quote(value, field: inner, klass: target_klass || klass)
         "$#{assoc}(#{inner}#{op}#{rhs})"
       else
+        rhs = quote(value, field: fstr, klass: klass)
         binary(field, op, rhs)
       end
     end
@@ -133,7 +147,7 @@ module SearchEngine
     end
     private_class_method :binary
 
-    def compile_boolean(children, joiner, parent_prec:, my_prec:)
+    def compile_boolean(children, joiner, parent_prec:, my_prec:, klass: nil)
       # For conjunctions only, merge multiple $assoc(inner ...) predicates targeting
       # the same association into a single $assoc(inner && inner ...) expression
       # to satisfy Typesense join filter rules.
@@ -143,7 +157,7 @@ module SearchEngine
         assoc_inner_map = {} # { assoc => [inner_str, ...] }
 
         children.each_with_index do |child, idx|
-          inner = extract_join_inner_binary(child)
+          inner = extract_join_inner_binary(child, klass: klass)
           if inner
             assoc, inner_expr = inner
             assoc_first_pos[assoc] = idx unless assoc_first_pos.key?(assoc)
@@ -152,7 +166,7 @@ module SearchEngine
             next
           end
 
-          cstr = compile_node(child, parent_prec: my_prec)
+          cstr = compile_node(child, parent_prec: my_prec, klass: klass)
           cstr = "(#{cstr})" if needs_parentheses?(child, parent_prec: my_prec)
           items << { pos: idx, str: cstr }
         end
@@ -175,7 +189,7 @@ module SearchEngine
 
       # Fallback/default behavior
       parts = children.map do |child|
-        cstr = compile_node(child, parent_prec: my_prec)
+        cstr = compile_node(child, parent_prec: my_prec, klass: klass)
         if needs_parentheses?(child, parent_prec: my_prec)
           "(#{cstr})"
         else
@@ -195,7 +209,7 @@ module SearchEngine
 
     # Try to extract join association and compiled inner expression for a binary node
     # with a joined field like "$assoc.field". Returns [assoc(String), inner(String)] or nil.
-    def extract_join_inner_binary(node)
+    def extract_join_inner_binary(node, klass: nil)
       case node
       when SearchEngine::AST::Eq, SearchEngine::AST::NotEq,
            SearchEngine::AST::Gt, SearchEngine::AST::Gte,
@@ -210,10 +224,17 @@ module SearchEngine
         assoc = m[1]
         inner_field = m[2]
         op = op_for(node)
+        target_klass = begin
+          cfg = klass.respond_to?(:join_for) ? klass.join_for(assoc.to_sym) : nil
+          coll = cfg ? cfg[:collection] : nil
+          coll ? SearchEngine.collection_for(coll) : nil
+        rescue StandardError
+          nil
+        end
         rhs = if node.respond_to?(:value)
-                quote(node.value)
+                quote(node.value, field: inner_field, klass: target_klass || klass)
               elsif node.respond_to?(:values)
-                quote(node.values)
+                quote(node.values, field: inner_field, klass: target_klass || klass)
               else
                 return nil
               end
@@ -239,15 +260,56 @@ module SearchEngine
     end
     private_class_method :op_for
 
-    def quote(value)
+    def quote(value, field: nil, klass: nil)
+      # Typesense requires reference fields to use string values, even if the field type is int64
+      converted_value = if klass && field && field_reference?(klass, field)
+                          convert_for_reference_field(value)
+                        else
+                          value
+                        end
+
       # Use conditional scalar quoting for scalars; preserve array element quoting rules
-      if value.is_a?(Array)
-        SearchEngine::Filters::Sanitizer.quote(value)
+      if converted_value.is_a?(Array)
+        SearchEngine::Filters::Sanitizer.quote(converted_value)
       else
-        SearchEngine::Filters::Sanitizer.quote_scalar_for_filter(value)
+        SearchEngine::Filters::Sanitizer.quote_scalar_for_filter(converted_value)
       end
     end
     private_class_method :quote
+
+    # Check if a field has a reference attribute in the schema.
+    # Uses the same logic as Schema.build_references_by_local_key to ensure consistency.
+    def field_reference?(klass, field_name)
+      return false unless klass
+      return false unless klass.respond_to?(:joins_config)
+
+      configs = klass.joins_config || {}
+      configs.each_value do |cfg|
+        # Only belongs_to/belongs_to_many contribute references to schema
+        kind = (cfg[:kind] || :belongs_to).to_sym
+        next if %i[has_one has_many].include?(kind)
+
+        lk = cfg[:local_key]
+        next if lk.nil?
+
+        return true if lk.to_sym == field_name.to_sym
+      end
+
+      false
+    end
+    private_class_method :field_reference?
+
+    # Convert numeric values to strings for reference fields
+    def convert_for_reference_field(value)
+      if value.is_a?(Array)
+        value.map { |v| convert_for_reference_field(v) }
+      elsif value.is_a?(Numeric)
+        value.to_s
+      else
+        value
+      end
+    end
+    private_class_method :convert_for_reference_field
 
     def needs_parentheses?(child, parent_prec:)
       child_prec = precedence(child)

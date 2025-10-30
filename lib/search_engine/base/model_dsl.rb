@@ -157,9 +157,29 @@ module SearchEngine
 
       class_methods do
         # Define an instance reader for the attribute when safe to do so.
+        # For boolean attributes, also defines a question-mark alias (e.g., available?).
         def __se_define_reader_if_needed!(name_sym)
-          attr_reader name_sym if valid_attribute_reader_name?(name_sym) && !method_defined?(name_sym)
+          reader_defined = valid_attribute_reader_name?(name_sym) && !method_defined?(name_sym)
+          attr_reader name_sym if reader_defined
+
+          # Always check for boolean alias, even if reader was already defined
+          # (handles case where attribute type changes to boolean)
+          __se_define_boolean_alias_if_needed!(name_sym) if valid_attribute_reader_name?(name_sym)
         end
+
+        # Define a question-mark alias for boolean attributes.
+        # @param name_sym [Symbol] attribute name
+        def __se_define_boolean_alias_if_needed!(name_sym)
+          type = (@attributes || {})[name_sym]
+          return unless type == :boolean
+
+          alias_name = "#{name_sym}?".to_sym
+          return if method_defined?(alias_name)
+
+          alias_method alias_name, name_sym
+        end
+
+        private :__se_define_boolean_alias_if_needed!
       end
 
       class_methods do

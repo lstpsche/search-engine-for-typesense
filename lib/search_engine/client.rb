@@ -601,6 +601,7 @@ module SearchEngine
           details: { http_status: status, body: body.is_a?(String) ? body[0, 120] : body }
         )
         instrument(method, path, current_monotonic_ms - start_ms, cache_params, error_class: err.class.name)
+        # debug prints removed
         raise err
       end
 
