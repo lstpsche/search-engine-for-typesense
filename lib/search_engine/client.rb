@@ -163,73 +163,49 @@ module SearchEngine
     # @see `https://github.com/lstpsche/search-engine-for-typesense/wiki/Synonyms-Stopwords`
     # @see `https://typesense.org/docs/latest/api/synonyms.html#upsert-a-synonym`
     def synonyms_upsert(collection:, id:, terms:)
-      c = collection.to_s
-      s = id.to_s
-      list = Array(terms)
-      ts = typesense
-      start = current_monotonic_ms
-      path = Client::RequestBuilder::COLLECTIONS_PREFIX + c + Client::RequestBuilder::SYNONYMS_PREFIX + s
-
-      result = with_exception_mapping(:put, path, {}, start) do
-        ts.collections[c].synonyms[s].upsert({ synonyms: list })
-      end
-      symbolize_keys_deep(result)
-    ensure
-      instrument(:put, path, (start ? (current_monotonic_ms - start) : 0.0), {})
+      admin_resource_request(
+        resource_type: :synonyms,
+        method: :put,
+        collection: collection,
+        id: id,
+        body_data: Array(terms)
+      )
     end
 
     # @return [Array<Hash>]
     # @see `https://github.com/lstpsche/search-engine-for-typesense/wiki/Synonyms-Stopwords`
     # @see `https://typesense.org/docs/latest/api/synonyms.html#list-all-synonyms-of-a-collection`
     def synonyms_list(collection:)
-      c = collection.to_s
-      ts = typesense
-      start = current_monotonic_ms
-      path = Client::RequestBuilder::COLLECTIONS_PREFIX + c + Client::RequestBuilder::SYNONYMS_SUFFIX
-      result = with_exception_mapping(:get, path, {}, start) do
-        ts.collections[c].synonyms.retrieve
-      end
-      symbolize_keys_deep(result)
-    ensure
-      instrument(:get, path, (start ? (current_monotonic_ms - start) : 0.0), {})
+      admin_resource_request(
+        resource_type: :synonyms,
+        method: :get,
+        collection: collection
+      )
     end
 
     # @return [Hash, nil]
     # @see `https://github.com/lstpsche/search-engine-for-typesense/wiki/Synonyms-Stopwords`
     # @see `https://typesense.org/docs/latest/api/synonyms.html#retrieve-a-synonym`
     def synonyms_get(collection:, id:)
-      c = collection.to_s
-      s = id.to_s
-      ts = typesense
-      start = current_monotonic_ms
-      path = Client::RequestBuilder::COLLECTIONS_PREFIX + c + Client::RequestBuilder::SYNONYMS_PREFIX + s
-      result = with_exception_mapping(:get, path, {}, start) do
-        ts.collections[c].synonyms[s].retrieve
-      end
-      symbolize_keys_deep(result)
-    rescue Errors::Api => error
-      return nil if error.status.to_i == 404
-
-      raise
-    ensure
-      instrument(:get, path, (start ? (current_monotonic_ms - start) : 0.0), {})
+      admin_resource_request(
+        resource_type: :synonyms,
+        method: :get,
+        collection: collection,
+        id: id,
+        return_nil_on_404: true
+      )
     end
 
     # @return [Hash]
     # @see `https://github.com/lstpsche/search-engine-for-typesense/wiki/Synonyms-Stopwords`
     # @see `https://typesense.org/docs/latest/api/synonyms.html#delete-a-synonym`
     def synonyms_delete(collection:, id:)
-      c = collection.to_s
-      s = id.to_s
-      ts = typesense
-      start = current_monotonic_ms
-      path = Client::RequestBuilder::COLLECTIONS_PREFIX + c + Client::RequestBuilder::SYNONYMS_PREFIX + s
-      result = with_exception_mapping(:delete, path, {}, start) do
-        ts.collections[c].synonyms[s].delete
-      end
-      symbolize_keys_deep(result)
-    ensure
-      instrument(:delete, path, (start ? (current_monotonic_ms - start) : 0.0), {})
+      admin_resource_request(
+        resource_type: :synonyms,
+        method: :delete,
+        collection: collection,
+        id: id
+      )
     end
 
     # --- Admin: Stopwords ---------------------------------------------------
@@ -241,73 +217,49 @@ module SearchEngine
     # @see `https://github.com/lstpsche/search-engine-for-typesense/wiki/Synonyms-Stopwords`
     # @see `https://typesense.org/docs/latest/api/stopwords.html#upsert-a-stopwords`
     def stopwords_upsert(collection:, id:, terms:)
-      c = collection.to_s
-      s = id.to_s
-      list = Array(terms)
-      ts = typesense
-      start = current_monotonic_ms
-      path = Client::RequestBuilder::COLLECTIONS_PREFIX + c + Client::RequestBuilder::STOPWORDS_PREFIX + s
-
-      result = with_exception_mapping(:put, path, {}, start) do
-        ts.collections[c].stopwords[s].upsert({ stopwords: list })
-      end
-      symbolize_keys_deep(result)
-    ensure
-      instrument(:put, path, (start ? (current_monotonic_ms - start) : 0.0), {})
+      admin_resource_request(
+        resource_type: :stopwords,
+        method: :put,
+        collection: collection,
+        id: id,
+        body_data: Array(terms)
+      )
     end
 
     # @return [Array<Hash>]
     # @see `https://github.com/lstpsche/search-engine-for-typesense/wiki/Synonyms-Stopwords`
     # @see `https://typesense.org/docs/latest/api/stopwords.html#list-all-stopwords-of-a-collection`
     def stopwords_list(collection:)
-      c = collection.to_s
-      ts = typesense
-      start = current_monotonic_ms
-      path = Client::RequestBuilder::COLLECTIONS_PREFIX + c + Client::RequestBuilder::STOPWORDS_SUFFIX
-      result = with_exception_mapping(:get, path, {}, start) do
-        ts.collections[c].stopwords.retrieve
-      end
-      symbolize_keys_deep(result)
-    ensure
-      instrument(:get, path, (start ? (current_monotonic_ms - start) : 0.0), {})
+      admin_resource_request(
+        resource_type: :stopwords,
+        method: :get,
+        collection: collection
+      )
     end
 
     # @return [Hash, nil]
     # @see `https://github.com/lstpsche/search-engine-for-typesense/wiki/Synonyms-Stopwords`
     # @see `https://typesense.org/docs/latest/api/stopwords.html#retrieve-a-stopword`
     def stopwords_get(collection:, id:)
-      c = collection.to_s
-      s = id.to_s
-      ts = typesense
-      start = current_monotonic_ms
-      path = Client::RequestBuilder::COLLECTIONS_PREFIX + c + Client::RequestBuilder::STOPWORDS_PREFIX + s
-      result = with_exception_mapping(:get, path, {}, start) do
-        ts.collections[c].stopwords[s].retrieve
-      end
-      symbolize_keys_deep(result)
-    rescue Errors::Api => error
-      return nil if error.status.to_i == 404
-
-      raise
-    ensure
-      instrument(:get, path, (start ? (current_monotonic_ms - start) : 0.0), {})
+      admin_resource_request(
+        resource_type: :stopwords,
+        method: :get,
+        collection: collection,
+        id: id,
+        return_nil_on_404: true
+      )
     end
 
     # @return [Hash]
     # @see `https://github.com/lstpsche/search-engine-for-typesense/wiki/Synonyms-Stopwords`
     # @see `https://typesense.org/docs/latest/api/stopwords.html#delete-a-stopword`
     def stopwords_delete(collection:, id:)
-      c = collection.to_s
-      s = id.to_s
-      ts = typesense
-      start = current_monotonic_ms
-      path = Client::RequestBuilder::COLLECTIONS_PREFIX + c + Client::RequestBuilder::STOPWORDS_PREFIX + s
-      result = with_exception_mapping(:delete, path, {}, start) do
-        ts.collections[c].stopwords[s].delete
-      end
-      symbolize_keys_deep(result)
-    ensure
-      instrument(:delete, path, (start ? (current_monotonic_ms - start) : 0.0), {})
+      admin_resource_request(
+        resource_type: :stopwords,
+        method: :delete,
+        collection: collection,
+        id: id
+      )
     end
 
     # -----------------------------------------------------------------------
@@ -417,6 +369,85 @@ module SearchEngine
     private
 
     attr_reader :config, :services
+
+    # Internal helper for synonyms and stopwords CRUD operations.
+    #
+    # @param resource_type [Symbol] :synonyms or :stopwords
+    # @param method [Symbol] HTTP method :get, :put, or :delete
+    # @param collection [String] collection name
+    # @param id [String, nil] resource id (required for get/put/delete on specific resource)
+    # @param body_data [Hash, nil] request body data (for put operations)
+    # @param return_nil_on_404 [Boolean] return nil instead of raising on 404 (for get operations)
+    # @return [Hash, Array<Hash>, nil] response data (symbolized keys) or nil if 404 and return_nil_on_404 is true
+    # @raise [SearchEngine::Errors::Api] on API errors (unless 404 and return_nil_on_404 is true)
+    def admin_resource_request(resource_type:, method:, collection:, id: nil, body_data: nil, return_nil_on_404: false)
+      c = collection.to_s
+      s = id.to_s if id
+      ts = typesense
+      start = current_monotonic_ms
+
+      # Build path based on resource type and operation
+      path = if s
+               # For operations with id: /collections/{c}/synonyms/{id} or /collections/{c}/stopwords/{id}
+               path_prefix = case resource_type
+                             when :synonyms
+                               Client::RequestBuilder::COLLECTIONS_PREFIX + c + Client::RequestBuilder::SYNONYMS_PREFIX
+                             when :stopwords
+                               Client::RequestBuilder::COLLECTIONS_PREFIX + c + Client::RequestBuilder::STOPWORDS_PREFIX
+                             else
+                               raise ArgumentError, "Unknown resource_type: #{resource_type.inspect}"
+                             end
+               path_prefix + s
+             else
+               # For list (get without id): /collections/{c}/synonyms or /collections/{c}/stopwords
+               path_suffix = case resource_type
+                             when :synonyms
+                               Client::RequestBuilder::SYNONYMS_SUFFIX
+                             when :stopwords
+                               Client::RequestBuilder::STOPWORDS_SUFFIX
+                             else
+                               raise ArgumentError, "Unknown resource_type: #{resource_type.inspect}"
+                             end
+               Client::RequestBuilder::COLLECTIONS_PREFIX + c + path_suffix
+             end
+
+      # Build request body for put operations
+      request_body = if method == :put && body_data
+                       resource_key = resource_type == :synonyms ? :synonyms : :stopwords
+                       { resource_key => body_data }
+                     else
+                       {}
+                     end
+
+      result = with_exception_mapping(method, path, {}, start) do
+        execute_admin_resource_request(ts, c, s, resource_type, method, request_body)
+      end
+      symbolize_keys_deep(result)
+    rescue Errors::Api => error
+      return nil if return_nil_on_404 && error.status.to_i == 404
+
+      raise
+    ensure
+      instrument(method, path, (start ? (current_monotonic_ms - start) : 0.0), {})
+    end
+
+    # Execute the actual Typesense API call for admin resources.
+    def execute_admin_resource_request(ts, collection, id, resource_type, method, request_body)
+      case method
+      when :get
+        if id
+          ts.collections[collection].public_send(resource_type)[id].retrieve
+        else
+          ts.collections[collection].public_send(resource_type).retrieve
+        end
+      when :put
+        ts.collections[collection].public_send(resource_type)[id].upsert(request_body)
+      when :delete
+        ts.collections[collection].public_send(resource_type)[id].delete
+      else
+        raise ArgumentError, "Unsupported method: #{method.inspect}"
+      end
+    end
 
     def typesense
       @typesense ||= build_typesense_client
@@ -586,45 +617,59 @@ module SearchEngine
     # Map network and API exceptions into stable SearchEngine errors, with
     # redaction and logging.
     def map_and_raise(error, method, path, cache_params, start_ms)
-      if error.respond_to?(:http_code) || error.class.name.start_with?('Typesense::Error')
-        status = if error.respond_to?(:http_code)
-                   error.http_code
-                 else
-                   infer_typesense_status(error)
-                 end
-        body = parse_error_body(error)
-        err = Errors::Api.new(
-          "typesense api error: #{status}",
-          status: status || 500,
-          body: body,
-          doc: Client::RequestBuilder::DOC_CLIENT_ERRORS,
-          details: { http_status: status, body: body.is_a?(String) ? body[0, 120] : body }
-        )
-        instrument(method, path, current_monotonic_ms - start_ms, cache_params, error_class: err.class.name)
-        # debug prints removed
-        raise err
-      end
+      duration_ms = current_monotonic_ms - start_ms
 
-      if timeout_error?(error)
-        instrument(method, path, current_monotonic_ms - start_ms, cache_params, error_class: Errors::Timeout.name)
-        raise Errors::Timeout.new(
-          error.message,
-          doc: Client::RequestBuilder::DOC_CLIENT_ERRORS,
-          details: { op: method, path: path }
-        )
-      end
+      return handle_api_error(error, method, path, cache_params, duration_ms) if api_error?(error)
+      return handle_timeout_error(error, method, path, cache_params, duration_ms) if timeout_error?(error)
+      return handle_connection_error(error, method, path, cache_params, duration_ms) if connection_error?(error)
 
-      if connection_error?(error)
-        instrument(method, path, current_monotonic_ms - start_ms, cache_params, error_class: Errors::Connection.name)
-        raise Errors::Connection.new(
-          error.message,
-          doc: Client::RequestBuilder::DOC_CLIENT_ERRORS,
-          details: { op: method, path: path }
-        )
-      end
-
-      instrument(method, path, current_monotonic_ms - start_ms, cache_params, error_class: error.class.name)
+      # Unmapped error: instrument and re-raise as-is
+      instrument(method, path, duration_ms, cache_params, error_class: error.class.name)
       raise error
+    end
+
+    # Check if error is a Typesense API error.
+    def api_error?(error)
+      error.respond_to?(:http_code) || error.class.name.start_with?('Typesense::Error')
+    end
+
+    # Handle Typesense API errors by converting to SearchEngine::Errors::Api.
+    def handle_api_error(error, method, path, cache_params, duration_ms)
+      status = if error.respond_to?(:http_code)
+                 error.http_code
+               else
+                 infer_typesense_status(error)
+               end
+      body = parse_error_body(error)
+      err = Errors::Api.new(
+        "typesense api error: #{status}",
+        status: status || 500,
+        body: body,
+        doc: Client::RequestBuilder::DOC_CLIENT_ERRORS,
+        details: { http_status: status, body: body.is_a?(String) ? body[0, 120] : body }
+      )
+      instrument(method, path, duration_ms, cache_params, error_class: err.class.name)
+      raise err
+    end
+
+    # Handle timeout errors by converting to SearchEngine::Errors::Timeout.
+    def handle_timeout_error(error, method, path, cache_params, duration_ms)
+      instrument(method, path, duration_ms, cache_params, error_class: Errors::Timeout.name)
+      raise Errors::Timeout.new(
+        error.message,
+        doc: Client::RequestBuilder::DOC_CLIENT_ERRORS,
+        details: { op: method, path: path }
+      )
+    end
+
+    # Handle connection errors by converting to SearchEngine::Errors::Connection.
+    def handle_connection_error(error, method, path, cache_params, duration_ms)
+      instrument(method, path, duration_ms, cache_params, error_class: Errors::Connection.name)
+      raise Errors::Connection.new(
+        error.message,
+        doc: Client::RequestBuilder::DOC_CLIENT_ERRORS,
+        details: { op: method, path: path }
+      )
     end
 
     def timeout_error?(error)

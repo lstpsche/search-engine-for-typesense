@@ -152,39 +152,10 @@ module SearchEngine
       # the same association into a single $assoc(inner && inner ...) expression
       # to satisfy Typesense join filter rules.
       if joiner == ' && '
-        items = [] # [{ pos:, str: }]
-        assoc_first_pos = {}
-        assoc_inner_map = {} # { assoc => [inner_str, ...] }
-
-        children.each_with_index do |child, idx|
-          inner = extract_join_inner_binary(child, klass: klass)
-          if inner
-            assoc, inner_expr = inner
-            assoc_first_pos[assoc] = idx unless assoc_first_pos.key?(assoc)
-            assoc_inner_map[assoc] ||= []
-            assoc_inner_map[assoc] << inner_expr
-            next
-          end
-
-          cstr = compile_node(child, parent_prec: my_prec, klass: klass)
-          cstr = "(#{cstr})" if needs_parentheses?(child, parent_prec: my_prec)
-          items << { pos: idx, str: cstr }
-        end
-
-        unless assoc_inner_map.empty?
-          # Emit one consolidated token per assoc at the first position it appeared
-          assoc_first_pos.sort_by { |_a, pos| pos }.each do |assoc, pos|
-            inners = Array(assoc_inner_map[assoc]).flatten.compact
-            next if inners.empty?
-
-            token = "$#{assoc}(#{inners.join(' && ')})"
-            items << { pos: pos, str: token }
-          end
-
-          inner = items.sort_by { |it| it[:pos] }.map { |it| it[:str] }.join(joiner)
-
-          return parent_prec > my_prec ? "(#{inner})" : inner
-        end
+        merged = merge_join_predicates(children, parent_prec: parent_prec, my_prec: my_prec, klass: klass,
+joiner: joiner
+        )
+        return merged if merged
       end
 
       # Fallback/default behavior
@@ -206,6 +177,54 @@ module SearchEngine
       end
     end
     private_class_method :compile_boolean
+
+    # Merge multiple join predicates targeting the same association into consolidated expressions.
+    #
+    # For AND operations, collects all predicates for each association and merges them
+    # into a single $assoc(inner && inner ...) expression at the first position where
+    # that association appeared.
+    #
+    # @param children [Array<SearchEngine::AST::Node>] child nodes to process
+    # @param parent_prec [Integer] parent operator precedence
+    # @param my_prec [Integer] current operator precedence
+    # @param klass [Class, nil] model class for context
+    # @param joiner [String] operator joiner (' && ' or ' || ')
+    # @return [String, nil] merged expression string, or nil if no joins to merge
+    def merge_join_predicates(children, parent_prec:, my_prec:, klass:, joiner:)
+      items = [] # [{ pos:, str: }]
+      assoc_first_pos = {}
+      assoc_inner_map = {} # { assoc => [inner_str, ...] }
+
+      children.each_with_index do |child, idx|
+        inner = extract_join_inner_binary(child, klass: klass)
+        if inner
+          assoc, inner_expr = inner
+          assoc_first_pos[assoc] = idx unless assoc_first_pos.key?(assoc)
+          assoc_inner_map[assoc] ||= []
+          assoc_inner_map[assoc] << inner_expr
+          next
+        end
+
+        cstr = compile_node(child, parent_prec: my_prec, klass: klass)
+        cstr = "(#{cstr})" if needs_parentheses?(child, parent_prec: my_prec)
+        items << { pos: idx, str: cstr }
+      end
+
+      return nil if assoc_inner_map.empty?
+
+      # Emit one consolidated token per assoc at the first position it appeared
+      assoc_first_pos.sort_by { |_a, pos| pos }.each do |assoc, pos|
+        inners = Array(assoc_inner_map[assoc]).flatten.compact
+        next if inners.empty?
+
+        token = "$#{assoc}(#{inners.join(' && ')})"
+        items << { pos: pos, str: token }
+      end
+
+      inner = items.sort_by { |it| it[:pos] }.map { |it| it[:str] }.join(joiner)
+      parent_prec > my_prec ? "(#{inner})" : inner
+    end
+    private_class_method :merge_join_predicates
 
     # Try to extract join association and compiled inner expression for a binary node
     # with a joined field like "$assoc.field". Returns [assoc(String), inner(String)] or nil.

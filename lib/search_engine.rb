@@ -101,36 +101,8 @@ module SearchEngine
       builder = SearchEngine::Multi.new
       yield builder
 
-      # Enforce maximum number of searches before compiling/dispatch
-      count = builder.labels.size
-      limit = SearchEngine.config.multi_search_limit
-      enforce_multi_limit!(count, limit)
-
       labels = builder.labels
-      payloads = builder.to_payloads(common: common)
-
-      url_opts = SearchEngine::ClientOptions.url_options_from_config(SearchEngine.config)
-      raw = nil
-      if defined?(ActiveSupport::Notifications)
-        se_payload = build_multi_event_payload(count, labels, url_opts)
-        begin
-          SearchEngine::Instrumentation.instrument('search_engine.multi_search', se_payload) do |ctx|
-            raw = SearchEngine::Client.new.multi_search(searches: payloads, url_opts: url_opts)
-            ctx[:http_status] = 200
-          rescue Errors::Api => error
-            ctx[:http_status] = error.status
-            raise
-          end
-        rescue Errors::Api => error
-          raise augment_multi_api_error(error, labels)
-        end
-      else
-        begin
-          raw = SearchEngine::Client.new.multi_search(searches: payloads, url_opts: url_opts)
-        rescue Errors::Api => error
-          raise augment_multi_api_error(error, labels)
-        end
-      end
+      raw = execute_multi_search_internal(builder: builder, common: common, labels: labels, use_custom_client: false)
 
       # Typesense client returns symbolized keys; be resilient to both forms.
       # Expect: { results: [ { ... }, ... ] }
@@ -164,45 +136,8 @@ module SearchEngine
       builder = SearchEngine::Multi.new
       yield builder
 
-      count = builder.labels.size
-      limit = SearchEngine.config.multi_search_limit
-      if count > limit
-        raise ArgumentError,
-              "multi_search: #{count} searches exceed limit (#{limit}). " \
-              'Increase `SearchEngine.config.multi_search_limit` if necessary.'
-      end
-
       labels = builder.labels
-      payloads = builder.to_payloads(common: common)
-
-      url_opts = SearchEngine::ClientOptions.url_options_from_config(SearchEngine.config)
-      raw = nil
-      if defined?(ActiveSupport::Notifications)
-        se_payload = {
-          searches_count: count,
-          labels: labels.map(&:to_s),
-          http_status: nil,
-          source: :multi,
-          url_opts: Observability.filtered_url_opts(url_opts)
-        }
-        begin
-          SearchEngine::Instrumentation.instrument('search_engine.multi_search', se_payload) do |ctx|
-            raw = SearchEngine::Client.new.multi_search(searches: payloads, url_opts: url_opts)
-            ctx[:http_status] = 200
-          rescue Errors::Api => error
-            ctx[:http_status] = error.status
-            raise
-          end
-        rescue Errors::Api => error
-          raise augment_multi_api_error(error, labels)
-        end
-      else
-        begin
-          raw = SearchEngine::Client.new.multi_search(searches: payloads, url_opts: url_opts)
-        rescue Errors::Api => error
-          raise augment_multi_api_error(error, labels)
-        end
-      end
+      raw = execute_multi_search_internal(builder: builder, common: common, labels: labels, use_custom_client: false)
 
       list = Array(raw && (raw[:results] || raw['results']))
       SearchEngine::MultiResult.new(labels: labels, raw_results: list, klasses: builder.klasses)
@@ -227,43 +162,8 @@ module SearchEngine
       builder = SearchEngine::Multi.new
       yield builder
 
-      count = builder.labels.size
-      limit = SearchEngine.config.multi_search_limit
-      if count > limit
-        raise ArgumentError,
-              "multi_search: #{count} searches exceed limit (#{limit}). " \
-              'Increase `SearchEngine.config.multi_search_limit` if necessary.'
-      end
-
       labels = builder.labels
-      payloads = builder.to_payloads(common: common)
-
-      url_opts = SearchEngine::ClientOptions.url_options_from_config(SearchEngine.config)
-      if defined?(ActiveSupport::Notifications)
-        se_payload = {
-          searches_count: count,
-          labels: labels.map(&:to_s),
-          http_status: nil,
-          source: :multi,
-          url_opts: Observability.filtered_url_opts(url_opts)
-        }
-        begin
-          SearchEngine::Instrumentation.instrument('search_engine.multi_search', se_payload) do |ctx|
-            client_obj = (SearchEngine.config.respond_to?(:client) && SearchEngine.config.client) || SearchEngine::Client.new
-            client_obj.multi_search(searches: payloads, url_opts: url_opts).tap do
-              ctx[:http_status] = 200
-            end
-          rescue Errors::Api => error
-            ctx[:http_status] = error.status
-            raise
-          end
-        rescue Errors::Api => error
-          raise augment_multi_api_error(error, labels)
-        end
-      else
-        client_obj = (SearchEngine.config.respond_to?(:client) && SearchEngine.config.client) || SearchEngine::Client.new
-        client_obj.multi_search(searches: payloads, url_opts: url_opts)
-      end
+      execute_multi_search_internal(builder: builder, common: common, labels: labels, use_custom_client: true)
     rescue Errors::Api => error
       raise augment_multi_api_error(error, labels)
     end
@@ -291,6 +191,53 @@ module SearchEngine
 
     def config_mutex
       @config_mutex ||= Mutex.new
+    end
+
+    # Internal method that executes multi-search request with common setup and error handling.
+    # Returns the raw Typesense response.
+    #
+    # @param builder [SearchEngine::Multi] configured builder instance
+    # @param common [Hash] optional params merged into each per-search payload
+    # @param labels [Array<Symbol>] ordered labels for the search list
+    # @param use_custom_client [Boolean] whether to check config.client for custom client instance
+    # @return [Hash] raw Typesense multi-search response
+    # @raise [ArgumentError] when the number of searches exceeds the configured limit
+    # @raise [SearchEngine::Errors::Api] when Typesense returns a non-2xx status
+    def execute_multi_search_internal(builder:, common:, labels:, use_custom_client:)
+      count = builder.labels.size
+      limit = SearchEngine.config.multi_search_limit
+      enforce_multi_limit!(count, limit)
+
+      payloads = builder.to_payloads(common: common)
+      url_opts = SearchEngine::ClientOptions.url_options_from_config(SearchEngine.config)
+
+      client_obj = if use_custom_client
+                     (SearchEngine.config.respond_to?(:client) && SearchEngine.config.client) || SearchEngine::Client.new
+                   else
+                     SearchEngine::Client.new
+                   end
+
+      if defined?(ActiveSupport::Notifications)
+        se_payload = build_multi_event_payload(count, labels, url_opts)
+        begin
+          SearchEngine::Instrumentation.instrument('search_engine.multi_search', se_payload) do |ctx|
+            client_obj.multi_search(searches: payloads, url_opts: url_opts).tap do
+              ctx[:http_status] = 200
+            end
+          rescue Errors::Api => error
+            ctx[:http_status] = error.status
+            raise
+          end
+        rescue Errors::Api => error
+          raise augment_multi_api_error(error, labels)
+        end
+      else
+        begin
+          client_obj.multi_search(searches: payloads, url_opts: url_opts)
+        rescue Errors::Api => error
+          raise augment_multi_api_error(error, labels)
+        end
+      end
     end
 
     def enforce_multi_limit!(count, limit)
