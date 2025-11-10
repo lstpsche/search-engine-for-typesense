@@ -31,6 +31,9 @@ module SearchEngine
         # Detect immediate cycles (A <-> B) and skip those pairs
         cycle_pairs = detect_immediate_cycles(graph)
 
+        # Per-run cache for alias lookups to avoid repeated network calls
+        alias_cache = {}
+
         outcomes = []
         partial_count = 0
         full_count = 0
@@ -69,7 +72,7 @@ into: nil
               if seen_full[referrer_coll]
                 mode = :skipped_duplicate
               else
-                executed = __se_full_reindex_for_referrer(ref_klass)
+                executed = __se_full_reindex_for_referrer(ref_klass, client: ts_client, alias_cache: alias_cache)
                 seen_full[referrer_coll] = true if executed
                 if executed
                   mode = :full
@@ -85,7 +88,7 @@ into: nil
           elsif seen_full[referrer_coll]
             mode = :skipped_duplicate
           else
-            executed = __se_full_reindex_for_referrer(ref_klass)
+            executed = __se_full_reindex_for_referrer(ref_klass, client: ts_client, alias_cache: alias_cache)
             seen_full[referrer_coll] = true if executed
             if executed
               mode = :full
@@ -133,7 +136,7 @@ into: nil
       # when no partitions are configured.
       # @param ref_klass [Class]
       # @return [void]
-      def __se_full_reindex_for_referrer(ref_klass)
+      def __se_full_reindex_for_referrer(ref_klass, client:, alias_cache:)
         begin
           compiled = SearchEngine::Partitioner.for(ref_klass)
         rescue StandardError
@@ -142,7 +145,7 @@ into: nil
 
         executed = false
         logical = ref_klass.respond_to?(:collection) ? ref_klass.collection.to_s : ref_klass.name.to_s
-        physical = resolve_physical_collection_name(logical)
+        physical = resolve_physical_collection_name(logical, client: client, cache: alias_cache)
 
         if compiled
           parts = begin
@@ -189,18 +192,23 @@ into: nil
         executed
       end
 
-      def resolve_physical_collection_name(logical)
-        client = begin
-          (SearchEngine.config.respond_to?(:client) && SearchEngine.config.client) || SearchEngine::Client.new
-        rescue StandardError
-          SearchEngine::Client.new
-        end
-        begin
-          physical = client.resolve_alias(logical)
+      # Resolve logical alias to physical name with optional per-run memoization.
+      # @param logical [String]
+      # @param client [SearchEngine::Client]
+      # @param cache [Hash, nil] per-run cache; when provided, both hits and misses are cached
+      # @return [String, nil]
+      def resolve_physical_collection_name(logical, client:, cache: nil)
+        key = logical.to_s
+        return cache[key] if cache&.key?(key)
+
+        value = begin
+          physical = client.resolve_alias(key)
           physical && !physical.to_s.strip.empty? ? physical.to_s : nil
         rescue StandardError
           nil
         end
+        cache[key] = value if cache
+        value
       end
 
       def normalize_collection_name(source)
