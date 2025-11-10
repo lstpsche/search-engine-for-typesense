@@ -40,6 +40,20 @@ module SearchEngine
         end
       end
 
+      # Determine color for partition/status based on success/failure counts.
+      # @param failed_total [Integer] number of failed documents
+      # @param success_total [Integer] number of successful documents
+      # @return [Symbol] color name (:green, :yellow, or :red)
+      def for_partition_status(failed_total, success_total)
+        if failed_total.to_i.zero?
+          :green
+        elsif success_total.to_i.positive?
+          :yellow # partial success
+        else
+          :red # all failed
+        end
+      end
+
       # @return [Boolean] whether coloring is active
       def enabled?
         return false if ENV['NO_COLOR']

@@ -141,6 +141,9 @@ into: nil
         end
 
         executed = false
+        logical = ref_klass.respond_to?(:collection) ? ref_klass.collection.to_s : ref_klass.name.to_s
+        physical = resolve_physical_collection_name(logical)
+
         if compiled
           parts = begin
             Array(compiled.partitions)
@@ -150,13 +153,14 @@ into: nil
 
           parts = parts.reject { |p| p.nil? || p.to_s.strip.empty? }
 
-          logical = ref_klass.respond_to?(:collection) ? ref_klass.collection.to_s : ref_klass.name.to_s
           if parts.empty?
-            puts(%(  Referencer "#{logical}" — partitions=0 → skip))
+            coll_display = physical && physical != logical ? "#{logical} (physical: #{physical})" : logical
+            puts(%(  Referencer "#{coll_display}" — partitions=0 → skip))
             return false
           end
 
-          puts(%(  Referencer "#{logical}" — partitions=#{parts.size} parallel=#{compiled.max_parallel}))
+          coll_display = physical && physical != logical ? "#{logical} (physical: #{physical})" : logical
+          puts(%(  Referencer "#{coll_display}" — partitions=#{parts.size} parallel=#{compiled.max_parallel}))
           mp = compiled.max_parallel.to_i
           if mp > 1 && parts.size > 1
             require 'concurrent-ruby'
@@ -177,12 +181,26 @@ into: nil
           end
 
         else
-          logical = ref_klass.respond_to?(:collection) ? ref_klass.collection.to_s : ref_klass.name.to_s
-          puts(%(  Referencer "#{logical}" — single))
+          coll_display = physical && physical != logical ? "#{logical} (physical: #{physical})" : logical
+          puts(%(  Referencer "#{coll_display}" — single))
           SearchEngine::Indexer.rebuild_partition!(ref_klass, partition: nil, into: nil)
           executed = true
         end
         executed
+      end
+
+      def resolve_physical_collection_name(logical)
+        client = begin
+          (SearchEngine.config.respond_to?(:client) && SearchEngine.config.client) || SearchEngine::Client.new
+        rescue StandardError
+          SearchEngine::Client.new
+        end
+        begin
+          physical = client.resolve_alias(logical)
+          physical && !physical.to_s.strip.empty? ? physical.to_s : nil
+        rescue StandardError
+          nil
+        end
       end
 
       def normalize_collection_name(source)
@@ -257,7 +275,9 @@ foreign_key: fk }
 
       def build_from_registry
         graph = Hash.new { |h, k| h[k] = [] }
-        mapping = SearchEngine::Registry.mapping
+        # Use models_map instead of Registry.mapping to ensure all models are discovered,
+        # including those that may not be explicitly registered yet
+        mapping = SearchEngine::CollectionResolver.models_map
         mapping.each do |coll_name, klass|
           compiled = SearchEngine::Schema.compile(klass)
           fields = Array(compiled[:fields])
@@ -268,8 +288,11 @@ foreign_key: fk }
             target_coll, fk = parse_reference(ref)
             next if target_coll.nil? || target_coll.empty?
 
-            graph[target_coll] << { referrer: coll_name.to_s, local_key: (f[:name] || f['name']).to_s,
-foreign_key: fk }
+            graph[target_coll] << {
+              referrer: coll_name.to_s,
+              local_key: (f[:name] || f['name']).to_s,
+              foreign_key: fk
+            }
           end
         rescue StandardError
           # ignore individual compile errors for robustness

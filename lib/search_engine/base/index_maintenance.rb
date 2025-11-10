@@ -288,10 +288,17 @@ module SearchEngine
             line = +prefix
             line << SearchEngine::Logging::Color.apply("status=#{batch_status}", status_color) << ' '
             docs_count = batch_stats[:docs_count] || batch_stats['docs_count'] || 0
-            line << SearchEngine::Logging::Color.apply("docs=#{docs_count}", :green) << ' '
+            line << "docs=#{docs_count}" << ' '
+            success_count = (batch_stats[:success_count] || batch_stats['success_count'] || 0).to_i
+            success_str = "success=#{success_count}"
+            line << (
+              success_count.positive? ? SearchEngine::Logging::Color.apply(success_str, :green) : success_str
+            ) << ' '
             failed_count = (batch_stats[:failure_count] || batch_stats['failure_count'] || 0).to_i
             failed_str = "failed=#{failed_count}"
-            line << (failed_count.positive? ? SearchEngine::Logging::Color.apply(failed_str, :red) : failed_str) << ' '
+            line << (
+              failed_count.positive? ? SearchEngine::Logging::Color.apply(failed_str, :red) : failed_str
+            ) << ' '
             line << "batch=#{batch_number} "
             duration_ms = batch_stats[:duration_ms] || batch_stats['duration_ms'] || 0.0
             line << "duration_ms=#{duration_ms}"

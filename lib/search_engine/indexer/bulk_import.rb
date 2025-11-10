@@ -574,7 +574,12 @@ module SearchEngine
           prefix = batch_number == 1 ? '  single → ' : '          '
           line = +prefix
           line << SearchEngine::Logging::Color.apply("status=#{batch_status}", status_color) << ' '
-          line << SearchEngine::Logging::Color.apply("docs=#{stats[:docs_count]}", :green) << ' '
+          line << "docs=#{stats[:docs_count]}" << ' '
+          success_count = stats[:success_count].to_i
+          success_str = "success=#{success_count}"
+          line << (
+            success_count.positive? ? SearchEngine::Logging::Color.apply(success_str, :green) : success_str
+          ) << ' '
           failed_count = stats[:failure_count].to_i
           failed_str = "failed=#{failed_count}"
           line << (failed_count.positive? ? SearchEngine::Logging::Color.apply(failed_str, :red) : failed_str) << ' '

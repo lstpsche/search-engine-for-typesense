@@ -20,13 +20,18 @@ module SearchEngine
         sample_err = extract_sample_error(summary)
 
         status_val = summary.status
-        status_color = SearchEngine::Logging::Color.for_status(status_val)
+        failed_total = summary.failed_total.to_i
+        success_total = summary.success_total.to_i
+        status_color = SearchEngine::Logging::Color.for_partition_status(failed_total, success_total)
 
         parts = []
         parts << "  #{SearchEngine::Logging::Color.apply("partition=#{partition.inspect}", status_color)} " \
                  "→ #{SearchEngine::Logging::Color.apply("status=#{status_val}", status_color)}"
-        parts << SearchEngine::Logging::Color.apply("docs=#{summary.docs_total}", :green)
-        parts << SearchEngine::Logging::Color.apply("failed=#{summary.failed_total}", :red)
+        parts << "docs=#{summary.docs_total}"
+        success_str = "success=#{success_total}"
+        parts << (success_total.positive? ? SearchEngine::Logging::Color.apply(success_str, :green) : success_str)
+        failed_str = "failed=#{failed_total}"
+        parts << (failed_total.positive? ? SearchEngine::Logging::Color.apply(failed_str, :red) : failed_str)
         parts << "batches=#{summary.batches_total}"
         parts << "duration_ms=#{summary.duration_ms_total}"
         parts << "sample_error=#{sample_err.inspect}" if sample_err
