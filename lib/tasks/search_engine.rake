@@ -243,16 +243,21 @@ namespace :search_engine do
           docs_total = sum.respond_to?(:docs_total) ? sum.docs_total : sum[:docs_total]
           batches_total = sum.respond_to?(:batches_total) ? sum.batches_total : sum[:batches_total]
           duration_ms_total = sum.respond_to?(:duration_ms_total) ? sum.duration_ms_total : sum[:duration_ms_total]
-          status_color = SearchEngine::Logging::Color.for_status(status)
+          failed_count = sum.respond_to?(:failed_total) ? sum.failed_total : sum[:failed_total]
+          success_count = sum.respond_to?(:success_total) ? sum.success_total : sum[:success_total]
+          status_color = SearchEngine::Logging::Color.for_partition_status(failed_count.to_i, success_count.to_i)
           line = +''
           line << SearchEngine::Logging::Color.apply("Imported partition=#{a[:partition].inspect}", status_color)
           line << ' '
           line << SearchEngine::Logging::Color.apply("status=#{status}", status_color)
           line << ' '
-          line << SearchEngine::Logging::Color.apply("docs=#{docs_total}", :green)
+          line << "docs=#{docs_total}"
           line << ' '
-          failed_count = sum.respond_to?(:failed_total) ? sum.failed_total : sum[:failed_total]
-          line << SearchEngine::Logging::Color.apply("failed=#{failed_count}", :red) if failed_count.to_i.positive?
+          success_str = "success=#{success_count}"
+          line << (success_count.to_i.positive? ? SearchEngine::Logging::Color.apply(success_str, :green) : success_str)
+          line << ' '
+          failed_str = "failed=#{failed_count}"
+          line << (failed_count.to_i.positive? ? SearchEngine::Logging::Color.apply(failed_str, :red) : failed_str)
           line << ' '
           line << "batches=#{batches_total} "
           line << "duration_ms=#{duration_ms_total}"
@@ -324,16 +329,21 @@ namespace :search_engine do
         docs_total = sum.respond_to?(:docs_total) ? sum.docs_total : sum[:docs_total]
         batches_total = sum.respond_to?(:batches_total) ? sum.batches_total : sum[:batches_total]
         duration_ms_total = sum.respond_to?(:duration_ms_total) ? sum.duration_ms_total : sum[:duration_ms_total]
-        status_color = SearchEngine::Logging::Color.for_status(status)
+        failed_count = sum.respond_to?(:failed_total) ? sum.failed_total : sum[:failed_total]
+        success_count = sum.respond_to?(:success_total) ? sum.success_total : sum[:success_total]
+        status_color = SearchEngine::Logging::Color.for_partition_status(failed_count.to_i, success_count.to_i)
         line = +''
         line << SearchEngine::Logging::Color.apply("Imported partition=#{partition.inspect}", status_color)
         line << ' '
         line << SearchEngine::Logging::Color.apply("status=#{status}", status_color)
         line << ' '
-        line << SearchEngine::Logging::Color.apply("docs=#{docs_total}", :green)
+        line << "docs=#{docs_total}"
         line << ' '
-        failed_count = sum.respond_to?(:failed_total) ? sum.failed_total : sum[:failed_total]
-        line << SearchEngine::Logging::Color.apply("failed=#{failed_count}", :red) if failed_count.to_i.positive?
+        success_str = "success=#{success_count}"
+        line << (success_count.to_i.positive? ? SearchEngine::Logging::Color.apply(success_str, :green) : success_str)
+        line << ' '
+        failed_str = "failed=#{failed_count}"
+        line << (failed_count.to_i.positive? ? SearchEngine::Logging::Color.apply(failed_str, :red) : failed_str)
         line << ' '
         line << "batches=#{batches_total} "
         line << "duration_ms=#{duration_ms_total}"

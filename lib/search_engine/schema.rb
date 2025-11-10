@@ -155,6 +155,16 @@ module SearchEngine
         new_physical = generate_physical_name(logical, client: client)
         create_schema = { name: new_physical, fields: compiled[:fields].map(&:dup) }
         create_schema[:enable_nested_fields] = true if compiled[:enable_nested_fields]
+
+        # Validate referenced collections exist and have required fields before creating schema
+        begin
+          validate_referenced_collections!(create_schema[:fields], client: client)
+        rescue ArgumentError => error
+          # Re-raise validation errors to prevent creating invalid schemas
+          raise ArgumentError,
+                "Schema validation failed for collection '#{logical}': #{error.message}"
+        end
+
         client.create_collection(create_schema)
 
         if block_given?
@@ -728,6 +738,114 @@ module SearchEngine
 
         fields_array << { name: "#{attribute_name}_empty", type: 'bool' } if add_empty
         fields_array << { name: "#{attribute_name}_blank", type: 'bool' } if add_blank
+      end
+
+      # Validate that referenced collections exist and have the required fields before creating a schema.
+      # Typesense references use logical collection names (aliases), which must point to valid physical
+      # collections. The referenced fields must exist in the referenced collection's schema.
+      # @param fields [Array<Hash>] field definitions with potential reference values
+      # @param client [SearchEngine::Client] client to resolve aliases and retrieve schemas
+      # @raise [SearchEngine::Errors::Api, ArgumentError] if referenced collections are invalid
+      def validate_referenced_collections!(fields, client:)
+        fields.each do |field|
+          ref = field[:reference] || field['reference']
+          next if ref.nil? || ref.to_s.strip.empty?
+
+          # Parse reference format: "logical_collection_name.field_name"
+          parts = ref.to_s.split('.', 2)
+          logical_coll = parts[0].to_s
+          field_name = parts[1]&.to_s
+
+          next if logical_coll.empty? || field_name.nil? || field_name.empty?
+
+          validate_single_reference!(logical_coll, field_name, ref, client)
+        end
+      end
+
+      # Validate a single reference field.
+      # @param logical_coll [String] logical collection name
+      # @param field_name [String] field name to validate
+      # @param ref [String] original reference string for error messages
+      # @param client [SearchEngine::Client] client to resolve aliases and retrieve schemas
+      # @raise [ArgumentError] if validation fails
+      def validate_single_reference!(logical_coll, field_name, ref, client)
+        physical_coll = resolve_referenced_collection(logical_coll, client)
+        referenced_schema = retrieve_referenced_schema(logical_coll, physical_coll, client)
+        schema_fields = Array(referenced_schema[:fields] || referenced_schema['fields'])
+        field_exists = schema_fields.any? { |f| (f[:name] || f['name']).to_s == field_name }
+
+        return if field_exists
+
+        raise ArgumentError,
+              build_field_not_found_error(logical_coll, field_name, schema_fields, physical_coll: physical_coll)
+      rescue ArgumentError
+        raise
+      rescue StandardError => error
+        raise ArgumentError, "Failed to validate reference '#{ref}': #{error.class}: #{error.message}"
+      end
+
+      # Resolve a logical collection name to its physical collection name.
+      # @param logical_coll [String] logical collection name
+      # @param client [SearchEngine::Client] client to resolve aliases
+      # @return [String] physical collection name
+      # @raise [ArgumentError] if alias doesn't exist or points to no collection
+      def resolve_referenced_collection(logical_coll, client)
+        physical_coll = client.resolve_alias(logical_coll)
+        if physical_coll.nil? || physical_coll.to_s.strip.empty?
+          raise ArgumentError,
+                "Referenced collection alias '#{logical_coll}' does not exist or points to no physical collection"
+        end
+        physical_coll
+      end
+
+      # Retrieve the schema for a referenced collection.
+      # @param logical_coll [String] logical collection name
+      # @param physical_coll [String] physical collection name
+      # @param client [SearchEngine::Client] client to retrieve schemas
+      # @return [Hash] collection schema
+      # @raise [ArgumentError] if schema cannot be retrieved
+      def retrieve_referenced_schema(logical_coll, physical_coll, client)
+        referenced_schema = client.retrieve_collection_schema(physical_coll)
+        if referenced_schema.nil?
+          raise ArgumentError,
+                "Referenced collection '#{logical_coll}' (physical: '#{physical_coll}') " \
+                'schema could not be retrieved'
+        end
+        referenced_schema
+      end
+
+      # Build a detailed error message when a referenced field is not found.
+      # @param logical_coll [String] logical collection name
+      # @param field_name [String] field name that was not found
+      # @param schema_fields [Array<Hash>] fields from the referenced collection schema
+      # @param physical_coll [String, nil] physical collection name (optional)
+      # @return [String] error message
+      def build_field_not_found_error(logical_coll, field_name, schema_fields, physical_coll: nil)
+        available_fields = schema_fields.map { |f| (f[:name] || f['name']).to_s }.sort
+        coll_display =
+          physical_coll && physical_coll != logical_coll ? "#{logical_coll} (physical: #{physical_coll})" : logical_coll
+        error_msg = "Referenced field '#{field_name}' not found in collection '#{coll_display}'. "
+
+        referenced_klass = begin
+          SearchEngine::CollectionResolver.model_for_logical(logical_coll)
+        rescue StandardError
+          nil
+        end
+
+        if referenced_klass
+          compiled_schema = compile(referenced_klass)
+          compiled_fields = Array(compiled_schema[:fields]).map { |f| (f[:name] || f['name']).to_s }
+          error_msg += if compiled_fields.include?(field_name)
+                         "Field exists in model '#{referenced_klass.name}' but is not indexed " \
+                         '(possibly marked with `index: false`). '
+                       else
+                         "Field is not declared in model '#{referenced_klass.name}'. "
+                       end
+        end
+
+        error_msg += "Available fields in collection: #{available_fields.join(', ')}. " \
+                     'Ensure the field is declared and indexed in the referenced collection.'
+        error_msg
       end
     end
   end
