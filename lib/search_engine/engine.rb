@@ -21,19 +21,24 @@ module SearchEngine
       cfg.warn_if_incomplete!
     end
 
-    # Ignore hyphenated compatibility shim so Zeitwerk doesn't try to constantize it.
+    # Ignore hyphenated compatibility shim and CLI module so Zeitwerk doesn't try to constantize them.
+    # These files are manually required (CLI is required from Rake tasks) and use non-standard naming.
     initializer 'search_engine.zeitwerk_ignores', before: :set_autoload_paths do
       # Rails 6.1+ exposes a loader per engine via `loader`. Guard presence for safety.
       loader = respond_to?(:loader) ? self.loader : nil
       shim = root.join('lib', 'search-engine-for-typesense.rb').to_s
+      cli_file = root.join('lib', 'search_engine', 'cli.rb').to_s
       loader&.ignore(shim)
+      loader&.ignore(cli_file)
 
-      # Also ensure Rails global autoloaders ignore the shim, since the engine
+      # Also ensure Rails global autoloaders ignore these files, since the engine
       # adds lib/ to autoload paths and the main/once loaders may scan it.
       if defined?(Rails) && Rails.respond_to?(:autoloaders)
         al = Rails.autoloaders
         al.main.ignore(shim) if al.respond_to?(:main)
         al.once.ignore(shim) if al.respond_to?(:once)
+        al.main.ignore(cli_file) if al.respond_to?(:main)
+        al.once.ignore(cli_file) if al.respond_to?(:once)
       end
     end
 
