@@ -76,6 +76,15 @@ module SearchEngine
       services.fetch(:collections).create(schema)
     end
 
+    # Update a physical collection's schema in-place.
+    # @param name [String]
+    # @param schema [Hash] Typesense schema body with fields to add/drop
+    # @return [Hash] updated collection schema
+    # @see `https://typesense.org/docs/latest/api/collections.html#update-collection`
+    def update_collection(name, schema)
+      services.fetch(:collections).update(name, schema)
+    end
+
     # Delete a physical collection by name.
     # @param name [String]
     # @param timeout_ms [Integer, nil] optional read-timeout override in ms; when nil, a safer

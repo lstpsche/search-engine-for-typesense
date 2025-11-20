@@ -25,6 +25,20 @@ module SearchEngine
             res[:diff]
           end
 
+          def update_collection!
+            client = (SearchEngine.config.respond_to?(:client) && SearchEngine.config.client) || SearchEngine::Client.new
+
+            puts 'Update Collection — analyzing diff for in-place update...'
+            updated = SearchEngine::Schema.update!(self, client: client)
+
+            if updated
+              puts 'Update Collection — schema updated in-place (PATCH)'
+            else
+              puts 'Update Collection — in-place update not possible (no changes or incompatible)'
+            end
+            updated
+          end
+
           def drop_collection!
             client = (SearchEngine.config.respond_to?(:client) && SearchEngine.config.client) || SearchEngine::Client.new
             logical = respond_to?(:collection) ? collection.to_s : name.to_s

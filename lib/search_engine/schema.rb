@@ -140,12 +140,31 @@ module SearchEngine
       #
       # @param klass [Class] model class inheriting from {SearchEngine::Base}
       # @param client [SearchEngine::Client] optional client wrapper (for tests)
+      # @param force_rebuild [Boolean] if true, skips in-place update check and forces full Blue/Green rebuild (default: false)
       # @yieldparam physical_name [String] the newly created physical collection name
       # @return [Hash] { logical: String, new_physical: String, previous_physical: String, alias_target: String, dropped_physicals: Array<String> }
       # @raise [SearchEngine::Errors::Api, ArgumentError]
       # @see `https://github.com/lstpsche/search-engine-for-typesense/wiki/Schema#lifecycle`
       # @see `https://typesense.org/docs/latest/api/collections.html`
-      def apply!(klass, client: SearchEngine::Client.new)
+      def apply!(klass, client: SearchEngine::Client.new, force_rebuild: false)
+        # Optimization: Try in-place update first if not forced to rebuild.
+        # If update! returns true, the schema is synced (either no changes or successfully patched).
+        if !force_rebuild && update!(klass, client: client)
+          compiled = compile(klass)
+          logical = compiled[:name]
+          # Resolve current physical to return consistent result
+          physical = client.resolve_alias(logical) || logical
+
+          return {
+            logical: logical,
+            new_physical: physical,
+            previous_physical: physical,
+            alias_target: physical,
+            dropped_physicals: [],
+            action: :update
+          }
+        end
+
         compiled = compile(klass)
         logical = compiled[:name]
 
@@ -205,7 +224,8 @@ module SearchEngine
           new_physical: new_physical,
           previous_physical: current_target,
           alias_target: new_physical,
-          dropped_physicals: dropped
+          dropped_physicals: dropped,
+          action: :rebuild
         }
       end
 
@@ -248,6 +268,56 @@ module SearchEngine
         end
 
         { logical: logical, new_target: previous, previous_target: current_target }
+      end
+
+      # Attempt to update the collection schema in-place (PATCH) if the changes are compatible.
+      #
+      # Compatible changes are:
+      # - Adding new fields
+      # - Removing fields (drop: true)
+      #
+      # Incompatible changes (triggering return false) are:
+      # - Modifying existing fields (type/facet/etc changes)
+      # - Changing collection-level options
+      #
+      # @param klass [Class]
+      # @param client [SearchEngine::Client]
+      # @return [Boolean] true if updated in-place, false if changes required full rebuild or no changes needed
+      def update!(klass, client: SearchEngine::Client.new)
+        res = diff(klass, client: client)
+        diff_hash = res[:diff]
+
+        # No physical collection implies missing, caller should create
+        return false if diff_hash[:collection][:physical].nil?
+
+        # Check for incompatible changes
+        return false if diff_hash[:changed_fields].any?
+        return false if diff_hash[:collection_options].any?
+
+        added_fields = Array(diff_hash[:added_fields])
+
+        # Reference-bearing fields require full rebuild (Typesense limitation for PATCH)
+        return false if added_fields.any? do |field|
+          ref = field[:reference] || field['reference']
+          async = field[:async_reference] || field['async_reference']
+          (ref && !ref.to_s.strip.empty?) || async
+        end
+
+        # Check if there is anything to do
+        return true if added_fields.empty? && diff_hash[:removed_fields].empty?
+
+        # Construct patch payload
+        fields_payload = []
+        Array(diff_hash[:removed_fields]).each do |f|
+          fields_payload << { name: f[:name], drop: true }
+        end
+        added_fields.each do |f|
+          fields_payload << f
+        end
+
+        physical = diff_hash[:collection][:physical]
+        client.update_collection(physical, { fields: fields_payload })
+        true
       end
 
       private
@@ -431,8 +501,15 @@ module SearchEngine
       def validate_attribute_type!(attribute_name, type_descriptor)
         return unless type_descriptor.to_s.downcase == 'auto'
 
+        return if regex_attribute_name?(attribute_name)
+
         raise SearchEngine::Errors::InvalidOption,
-              "Unsupported attribute type :auto for #{attribute_name}. Use a concrete type or :object/[:object]."
+              "Attribute #{attribute_name.inspect} must use a regex-style name (e.g. /.*_facet/) to declare type :auto."
+      end
+
+      def regex_attribute_name?(attribute_name)
+        name = attribute_name.to_s
+        name.match?(/[.*+?\[\]()|{}]/)
       end
 
       def nested_type?(ts_type)

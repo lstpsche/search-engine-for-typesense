@@ -92,6 +92,24 @@ module SearchEngine
         end
 
         # @param name [String]
+        # @param schema [Hash]
+        # @return [Hash]
+        def update(name, schema)
+          n = name.to_s
+          start = current_monotonic_ms
+          path = Client::RequestBuilder::COLLECTIONS_PREFIX + n
+          body = schema.dup
+
+          result = with_exception_mapping(:patch, path, {}, start) do
+            typesense.collections[n].update(body)
+          end
+
+          symbolize_keys_deep(result)
+        ensure
+          instrument(:patch, path, (start ? (current_monotonic_ms - start) : 0.0), {})
+        end
+
+        # @param name [String]
         # @param timeout_ms [Integer, nil]
         # @return [Hash]
         def delete(name, timeout_ms: nil)
