@@ -865,13 +865,16 @@ module SearchEngine
       # @param logical_coll [String] logical collection name
       # @param client [SearchEngine::Client] client to resolve aliases
       # @return [String] physical collection name
-      # @raise [ArgumentError] if alias doesn't exist or points to no collection
+      # @raise [ArgumentError] if alias/physical cannot be resolved
       def resolve_referenced_collection(logical_coll, client)
         physical_coll = client.resolve_alias(logical_coll)
-        if physical_coll.nil? || physical_coll.to_s.strip.empty?
+        physical_coll = logical_coll if physical_coll.nil? || physical_coll.to_s.strip.empty?
+
+        if physical_coll.to_s.strip.empty?
           raise ArgumentError,
                 "Referenced collection alias '#{logical_coll}' does not exist or points to no physical collection"
         end
+
         physical_coll
       end
 

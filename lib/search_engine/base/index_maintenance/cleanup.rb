@@ -24,8 +24,8 @@ module SearchEngine
             merged = SearchEngine::StaleRules.merge_filters(filters)
 
             if merged.nil? || merged.to_s.strip.empty?
-              # Impossible predicate to ensure an empty Relation when there are no stale rules
-              return all.where('id:=null && id:!=null')
+              # Impossible but valid predicate to ensure an empty Relation when there are no stale rules
+              return all.where('id:="__se_none__" && id:!="__se_none__"')
             end
 
             all.where(merged)

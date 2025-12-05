@@ -505,21 +505,93 @@ module SearchEngine
 
           count, bytes, jsonl = encode_jsonl!(docs)
           raw = SearchEngine::Client.new.import_documents(collection: collection, jsonl: jsonl, action: :upsert)
+          success_count, failure_count, errors_sample = parse_import_response(raw)
 
-          {
+          result = {
             collection: collection,
             docs_count: count,
-            success_count: count,
-            failure_count: 0,
+            success_count: success_count,
+            failure_count: failure_count,
             bytes_sent: bytes,
-            response: raw
+            response: raw,
+            errors_sample: errors_sample
           }
+
+          if failure_count.positive?
+            sample = errors_sample&.first
+            msg = "Typesense import failed for #{failure_count}/#{count} document(s)"
+            msg = "#{msg} (e.g., #{sample})" if sample
+            raise SearchEngine::Errors::InvalidParams.new(
+              msg,
+              doc: 'docs/indexer.md#troubleshooting',
+              details: result
+            )
+          end
+
+          result
         end
 
         def safe_parse_json(str)
           JSON.parse(str)
         rescue StandardError
           nil
+        end
+
+        def parse_import_response(raw)
+          return parse_import_response_from_string(raw) if raw.is_a?(String)
+          return parse_import_response_from_array(raw) if raw.is_a?(Array)
+
+          [0, 0, []]
+        end
+
+        def parse_import_response_from_string(str)
+          success = 0
+          failure = 0
+          samples = []
+
+          str.each_line do |line|
+            line = line.strip
+            next if line.empty?
+
+            h = safe_parse_json(line)
+            unless h
+              failure += 1
+              samples << 'invalid-json-line'
+              next
+            end
+
+            if truthy?(h['success'] || h[:success])
+              success += 1
+            else
+              failure += 1
+              msg = h['error'] || h[:error] || h['message'] || h[:message]
+              samples << msg.to_s[0, 200] if msg
+            end
+          end
+
+          [success, failure, samples[0, 5]]
+        end
+
+        def parse_import_response_from_array(arr)
+          success = 0
+          failure = 0
+          samples = []
+
+          arr.each do |h|
+            if h.is_a?(Hash) && truthy?(h['success'] || h[:success])
+              success += 1
+            else
+              failure += 1
+              msg = h.is_a?(Hash) ? (h['error'] || h[:error] || h['message'] || h[:message]) : nil
+              samples << msg.to_s[0, 200] if msg
+            end
+          end
+
+          [success, failure, samples[0, 5]]
+        end
+
+        def truthy?(val)
+          val == true || val.to_s.downcase == 'true'
         end
 
         def normalize_records_input(records)
