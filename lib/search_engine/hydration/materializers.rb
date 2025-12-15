@@ -489,7 +489,7 @@ module SearchEngine
         if orders.any? { |o| o.start_with?('$') }
           raise SearchEngine::Errors::InvalidOption.new(
             'Sorting by joined fields is not supported by client-side join fallback',
-            doc: 'docs/joins.md#client-side-fallback'
+            doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/joins#client-side-fallback'
           )
         end
         include_str = begin
@@ -500,7 +500,7 @@ module SearchEngine
         if include_str&.split(',')&.any? { |seg| seg.strip.start_with?('$') }
           raise SearchEngine::Errors::InvalidOption.new(
             'Selecting joined fields is not supported by client-side join fallback',
-            doc: 'docs/joins.md#client-side-fallback'
+            doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/joins#client-side-fallback'
           )
         end
 
@@ -553,7 +553,7 @@ module SearchEngine
                 # Unsupported node type for fallback (e.g., ranges, not_eq, etc.)
                 raise SearchEngine::Errors::InvalidOption.new(
                   'Only equality and IN predicates on joined fields are supported by client-side join fallback',
-                  doc: 'docs/joins.md#client-side-fallback'
+                  doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/joins#client-side-fallback'
                 )
               end
             end
@@ -611,7 +611,7 @@ module SearchEngine
             # Fallback does not support OR with joined nodes; reject early
             raise SearchEngine::Errors::InvalidOption.new(
               'OR with joined predicates is not supported by client-side join fallback',
-              doc: 'docs/joins.md#client-side-fallback'
+              doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/joins#client-side-fallback'
             )
           else
             if node.respond_to?(:field)
@@ -728,7 +728,7 @@ module SearchEngine
         raise SearchEngine::Errors::InvalidSelection.new(
           msg,
           hint: hint,
-          doc: 'docs/field_selection.md#guardrails',
+          doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/field-selection#guardrails--errors',
           details: { requested: names, include_base: include_base, exclude_base: exclude_base }
         )
       end

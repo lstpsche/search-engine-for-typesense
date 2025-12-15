@@ -38,7 +38,7 @@ module SearchEngine
       # @example
       #   SE.q('milk').per(5)
       #   SE.q.where(category: 'dairy')
-      # @see docs/dx.md
+      # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/dx
       def q(query = nil, **opts)
         model = default_model!
         rel = model.all
@@ -90,7 +90,8 @@ module SearchEngine
         if mapping.empty?
           raise ArgumentError,
                 'No default model configured. Set SearchEngine.config.default_console_model ' \
-                'or define a single SearchEngine::Base model. See docs/dx.md#generators--console-helpers.'
+                'or define a single SearchEngine::Base model. See ' \
+                'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/dx#generators--console-helpers.'
         end
 
         uniq_klasses = mapping.values.uniq
@@ -99,7 +100,7 @@ module SearchEngine
         names = uniq_klasses.map { |k| k.respond_to?(:name) && k.name ? k.name : k.to_s }.sort
         raise ArgumentError,
               "Ambiguous default model: #{names.join(', ')}. Set SearchEngine.config.default_console_model. " \
-              'See docs/dx.md#generators--console-helpers.'
+              'See https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/dx#generators--console-helpers.'
       end
 
       def resolve_model_class(value)
@@ -120,7 +121,7 @@ module SearchEngine
       rescue NameError
         raise ArgumentError,
               "Unknown model constant #{name.inspect} for default_console_model. Ensure it's loaded. " \
-              'See docs/dx.md#generators--console-helpers.'
+              'See https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/dx#generators--console-helpers.'
       end
 
       private_class_method :resolve_model_class

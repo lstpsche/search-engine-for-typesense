@@ -20,14 +20,14 @@ module SearchEngine
       unless klass.is_a?(Class)
         raise SearchEngine::Errors::InvalidParams.new(
           'klass must be a Class',
-          doc: 'docs/indexer.md#troubleshooting',
+          doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/indexer#troubleshooting',
           details: { arg: :klass }
         )
       end
       unless klass.ancestors.include?(SearchEngine::Base)
         raise SearchEngine::Errors::InvalidParams.new(
           'klass must inherit from SearchEngine::Base',
-          doc: 'docs/indexer.md#troubleshooting',
+          doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/indexer#troubleshooting',
           details: { klass: klass.to_s }
         )
       end

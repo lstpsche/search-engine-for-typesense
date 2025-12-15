@@ -98,7 +98,7 @@ module SearchEngine
           raise SearchEngine::Errors::InvalidOption.new(
             "InvalidOption: unknown prefix mode #{mode.inspect}",
             hint: 'Use :disabled, :fallback, or :always',
-            doc: 'docs/ranking.md#prefix',
+            doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/ranking#prefix',
             details: { provided: mode, allowed: valid.keys }
           )
         end
@@ -566,7 +566,7 @@ module SearchEngine
         if field_str.start_with?('$') || field_str.include?('.')
           raise SearchEngine::Errors::UnsupportedGroupField.new(
             %(UnsupportedGroupField: grouping supports base fields only (got #{field_str.inspect})),
-            doc: 'docs/grouping.md#troubleshooting',
+            doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/grouping#troubleshooting',
             details: { field: field_str }
           )
         end
@@ -578,7 +578,7 @@ module SearchEngine
             msg = build_invalid_group_unknown_field_message(sym)
             raise SearchEngine::Errors::InvalidGroup.new(
               msg,
-              doc: 'docs/grouping.md#troubleshooting',
+              doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/grouping#troubleshooting',
               details: { field: sym }
             )
           end
@@ -588,7 +588,7 @@ module SearchEngine
           got = limit.nil? ? 'nil' : limit.inspect
           raise SearchEngine::Errors::InvalidGroup.new(
             "InvalidGroup: limit must be a positive integer (got #{got})",
-            doc: 'docs/grouping.md#troubleshooting',
+            doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/grouping#troubleshooting',
             details: { limit: limit }
           )
         end
@@ -596,7 +596,7 @@ module SearchEngine
         unless [true, false].include?(missing_values)
           raise SearchEngine::Errors::InvalidGroup.new(
             "InvalidGroup: missing_values must be boolean (got #{missing_values.inspect})",
-            doc: 'docs/grouping.md#troubleshooting',
+            doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/grouping#troubleshooting',
             details: { missing_values: missing_values }
           )
         end
@@ -697,7 +697,7 @@ module SearchEngine
             'InvalidOption: ranking expects a Hash of options',
             hint: 'Use ranking(num_typos: 1, drop_tokens_threshold: 0.2,'\
                   'prioritize_exact_match: true, query_by_weights: { name: 2 })',
-            doc: 'docs/ranking.md#options'
+            doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/ranking#options'
           )
         end
 
@@ -724,14 +724,14 @@ module SearchEngine
           unless [0, 1, 2].include?(iv)
             raise SearchEngine::Errors::InvalidOption.new(
               "InvalidOption: num_typos must be 0, 1, or 2 (got #{raw.inspect})",
-              doc: 'docs/ranking.md#options'
+              doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/ranking#options'
             )
           end
           out[:num_typos] = iv
         rescue ArgumentError, TypeError
           raise SearchEngine::Errors::InvalidOption.new(
             "InvalidOption: num_typos must be an Integer in {0,1,2} (got #{raw.inspect})",
-            doc: 'docs/ranking.md#options'
+            doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/ranking#options'
           )
         end
       end
@@ -747,14 +747,14 @@ module SearchEngine
           unless fv >= 0.0 && fv <= 1.0 && fv.finite?
             raise SearchEngine::Errors::InvalidOption.new(
               "InvalidOption: drop_tokens_threshold must be a float between 0.0 and 1.0 (got #{raw.inspect})",
-              doc: 'docs/ranking.md#options'
+              doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/ranking#options'
             )
           end
           out[:drop_tokens_threshold] = fv
         rescue ArgumentError, TypeError
           raise SearchEngine::Errors::InvalidOption.new(
             "InvalidOption: drop_tokens_threshold must be a float between 0.0 and 1.0 (got #{raw.inspect})",
-            doc: 'docs/ranking.md#options'
+            doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/ranking#options'
           )
         end
       end
@@ -775,7 +775,7 @@ module SearchEngine
         unless raw.is_a?(Hash)
           raise SearchEngine::Errors::InvalidOption.new(
             'InvalidOption: query_by_weights must be a Hash of { field => Integer }',
-            doc: 'docs/ranking.md#weights'
+            doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/ranking#weights'
           )
         end
         normalized = {}
@@ -788,14 +788,14 @@ module SearchEngine
           rescue ArgumentError, TypeError
             raise SearchEngine::Errors::InvalidOption.new(
               "InvalidOption: weight for #{k.inspect} must be an Integer >= 0",
-              doc: 'docs/ranking.md#weights',
+              doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/ranking#weights',
               details: { field: k, weight: v }
             )
           end
           if w.negative?
             raise SearchEngine::Errors::InvalidOption.new(
               "InvalidOption: weight for #{k.inspect} must be >= 0",
-              doc: 'docs/ranking.md#weights',
+              doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/ranking#weights',
               details: { field: k, weight: v }
             )
           end
@@ -833,7 +833,7 @@ module SearchEngine
 
         raise SearchEngine::Errors::InvalidParams.new(
           %(#{context}: supports base fields only (got #{name.inspect})),
-          doc: 'docs/faceting.md#supported-options',
+          doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/faceting#supported-options',
           details: { field: name }
         )
       end
@@ -862,7 +862,7 @@ module SearchEngine
         raise SearchEngine::Errors::InvalidParams.new(
           "facet_by: option :sort is not supported by Typesense facets (got #{sort.inspect})",
           hint: 'Supported: default count-desc only at present.',
-          doc: 'docs/faceting.md#supported-options',
+          doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/faceting#supported-options',
           details: { sort: sort }
         )
       end
@@ -872,7 +872,7 @@ module SearchEngine
 
         raise SearchEngine::Errors::InvalidParams.new(
           'facet_by: option :stats is not supported at present',
-          doc: 'docs/faceting.md#supported-options',
+          doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/faceting#supported-options',
           details: { stats: stats }
         )
       end
@@ -894,7 +894,7 @@ module SearchEngine
         raise SearchEngine::Errors::InvalidParams.new(
           %(facet_query: invalid range syntax #{expr.inspect} (unbalanced brackets)),
           hint: 'Use shapes like "[0..9]", "[10..19]"',
-          doc: 'docs/faceting.md#facet-query-expressions',
+          doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/faceting#facet-query-expressions',
           details: { expr: expr }
         )
       end

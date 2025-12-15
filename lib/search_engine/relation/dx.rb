@@ -15,7 +15,7 @@ module SearchEngine
       # @param pretty [Boolean] pretty-print with stable key ordering when true
       # @return [String]
       # @since M8
-      # @see docs/dx.md
+      # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/dx
       def to_params_json(pretty: true)
         params = SearchEngine::CompiledParams.from(to_typesense_params)
         redacted = SearchEngine::Relation::Dx::DryRun.redact_params(params.to_h)
@@ -25,7 +25,7 @@ module SearchEngine
       # Return a single-line curl command with redacted API key and JSON body.
       # @return [String]
       # @since M8
-      # @see docs/dx.md
+      # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/dx
       def to_curl
         url = compiled_url
         params = SearchEngine::CompiledParams.from(to_typesense_params).to_h
@@ -37,7 +37,7 @@ module SearchEngine
       # @return [Hash] { url:, body:, url_opts: }
       # @raise [SearchEngine::Errors::*] same validation errors as runtime path
       # @since M8
-      # @see docs/dx.md
+      # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/dx
       def dry_run!
         params = SearchEngine::CompiledParams.from(to_typesense_params).to_h
         SearchEngine::Relation::Dx::DryRun.payload(url: compiled_url, params: params, url_opts: compiled_url_opts)
@@ -48,7 +48,7 @@ module SearchEngine
       # @param to [Symbol, nil]
       # @return [String]
       # @since M8
-      # @see docs/dx.md#helpers-\u0026-examples
+      # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/dx#helpers--examples
       def explain(to: nil)
         params = SearchEngine::CompiledParams.from(to_typesense_params)
         lines = []

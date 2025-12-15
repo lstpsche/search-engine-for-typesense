@@ -11,7 +11,7 @@ module SearchEngine
       # redaction-aware instrumentation events for DX surfaces.
       #
       # @return [SearchEngine::CompiledParams] deterministic, deeply frozen params
-      # @see `https://github.com/lstpsche/search-engine-for-typesense/wiki/Query-DSL`
+      # @see `https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/query-dsl`
       # @see `https://typesense.org/docs/latest/api/documents.html#search-document`
       def to_typesense_params
         cfg = SearchEngine.config
@@ -80,7 +80,7 @@ module SearchEngine
       # Compile filter_by string from AST nodes or legacy fragments.
       # @param ast_nodes [Array<SearchEngine::AST::Node>]
       # @return [String, nil] a Typesense filter string or nil when absent
-      # @see `https://github.com/lstpsche/search-engine-for-typesense/wiki/Compiler`
+      # @see `https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/compiler`
       def compiled_filter_by(ast_nodes)
         unless ast_nodes.empty?
           compiled = SearchEngine::Compiler.compile(ast_nodes, klass: @klass)
@@ -557,7 +557,7 @@ module SearchEngine
       rescue StandardError => error
         raise SearchEngine::Errors::InvalidOption.new(
           "InvalidOption: ranking options could not be compiled (#{error.class}: #{error.message})",
-          doc: 'docs/ranking.md#options'
+          doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/ranking#options'
         )
       end
 

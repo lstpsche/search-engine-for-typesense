@@ -76,7 +76,9 @@ class RequestBuilderTest < Minitest::Test
     assert_equal '/stopwords', rb::STOPWORDS_SUFFIX
     assert_equal '/stopwords/', rb::STOPWORDS_PREFIX
     assert_equal '/health', rb::HEALTH_PATH
-    assert_equal 'docs/client.md#errors', rb::DOC_CLIENT_ERRORS
+    expected_doc = 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/' \
+                   'client#errors'
+    assert_equal expected_doc, rb::DOC_CLIENT_ERRORS
 
     assert rb::DEFAULT_HEADERS_JSON.frozen?
     assert rb::INTERNAL_ONLY_KEYS.frozen?

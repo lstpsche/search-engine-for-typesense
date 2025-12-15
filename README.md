@@ -39,7 +39,7 @@ end
 SearchEngine::Product.where(name: "milk").select(:id, :name).limit(5).to_a
 ```
 
-See [Quickstart](https://github.com/lstpsche/search-engine-for-typesense/wiki/Quickstart).
+See [Quickstart](https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/quickstart).
 
 ### Host app SearchEngine models
 
@@ -117,15 +117,15 @@ SearchEngine::Product.upsert_bulk(data: [mapped])
 
 ## Documentation
 
-See the [Wiki](https://github.com/lstpsche/search-engine-for-typesense/wiki)
+See the [Docs](https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/index)
 
 ## Example app
 
-See `examples/demo_shop` — demonstrates single/multi search, JOINs, grouping, presets/curation, and DX/observability. Supports offline mode via the stub client (see [Testing](https://github.com/lstpsche/search-engine-for-typesense/wiki/Testing)).
+See `examples/demo_shop` — demonstrates single/multi search, JOINs, grouping, presets/curation, and DX/observability. Supports offline mode via the stub client (see [Testing](https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/testing)).
 
 ## Contributing
 
-See [Docs style guide](https://github.com/lstpsche/search-engine-for-typesense/wiki/contributing/docs_style). Follow YARDoc for public APIs, add backlinks on docs landing pages, and redact secrets in examples.
+See [Docs Style Guide](https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/docs-style-guide). Follow YARDoc for public APIs, add backlinks on docs landing pages, and redact secrets in examples.
 
 <!-- Badge references (placeholders) -->
 [ci-badge]: https://img.shields.io/github/actions/workflow/status/lstpsche/search-engine-for-typesense/ci.yml?branch=main
@@ -133,4 +133,4 @@ See [Docs style guide](https://github.com/lstpsche/search-engine-for-typesense/w
 [gem-badge]: https://img.shields.io/gem/v/search-engine-for-typesense.svg?label=gem
 [gem-url]: https://rubygems.org/gems/search-engine-for-typesense
 [docs-badge]: https://img.shields.io/badge/docs-index-blue
-[docs-url]: https://github.com/lstpsche/search-engine-for-typesense/wiki
+[docs-url]: https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/index

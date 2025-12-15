@@ -225,7 +225,7 @@ module SearchEngine
             unless target_klass.respond_to?(sym)
               raise SearchEngine::Errors::InvalidParams.new(
                 %(Unknown join-scope :#{sym} on association :#{assoc} for #{target_klass}),
-                doc: 'docs/query_dsl.md#join-scope'
+                doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/query-dsl#join-scope'
               )
             end
 
@@ -233,7 +233,7 @@ module SearchEngine
             unless rel.is_a?(SearchEngine::Relation)
               raise SearchEngine::Errors::InvalidParams.new(
                 %(join-scope :#{sym} on :#{assoc} must return a SearchEngine::Relation (got #{rel.class})),
-                doc: 'docs/query_dsl.md#join-scope'
+                doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/query-dsl#join-scope'
               )
             end
 
@@ -269,7 +269,7 @@ module SearchEngine
           when SearchEngine::AST::Raw
             raise SearchEngine::Errors::InvalidParams.new(
               'join-scope cannot include raw filter fragments',
-              doc: 'docs/query_dsl.md#join-scope'
+              doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/query-dsl#join-scope'
             )
           when SearchEngine::AST::Eq,
                SearchEngine::AST::NotEq,
@@ -285,7 +285,7 @@ module SearchEngine
             if lhs.start_with?('$') || lhs.include?('.')
               raise SearchEngine::Errors::InvalidParams.new(
                 %(join-scope cannot reference nested join field #{lhs.inspect}; use base fields only),
-                doc: 'docs/query_dsl.md#join-scope',
+                doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/query-dsl#join-scope',
                 details: { field: lhs, assoc: assoc_sym }
               )
             end
@@ -422,7 +422,7 @@ module SearchEngine
         def raise_empty_array_type!(field_sym)
           raise SearchEngine::Errors::InvalidType.new(
             %(expected #{field_sym.inspect} to be a non-empty Array),
-            doc: 'docs/query_dsl.md#troubleshooting',
+            doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/query-dsl#troubleshooting',
             details: { field: field_sym }
           )
         end

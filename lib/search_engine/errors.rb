@@ -15,7 +15,7 @@ module SearchEngine
     # @!attribute [r] hint
     #   @return [String, nil] short actionable suggestion (no secrets)
     # @!attribute [r] doc
-    #   @return [String, nil] docs path with optional anchor (e.g., "docs/query_dsl.md#operators")
+    #   @return [String, nil] docs URL with optional anchor (e.g., "https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/query-dsl#operators")
     # @!attribute [r] details
     #   @return [Object, nil] machine-readable context (JSON-serializable)
     # @!attribute [r] code
@@ -239,21 +239,21 @@ module SearchEngine
 
     # Raised when a curated ID does not match the configured pattern.
     #
-    # @see docs/curation.md
+    # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/curation
     # @example
     #   raise SearchEngine::Errors::InvalidCuratedId, 'InvalidCuratedId: "foo bar" is not a valid curated ID. Expected pattern: /\A[\w\-:\.]+\z/. Try removing illegal characters.'
     class InvalidCuratedId < Error; end
 
     # Raised when pinned/hidden lists exceed configured limits after normalization.
     #
-    # @see docs/curation.md
+    # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/curation
     # @example
     #   raise SearchEngine::Errors::CurationLimitExceeded, 'CurationLimitExceeded: pinned list exceeds max_pins=50 (attempted 51). Reduce inputs or raise the limit in SearchEngine.config.curation.'
     class CurationLimitExceeded < Error; end
 
     # Raised when an override tag is blank or invalid per allowed pattern.
     #
-    # @see docs/curation.md
+    # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/curation
     # @example
     #   raise SearchEngine::Errors::InvalidOverrideTag, 'InvalidOverrideTag: "" is invalid. Use non-blank strings that match the allowed pattern.'
     class InvalidOverrideTag < Error; end
@@ -268,7 +268,7 @@ module SearchEngine
     #   raise SearchEngine::Errors::InvalidOption.new(
     #     'InvalidOption: tag must be a simple HTML-like token',
     #     hint: 'Use a simple tag like <em> or <mark>',
-    #     doc: 'docs/highlighting.md#options'
+    #     doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/highlighting#options'
     #   )
     class InvalidOption < Error; end
 
@@ -281,7 +281,7 @@ module SearchEngine
     #   raise SearchEngine::Errors::HitLimitExceeded.new(
     #     'HitLimitExceeded: 12000 results exceed max=10000',
     #     hint: 'Increase `validate_hits!(max:)` or narrow your filters.',
-    #     doc: 'docs/hit_limits.md#validation',
+    #     doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/hit-limits#validation',
     #     details: { total_hits: 12_000, max: 10_000, collection: 'products' }
     #   )
     class HitLimitExceeded < Error; end

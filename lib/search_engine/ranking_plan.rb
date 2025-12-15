@@ -47,7 +47,7 @@ module SearchEngine
           raise SearchEngine::Errors::InvalidOption.new(
             'InvalidOption: query_by is empty; cannot apply query_by_weights',
             hint: 'Set SearchEngine.config.default_query_by or pass options(query_by: ...)',
-            doc: 'docs/ranking.md#weights'
+            doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/ranking#weights'
           )
         end
 
@@ -55,7 +55,7 @@ module SearchEngine
         if normalized_weights.all? { |w| w.to_i.zero? }
           raise SearchEngine::Errors::InvalidOption.new(
             'InvalidOption: at least one weighted field must have weight > 0',
-            doc: 'docs/ranking.md#weights'
+            doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/ranking#weights'
           )
         end
         out[:query_by_weights] = normalized_weights.join(',')
@@ -86,7 +86,7 @@ module SearchEngine
                  end
         raise SearchEngine::Errors::InvalidOption.new(
           "InvalidOption: weight specified for unknown field #{unknown.first.inspect}#{suffix}",
-          doc: 'docs/relation_guide.md#selection',
+          doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/relation-reference#selection',
           details: { unknown: unknown.first, allowed: known }
         )
       end
@@ -95,7 +95,7 @@ module SearchEngine
     rescue ArgumentError, TypeError
       raise SearchEngine::Errors::InvalidOption.new(
         'InvalidOption: query_by_weights must compile to integers',
-        doc: 'docs/ranking.md#weights'
+        doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/ranking#weights'
       )
     end
 

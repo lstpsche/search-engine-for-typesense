@@ -27,7 +27,7 @@ module SearchEngine
         # @param dry_run [Boolean] when true, do not perform network call
         # @return [Hash] stats payload: { index:, docs_count:, success_count:, failure_count:, attempts:, http_status:, duration_ms:, bytes_sent:, errors_sample: [] }
         # @raise [SearchEngine::Errors::Api] when the underlying client raises an API error (propagated)
-        # @see docs/indexer.md
+        # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/indexer
         if dry_run
           # Emit instrumentation parity without network
           http_status = 200

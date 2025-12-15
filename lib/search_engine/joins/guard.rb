@@ -28,7 +28,7 @@ module SearchEngine
         raise SearchEngine::Errors::InvalidJoin.new(
           msg,
           hint: (suggestions&.any? ? "Did you mean #{suggestions.map { |s| ":#{s}" }.join(', ')}?" : nil),
-          doc: 'docs/joins.md#troubleshooting',
+          doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/joins#troubleshooting',
           details: { assoc: key, known: safe_joins_config(klass).keys }
         )
       end
@@ -61,7 +61,7 @@ module SearchEngine
         raise SearchEngine::Errors::InvalidJoinConfig.new(
           msg,
           hint: 'Declare local_key and foreign_key in join config.',
-          doc: 'docs/joins.md#troubleshooting',
+          doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/joins#troubleshooting',
           details: { assoc: key, missing: missing }
         )
       end
@@ -80,7 +80,7 @@ module SearchEngine
 
         raise SearchEngine::Errors::JoinNotApplied.new(
           "Call .joins(:#{key}) before #{context} on #{key} fields",
-          doc: 'docs/joins.md#troubleshooting',
+          doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/joins#troubleshooting',
           details: { assoc: key, context: context }
         )
       end
@@ -141,7 +141,7 @@ module SearchEngine
 
         raise SearchEngine::Errors::UnsupportedJoinNesting.new(
           'Only one join hop is supported: `$assoc.field`. Use a separate pipeline step to denormalize deeper paths.',
-          doc: 'docs/joins.md#troubleshooting',
+          doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/joins#troubleshooting',
           details: { path: path }
         )
       end

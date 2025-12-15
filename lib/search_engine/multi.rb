@@ -51,7 +51,7 @@ module SearchEngine
     # @return [self]
     # @raise [ArgumentError] when label is duplicate/invalid, relation is invalid, or api_key is provided
     # @note Per-search api_key is not supported by the underlying Typesense client and will raise.
-    # @see `https://github.com/lstpsche/search-engine-for-typesense/wiki/Multi-search-Guide`
+    # @see `https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/multi-search-guide`
     def add(label, relation, api_key: nil)
       key = Multi.canonicalize_label(label)
       raise ArgumentError, "Multi#add: duplicate label #{label.inspect} (labels must be unique)." if @keys.include?(key)
@@ -103,7 +103,7 @@ module SearchEngine
     #   m.add(:products, Product.all.per(10))
     #   m.to_payloads(common: { query_by: SearchEngine.config.default_query_by })
     #   # => [{ collection: "products", q: "*", query_by: "name", per_page: 10 }]
-    # @see `https://github.com/lstpsche/search-engine-for-typesense/wiki/Multi-search-Guide`
+    # @see `https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/multi-search-guide`
     def to_payloads(common: {})
       raise ArgumentError, 'common must be a Hash' unless common.is_a?(Hash)
 

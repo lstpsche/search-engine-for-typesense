@@ -12,17 +12,17 @@ module SearchEngine
     # Supports FORMAT env var (table/json) and redaction-aware details.
     #
     # @since M8
-    # @see docs/cli.md#doctor
+    # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/cli#doctor
     module Doctor
-      WIKI_BASE = 'https://github.com/lstpsche/search-engine-for-typesense/wiki/'
+      DOCS_BASE = 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/'
 
       module_function
 
-      # Build a link to the gem wiki (pass slug without .md, anchors allowed)
+      # Build a link to the docs site (pass slug without .md, anchors allowed)
       def wiki(slug)
         return nil if slug.nil? || slug.to_s.strip.empty?
 
-        WIKI_BASE + slug.to_s
+        DOCS_BASE + slug.to_s.tr('_', '-')
       end
 
       class << self
@@ -30,7 +30,7 @@ module SearchEngine
         # Returns exit code (0 success, 1 failure).
         # @return [Integer]
         # @since M8
-        # @see docs/cli.md#doctor
+        # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/cli#doctor
         def run
           puts 'Executing doctor checks...'
 
@@ -136,7 +136,7 @@ module SearchEngine
           ok = missing.empty?
           hint = unless ok
                    'Set TYPESENSE_* envs or configure in an initializer. ' \
-                   'See docs/installation.md#configuration'
+                   'See https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/installation#configuration'
                  end
 
           details = cfg.to_h_redacted
@@ -158,7 +158,7 @@ module SearchEngine
             started,
             error,
             hint: 'Unexpected error reading configuration',
-            doc: 'docs/configuration.md'
+            doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/configuration'
           )
         end
 
@@ -275,7 +275,7 @@ module SearchEngine
                    nil
                  else
                    'Run schema lifecycle to create physical collections and swap alias. ' \
-                   'See docs/schema.md#lifecycle'
+                   'See https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/schema#lifecycle'
                  end
           details = { resolved: resolved, missing: missing }
           Builder.result_for_check(

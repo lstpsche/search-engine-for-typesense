@@ -145,18 +145,19 @@ module SearchEngine
         SearchEngine.instance_variable_set(:@_models_loader, loader)
       end
 
+      # Setup immediately so host to_prepare callbacks that run early can rely on
+      # SearchEngine models being available.
+      unless SearchEngine.instance_variable_defined?(:@_models_loader_setup)
+        loader.setup
+        SearchEngine.instance_variable_set(:@_models_loader_setup, true)
+      end
+
       # Set up and coordinate with Rails reloader lifecycle.
       config.to_prepare do
         l = SearchEngine.instance_variable_get(:@_models_loader)
         next unless l
 
-        if SearchEngine.instance_variable_defined?(:@_models_loader_setup)
-          l.reload if defined?(Rails) && Rails.env.development?
-        else
-          l.setup
-          SearchEngine.instance_variable_set(:@_models_loader_setup, true)
-        end
-
+        l.reload if defined?(Rails) && Rails.env.development?
         # Always eager-load configured SearchEngine models so their `collection` calls
         # register mappings at boot, regardless of Rails.eager_load setting.
         l.eager_load

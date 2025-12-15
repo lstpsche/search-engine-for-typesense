@@ -16,7 +16,7 @@ module SearchEngine
     #
     # @example
     #   rails g search_engine:model Product --collection products --attrs id:integer name:string
-    # @see docs/dx.md
+    # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/dx
     class ModelGenerator < Rails::Generators::NamedBase
       source_root File.expand_path('templates', __dir__)
 
@@ -29,13 +29,15 @@ module SearchEngine
       def validate_options!
         return if options[:collection].to_s.strip.present?
 
-        raise Thor::Error, '--collection is required. See docs/dx.md#generators--console-helpers'
+        raise Thor::Error,
+              '--collection is required. See ' \
+              'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/dx#generators--console-helpers'
       end
 
       def create_model
         @collection_name = options[:collection].to_s.strip
         @attributes = parse_attrs(options[:attrs])
-        template 'model.rb.tt', File.join('app/models/search_engine', "#{file_name}.rb")
+        template 'model.rb.tt', File.join(search_engine_models_path, "#{file_name}.rb")
       end
 
       private
@@ -69,6 +71,15 @@ module SearchEngine
         return nil unless defined?(DidYouMean::SpellChecker)
 
         DidYouMean::SpellChecker.new(dictionary: ALLOWED_TYPES).correct(token).first
+      end
+
+      def search_engine_models_path
+        cfg = SearchEngine.respond_to?(:config) ? SearchEngine.config : nil
+        raw = cfg.respond_to?(:search_engine_models) ? cfg.search_engine_models : nil
+        return 'app/search_engine' if raw.nil? || raw == false
+
+        path = raw.to_s.strip
+        path.empty? ? 'app/search_engine' : path
       end
     end
   end

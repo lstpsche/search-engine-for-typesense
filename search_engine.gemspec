@@ -28,12 +28,8 @@ Gem::Specification.new do |spec|
   ]
   spec.require_paths = ['lib']
   spec.bindir = 'exe'
-  spec.executables = ['tuit']
 
   spec.add_dependency 'concurrent-ruby', '>= 1.2'
   spec.add_dependency 'rails', '>= 6.1'
   spec.add_dependency 'typesense', '>= 4.1.0'
-  # TUI runtime deps (kept minimal and optional to the CLI entrypoint)
-  spec.add_dependency 'tty-prompt', '>= 0.23'
-  spec.add_dependency 'tty-table', '>= 0.12'
 end

@@ -5,7 +5,7 @@ module SearchEngine
     # Manage stopword sets for a collection.
     #
     # @since 0.1.0
-    # @see docs/synonyms_stopwords.md#management
+    # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/synonyms-stopwords#management
     # @see `https://typesense.org/docs/latest/api/stopwords.html`
     module Stopwords
       class << self

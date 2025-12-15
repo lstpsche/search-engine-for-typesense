@@ -8,7 +8,7 @@ module SearchEngine
     # #children and #each_child, and compact debug output.
     # Subclasses must implement #type and override readers as needed.
     #
-    # @see `https://github.com/lstpsche/search-engine-for-typesense/wiki/Query-DSL`
+    # @see `https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/query-dsl`
     class Node
       # Maximum preview length for inspect payloads
       INSPECT_PREVIEW_LIMIT = 80

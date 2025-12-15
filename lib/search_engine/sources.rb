@@ -27,7 +27,8 @@ module SearchEngine
         model = options[:model]
         unless model.is_a?(Class)
           raise SearchEngine::Errors::InvalidParams,
-                'active_record source requires :model (ActiveRecord class). See docs/indexer.md.'
+                'active_record source requires :model (ActiveRecord class). See ' \
+                'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/indexer.'
         end
 
         scope = options[:scope]
@@ -41,7 +42,8 @@ module SearchEngine
         sql = options[:sql]
         unless sql.is_a?(String) && !sql.strip.empty?
           raise SearchEngine::Errors::InvalidParams,
-                'sql source requires :sql (String). See docs/indexer.md.'
+                'sql source requires :sql (String). See ' \
+                'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/indexer.'
         end
 
         binds = options[:binds]
@@ -55,7 +57,8 @@ module SearchEngine
         callable = block || options[:callable]
         unless callable
           raise SearchEngine::Errors::InvalidParams,
-                'lambda source requires a block or :callable. See docs/indexer.md.'
+                'lambda source requires a block or :callable. See ' \
+                'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/indexer.'
         end
 
         LambdaSource.new(callable)

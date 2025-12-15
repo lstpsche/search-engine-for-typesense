@@ -23,7 +23,7 @@ module SearchEngine
   #
   # Exposes ergonomic builders as module functions, returning immutable nodes.
   #
-  # @see `https://github.com/lstpsche/search-engine-for-typesense/wiki/Query-DSL`
+  # @see `https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/query-dsl`
   module AST
     module_function
 

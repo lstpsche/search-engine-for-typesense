@@ -11,7 +11,7 @@ module SearchEngine
     #   src = SearchEngine::Sources::LambdaSource.new(->(cursor:, partition:) { [[row1, row2]] })
     #   src.each_batch { |rows| ... }
     #
-    # @see `https://github.com/lstpsche/search-engine-for-typesense/wiki/Indexer`
+    # @see `https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/indexer`
     class LambdaSource
       include Base
 

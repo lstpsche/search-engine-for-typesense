@@ -49,7 +49,7 @@ Set Typesense env vars or run offline. See `.env.example` for placeholders.
 end
 ```
 
-See docs: [Multi‑search Guide](../../docs/multi_search.md).
+See docs: [Multi-search Guide](https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/multi-search-guide).
 
 ## Presets & Curation
 
@@ -59,7 +59,9 @@ Try adding a curated list in code:
 SearchEngine::Product.preset(:popular_products, mode: :only).pin("p_12").hide("p_99").explain
 ```
 
-See docs: [Presets & Curation Playbook](../../docs/presets_curation_playbook.md) and [Presets](../../docs/presets.md).
+See docs:
+- [Presets](https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/presets)
+- [Curation](https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/curation)
 
 ## Environment
 
@@ -81,8 +83,8 @@ See docs: [Presets & Curation Playbook](../../docs/presets_curation_playbook.md)
 ## Troubleshooting
 
 - Missing API key or connection errors: run doctor `bin/rails search_engine:doctor`.
-- Unknown fields: adjust model attributes or selection; see [Field Selection](../../docs/field_selection.md).
-- Observability: see [Observability, DX & Testing](../../docs/observability_dx_testing.md).
+- Unknown fields: adjust model attributes or selection; see [Field Selection](https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/field-selection).
+- Observability: see [Observability + DX + Testing](https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/observability-dx-testing).
 
 ## Cross‑links
 

@@ -39,7 +39,7 @@ module SearchEngine
       # Build a policy from a config-like Hash.
       # @param cfg [Hash]
       # @return [RetryPolicy]
-      # @see docs/indexer.md
+      # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/indexer
       def self.from_config(cfg)
         c = cfg || {}
         new(

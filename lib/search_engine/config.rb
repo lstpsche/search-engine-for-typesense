@@ -302,13 +302,13 @@ module SearchEngine
     # Controls validation rules and list limits.
     class CurationConfig
       # @return [Integer] maximum number of pinned IDs allowed (default: 50)
-      # @see docs/curation.md
+      # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/curation
       attr_accessor :max_pins
       # @return [Integer] maximum number of hidden IDs allowed (default: 200)
-      # @see docs/curation.md
+      # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/curation
       attr_accessor :max_hidden
       # @return [Regexp] allowed curated ID pattern (used for IDs and override tags)
-      # @see docs/curation.md
+      # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/curation
       attr_accessor :id_regex
 
       def initialize
@@ -383,7 +383,7 @@ module SearchEngine
 
     # Expose presets configuration.
     # @return [SearchEngine::Config::PresetsConfig]
-    # @see docs/presets.md
+    # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/presets
     def presets
       @presets ||= PresetsConfig.new
     end
@@ -393,7 +393,7 @@ module SearchEngine
     # Normalizes values on assignment.
     # @param value [Object]
     # @return [void]
-    # @see docs/presets.md#config-default-preset
+    # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/presets#config-default-preset
     def presets=(value)
       cfg = presets
       if value.is_a?(PresetsConfig)
