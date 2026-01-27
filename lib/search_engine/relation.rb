@@ -329,7 +329,7 @@ module SearchEngine
     # @param args [Array<Object>]
     # @return [Object]
     # @raise [NoMethodError] when the delegated Array doesn't support the method
-    def method_missing(method_name, *args, &block)
+    def method_missing(method_name, *args, **kwargs, &block)
       # Delegate to the model class first (AR-like behavior)
       # Avoid delegating reflective/identity methods that console printers may use
       # to derive labels; these should reflect the Relation itself.
@@ -337,14 +337,31 @@ module SearchEngine
         name inspect pretty_inspect to_s to_str to_ary class object_id __id__
         methods public_methods singleton_class respond_to? respond_to_missing?
       ]
-      if @klass.respond_to?(method_name) && !blocked_class_delegations.include?(method_name.to_sym)
-        return @klass.public_send(method_name, *args, &block)
+
+      sym = method_name.to_sym
+      if @klass.respond_to?(method_name) && !blocked_class_delegations.include?(sym)
+        # If this is a SearchEngine model scope, apply it against the *current*
+        # relation (AR parity) rather than delegating to the class method which
+        # starts from `.all` and would drop current relation state.
+        if @klass.respond_to?(:__search_engine_scope_registry__)
+          impl = @klass.__search_engine_scope_registry__[sym]
+          if impl
+            result = instance_exec(*args, **kwargs, &impl)
+            return self if result.nil? || result.equal?(@klass)
+            return result if result.is_a?(SearchEngine::Relation)
+
+            raise ArgumentError,
+                  "scope :#{sym} must return a SearchEngine::Relation (got #{result.class})"
+          end
+        end
+
+        return @klass.public_send(method_name, *args, **kwargs, &block)
       end
 
-      return super if blocked_class_delegations.include?(method_name.to_sym)
+      return super if blocked_class_delegations.include?(sym)
 
       # Only delegate to the materialized Array for a conservative whitelist of methods.
-      unless ARRAY_DELEGATED_METHODS.include?(method_name.to_sym)
+      unless ARRAY_DELEGATED_METHODS.include?(sym)
         raise NoMethodError, %(undefined method `#{method_name}` for #{@klass}:Class)
       end
 
@@ -363,6 +380,18 @@ module SearchEngine
     def respond_to_missing?(method_name, include_private = false)
       # Explicitly avoid implicit conversions that change object identity in consoles
       return false if %i[to_ary to_str].include?(method_name.to_sym)
+
+      sym = method_name.to_sym
+      blocked_class_delegations = %i[
+        name inspect pretty_inspect to_s to_str to_ary class object_id __id__
+        methods public_methods singleton_class respond_to? respond_to_missing?
+      ]
+
+      if @klass.respond_to?(:__search_engine_scope_registry__) &&
+         @klass.__search_engine_scope_registry__.key?(sym) &&
+         !blocked_class_delegations.include?(sym)
+        return true
+      end
 
       # Whitelist a conservative set of Enumerable-like methods for convenience.
       ARRAY_DELEGATED_METHODS.include?(method_name.to_sym) || super

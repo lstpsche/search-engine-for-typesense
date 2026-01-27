@@ -21,6 +21,15 @@ module SearchEngine
       extend ActiveSupport::Concern
 
       class_methods do
+        # Internal registry of declared scopes for this model.
+        # Used to apply scopes against an existing Relation (AR parity).
+        #
+        # @api private
+        # @return [Hash{Symbol=>Proc}]
+        def __search_engine_scope_registry__
+          @__search_engine_scope_registry__ ||= {}
+        end
+
         # Define a named, chainable scope.
         #
         # @param name [#to_sym] public method name for the scope
@@ -68,6 +77,8 @@ module SearchEngine
             raise ArgumentError,
                   "scope :#{method_name} must return a SearchEngine::Relation (got #{result.class})"
           end
+
+          __search_engine_scope_registry__[method_name] = impl
 
           nil
         end
