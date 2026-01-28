@@ -30,6 +30,30 @@ module SearchEngine
           @__search_engine_scope_registry__ ||= {}
         end
 
+        # Normalize scope arguments to preserve Ruby 3 keyword behavior.
+        # When the scope expects keyword args only, accept a single Hash
+        # positional argument by converting it into kwargs.
+        #
+        # @api private
+        # @return [Array<Array, Hash>] normalized [args, kwargs]
+        def __se_normalize_scope_args(impl, args, kwargs)
+          return [args, kwargs] unless kwargs.empty? && args.length == 1 && args.first.is_a?(Hash)
+
+          params = impl.parameters
+          expects_keywords = params.any? { |(type, _)| %i[key keyreq keyrest].include?(type) }
+          expects_positional = params.any? { |(type, _)| %i[req opt rest].include?(type) }
+          return [args, kwargs] if expects_positional || !expects_keywords
+
+          raw = args.first
+          coerced = raw.each_with_object({}) do |(k, v), acc|
+            key = k.respond_to?(:to_sym) ? k.to_sym : k
+            acc[key] = v
+          end
+
+          [[], coerced]
+        end
+        private :__se_normalize_scope_args
+
         # Define a named, chainable scope.
         #
         # @param name [#to_sym] public method name for the scope
@@ -54,7 +78,7 @@ module SearchEngine
           # Avoid overriding core query methods and relation materializers.
           reserved = %i[
             all first last take count exists? find find_by pluck delete_all update_all
-            where rewhere order select include_fields exclude reselect joins preset ranking prefix search
+            where rewhere merge order select include_fields exclude reselect joins preset ranking prefix search
             limit offset page per_page per options cache
           ]
           if reserved.include?(method_name)
@@ -66,7 +90,8 @@ module SearchEngine
 
             # Evaluate scope body directly against the fresh relation, so `self`
             # inside the scope is a Relation and chaining behaves predictably.
-            result = base.instance_exec(*args, **kwargs, &impl)
+            norm_args, norm_kwargs = __se_normalize_scope_args(impl, args, kwargs)
+            result = base.instance_exec(*norm_args, **norm_kwargs, &impl)
 
             # Coerce common mistakes to a usable Relation:
             # - nil (AR parity) -> return a fresh relation

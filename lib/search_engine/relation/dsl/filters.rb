@@ -96,7 +96,131 @@ module SearchEngine
           end
         end
 
+        # Merge another relation or join-scope into this relation.
+        #
+        # - When merging a relation for a joined model, the association must be
+        #   applied via `joins(:assoc)` and the scope predicates are rewritten
+        #   into joined filters.
+        # - When merging a Hash, it is treated as a join-scope shorthand:
+        #   `merge(authors: :published)` mirrors `where(authors: :published)`.
+        #
+        # @param other [SearchEngine::Relation, Hash]
+        # @param assoc [Symbol, String, nil] explicit association for joined relations
+        # @return [SearchEngine::Relation]
+        def merge(other = nil, assoc: nil)
+          raise ArgumentError, 'merge: provide a relation or join-scope Hash' if other.nil?
+
+          case other
+          when SearchEngine::Relation
+            merge_relation(other, assoc: assoc)
+          when Hash
+            merge_join_scopes(other)
+          else
+            raise ArgumentError, "merge: unsupported input #{other.class}"
+          end
+        end
+
         private
+
+        def merge_relation(other, assoc: nil)
+          return self if other.nil?
+
+          return merge_same_model_relation(other) if other.klass == @klass
+
+          assoc_sym = resolve_merge_assoc_for_relation(other, assoc: assoc)
+          SearchEngine::Joins::Guard.ensure_join_applied!(joins_list, assoc_sym, context: 'merging')
+          cfg = @klass.join_for(assoc_sym)
+
+          nodes = Array(other.send(:ast)).flatten.compact
+          return self if nodes.empty?
+
+          rewritten = rewrite_join_scope_nodes(nodes, assoc_sym, cfg)
+          spawn do |s|
+            s[:ast] = Array(s[:ast]) + Array(rewritten)
+            s[:filters] = Array(s[:filters])
+          end
+        end
+
+        def merge_same_model_relation(other)
+          nodes = Array(other.send(:ast)).flatten.compact
+          fragments = merge_relation_filters(other)
+          return self if nodes.empty? && fragments.empty?
+
+          spawn do |s|
+            s[:ast] = Array(s[:ast]) + nodes
+            s[:filters] = Array(s[:filters]) + fragments
+          end
+        end
+
+        def merge_relation_filters(other)
+          state = other.instance_variable_get(:@state)
+          Array(state ? state[:filters] : [])
+        rescue StandardError
+          []
+        end
+
+        def resolve_merge_assoc_for_relation(other, assoc: nil)
+          return assoc.to_sym unless assoc.nil?
+
+          cfgs = @klass.respond_to?(:joins_config) ? (@klass.joins_config || {}) : {}
+          target_collection = other.klass.collection if other.klass.respond_to?(:collection)
+          collection_name = target_collection.to_s
+          if collection_name.strip.empty?
+            raise SearchEngine::Errors::InvalidParams.new(
+              "merge: cannot infer association for #{other.klass}",
+              hint: 'Declare a collection on the joined model or pass assoc: :name',
+              doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/joins#troubleshooting'
+            )
+          end
+
+          matches = cfgs.values.select { |cfg| cfg[:collection].to_s == collection_name }
+          if matches.empty?
+            available = cfgs.keys.map { |k| ":#{k}" }.join(', ')
+            hint = available.empty? ? 'Declare a join on the base model.' : "Available joins: #{available}."
+            raise SearchEngine::Errors::InvalidParams.new(
+              "merge: no join association for #{collection_name} on #{klass_name_for_inspect}",
+              hint: "#{hint} Pass assoc: :name to disambiguate.",
+              doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/joins#troubleshooting',
+              details: { target_collection: collection_name, available: cfgs.keys }
+            )
+          end
+
+          if matches.length > 1
+            names = matches.map { |cfg| cfg[:name].to_sym }
+            raise SearchEngine::Errors::InvalidParams.new(
+              "merge: ambiguous association for #{collection_name} on #{klass_name_for_inspect}",
+              hint: "Pass assoc: :#{names.first} (available: #{names.map(&:inspect).join(', ')})",
+              doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/joins#troubleshooting',
+              details: { target_collection: collection_name, matches: names }
+            )
+          end
+
+          matches.first[:name].to_sym
+        end
+
+        def merge_join_scopes(hash)
+          raise ArgumentError, 'merge: join-scope Hash must be non-empty' if hash.empty?
+
+          out_nodes = []
+          hash.each do |assoc, scope_value|
+            unless join_scope_value?(scope_value)
+              raise SearchEngine::Errors::InvalidParams.new(
+                "merge: expected a join scope Symbol or Array<Symbol> for #{assoc.inspect}",
+                hint: 'Use merge(assoc: :scope) or merge(assoc: [:scope1, :scope2])',
+                doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/query-dsl#join-scope',
+                details: { assoc: assoc, value: scope_value }
+              )
+            end
+            process_join_scope(assoc.to_sym, scope_value, out_nodes)
+          end
+
+          return self if out_nodes.empty?
+
+          spawn do |s|
+            s[:ast] = Array(s[:ast]) + out_nodes
+            s[:filters] = Array(s[:filters])
+          end
+        end
 
         # Build AST nodes, rewriting:
         # - empty-array predicates to hidden *_empty flags when enabled (existing behavior)
@@ -206,8 +330,9 @@ module SearchEngine
 
         # Process where(assoc: :scope) or where(assoc: [:s1, :s2]) by taking the AST
         # produced by the target model's scope(s) and rewriting their fields into
-        # joined predicates (e.g., "$assoc.field"). Supports all comparison/node types
-        # except nested joins inside the scope and Raw fragments.
+        # joined predicates (e.g., "$assoc.field"). Supports all comparison/node types;
+        # nested joins inside the scope are rejected and raw fragments are wrapped
+        # into join-scoped expressions when safe.
         def process_join_scope(assoc_sym, scope_value, out_nodes)
           assoc = assoc_sym.to_sym
 
@@ -249,8 +374,9 @@ module SearchEngine
         #   field OP value
         # becomes a joined predicate
         #   "$assoc.field" OP value
-        # Boolean/grouping nodes are rewritten recursively. Raw fragments and
-        # pre-joined fields inside the scope are rejected.
+        # Boolean/grouping nodes are rewritten recursively. Raw fragments are
+        # wrapped into a join-scoped expression when safe; pre-joined fields
+        # inside the scope are rejected.
         def rewrite_join_scope_nodes(nodes, assoc_sym, assoc_cfg)
           Array(nodes).flatten.compact.map { |n| rewrite_join_scope_node(n, assoc_sym, assoc_cfg) }
         end
@@ -267,10 +393,15 @@ module SearchEngine
             inner = Array(node.children).first
             SearchEngine::AST.group(rewrite_join_scope_node(inner, assoc_sym, assoc_cfg))
           when SearchEngine::AST::Raw
-            raise SearchEngine::Errors::InvalidParams.new(
-              'join-scope cannot include raw filter fragments',
-              doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/query-dsl#join-scope'
-            )
+            fragment = node.fragment
+            if fragment.include?('$')
+              raise SearchEngine::Errors::InvalidParams.new(
+                'join-scope raw fragments must use base fields only (no nested join paths)',
+                doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/query-dsl#join-scope',
+                details: { fragment: fragment, assoc: assoc_sym }
+              )
+            end
+            SearchEngine::AST.raw("$#{assoc_sym}(#{fragment})")
           when SearchEngine::AST::Eq,
                SearchEngine::AST::NotEq,
                SearchEngine::AST::Gt,

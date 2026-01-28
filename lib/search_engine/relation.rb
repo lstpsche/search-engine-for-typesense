@@ -343,17 +343,8 @@ module SearchEngine
         # If this is a SearchEngine model scope, apply it against the *current*
         # relation (AR parity) rather than delegating to the class method which
         # starts from `.all` and would drop current relation state.
-        if @klass.respond_to?(:__search_engine_scope_registry__)
-          impl = @klass.__search_engine_scope_registry__[sym]
-          if impl
-            result = instance_exec(*args, **kwargs, &impl)
-            return self if result.nil? || result.equal?(@klass)
-            return result if result.is_a?(SearchEngine::Relation)
-
-            raise ArgumentError,
-                  "scope :#{sym} must return a SearchEngine::Relation (got #{result.class})"
-          end
-        end
+        scope_result = apply_model_scope(sym, args, kwargs)
+        return scope_result unless scope_result == :__se_no_scope
 
         return @klass.public_send(method_name, *args, **kwargs, &block)
       end
@@ -409,6 +400,29 @@ module SearchEngine
     end
 
     private
+
+    # Apply a model scope against the current relation when present.
+    # Returns :__se_no_scope when no scope matches.
+    def apply_model_scope(sym, args, kwargs)
+      return :__se_no_scope unless @klass.respond_to?(:__search_engine_scope_registry__)
+
+      impl = @klass.__search_engine_scope_registry__[sym]
+      return :__se_no_scope unless impl
+
+      norm_args, norm_kwargs = normalize_scope_args_for(impl, args, kwargs)
+      result = instance_exec(*norm_args, **norm_kwargs, &impl)
+      return self if result.nil? || result.equal?(@klass)
+      return result if result.is_a?(SearchEngine::Relation)
+
+      raise ArgumentError,
+            "scope :#{sym} must return a SearchEngine::Relation (got #{result.class})"
+    end
+
+    def normalize_scope_args_for(impl, args, kwargs)
+      return [args, kwargs] unless @klass.respond_to?(:__se_normalize_scope_args, true)
+
+      @klass.__send__(:__se_normalize_scope_args, impl, args, kwargs)
+    end
 
     # True when the relation has already executed and memoized the result.
     # @return [Boolean]
