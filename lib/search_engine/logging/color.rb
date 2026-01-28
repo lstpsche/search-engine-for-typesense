@@ -28,6 +28,15 @@ module SearchEngine
         "\e[#{code}m#{str}\e[0m"
       end
 
+      # Apply bold styling to a string.
+      # @param str [String]
+      # @return [String]
+      def bold(str)
+        return str unless enabled?
+
+        "\e[1m#{str}\e[0m"
+      end
+
       # Map indexation status to a color.
       # @param status [#to_s]
       # @return [Symbol] color name

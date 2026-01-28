@@ -45,10 +45,10 @@ module SearchEngine
       # @raise [ArgumentError] if the class has no collection name defined
       # @note Automatically sets `enable_nested_fields: true` at collection level when
       #   any attribute is declared with type `:object` or `[:object]`.
-      def compile(klass)
+      def compile(klass, client: nil)
         collection_name = collection_name_for!(klass)
 
-        fields_array, needs_nested_fields = compile_fields_for(klass)
+        fields_array, needs_nested_fields = compile_fields_for(klass, client: client)
         # Do NOT include implicit `id` in compiled schema: Typesense treats `id` as
         # a special string identifier and it is not declared in collection schema.
         # Keeping it out avoids confusing diffs and mismatches with live schema.
@@ -73,7 +73,7 @@ module SearchEngine
       # @see `https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/schema-indexer-e2e`
       # @see `https://typesense.org/docs/latest/api/collections.html`
       def diff(klass, client: SearchEngine::Client.new)
-        compiled = compile(klass)
+        compiled = compile(klass, client: client)
         logical_name = compiled[:name]
 
         physical_name = client.resolve_alias(logical_name) || logical_name
@@ -165,7 +165,7 @@ module SearchEngine
           }
         end
 
-        compiled = compile(klass)
+        compiled = compile(klass, client: client)
         logical = compiled[:name]
 
         start_ms = monotonic_ms
@@ -437,10 +437,10 @@ module SearchEngine
       end
 
       # Compile attributes from the model DSL into a fields array and detect nested fields requirement.
-      def compile_fields_for(klass)
+      def compile_fields_for(klass, client: nil)
         attributes_map = klass.respond_to?(:attributes) ? klass.attributes : {}
         attribute_options = klass.respond_to?(:attribute_options) ? (klass.attribute_options || {}) : {}
-        references_by_local_key = build_references_by_local_key(klass)
+        references_by_local_key = build_references_by_local_key(klass, client: client)
         async_reference_by_local_key = build_async_reference_by_local_key(klass)
 
         fields_array = []
@@ -761,7 +761,7 @@ module SearchEngine
       # Build a mapping of local attribute names to referenced collection names based on join declarations.
       # @param klass [Class]
       # @return [Hash{Symbol=>String}]
-      def build_references_by_local_key(klass)
+      def build_references_by_local_key(klass, client: nil)
         refs = {}
         return refs unless klass.respond_to?(:joins_config)
 
@@ -776,6 +776,7 @@ module SearchEngine
           next if lk.nil?
 
           coll_name = coll.to_s
+          coll_name = resolve_reference_collection_name(coll_name, client)
           fk_name = fk.to_s
           next if coll_name.strip.empty? || fk_name.strip.empty?
 
@@ -783,6 +784,20 @@ module SearchEngine
           refs[key] ||= "#{coll_name}.#{fk_name}"
         end
         refs
+      end
+
+      def resolve_reference_collection_name(logical, client)
+        return logical unless client
+
+        physical = begin
+          client.resolve_alias(logical)
+        rescue StandardError
+          nil
+        end
+        physical = logical if physical.nil? || physical.to_s.strip.empty?
+        physical.to_s
+      rescue StandardError
+        logical.to_s
       end
 
       # Build a mapping of local attribute names to async_reference flag based on belongs_to declarations.

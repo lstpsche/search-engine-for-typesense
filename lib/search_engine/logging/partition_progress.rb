@@ -29,7 +29,7 @@ module SearchEngine
                  "→ #{SearchEngine::Logging::Color.apply("status=#{status_val}", status_color)}"
         parts << "docs=#{summary.docs_total}"
         success_str = "success=#{success_total}"
-        parts << (success_total.positive? ? SearchEngine::Logging::Color.apply(success_str, :green) : success_str)
+        parts << (success_total.positive? ? SearchEngine::Logging::Color.bold(success_str) : success_str)
         failed_str = "failed=#{failed_total}"
         parts << (failed_total.positive? ? SearchEngine::Logging::Color.apply(failed_str, :red) : failed_str)
         parts << "batches=#{summary.batches_total}"

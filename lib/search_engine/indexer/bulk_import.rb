@@ -14,7 +14,6 @@ module SearchEngine
     # @since M8
     class BulkImport
       DEFAULT_ACTION = :upsert
-
       class << self
         # Execute a bulk import for the provided batches enumerable.
         #
@@ -29,7 +28,6 @@ module SearchEngine
         # @raise [SearchEngine::Errors::InvalidParams]
         def call(klass:, into:, enum:, batch_size:, action: DEFAULT_ACTION, log_batches: true, max_parallel: 1)
           validate_args!(klass, into, enum, action)
-
           mp = max_parallel.to_i
           mp = 1 unless mp.positive?
 
@@ -578,7 +576,7 @@ module SearchEngine
           success_count = stats[:success_count].to_i
           success_str = "success=#{success_count}"
           line << (
-            success_count.positive? ? SearchEngine::Logging::Color.apply(success_str, :green) : success_str
+            success_count.positive? ? SearchEngine::Logging::Color.bold(success_str) : success_str
           ) << ' '
           failed_count = stats[:failure_count].to_i
           failed_str = "failed=#{failed_count}"

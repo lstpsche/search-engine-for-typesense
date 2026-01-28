@@ -157,7 +157,9 @@ module SearchEngine
             if missing
               puts(%(  "#{dep_coll}" → ensure (missing) → index_collection))
               # Avoid nested preflight to prevent redundant recursion cycles
-              dep_klass.index_collection(client: client)
+              SearchEngine::Instrumentation.with_context(bulk_suppress_cascade: true) do
+                dep_klass.index_collection(client: client)
+              end
             else
               puts(%(  "#{dep_coll}" → present (skip)))
             end
@@ -166,7 +168,9 @@ module SearchEngine
               reason = missing ? 'missing' : 'drift'
               puts(%(  "#{dep_coll}" → index (#{reason}) → index_collection))
               # Avoid nested preflight to prevent redundant recursion cycles
-              dep_klass.index_collection(client: client)
+              SearchEngine::Instrumentation.with_context(bulk_suppress_cascade: true) do
+                dep_klass.index_collection(client: client)
+              end
             else
               puts(%(  "#{dep_coll}" → in_sync (skip)))
             end
@@ -191,7 +195,7 @@ module SearchEngine
             success_count = (batch_stats[:success_count] || batch_stats['success_count'] || 0).to_i
             success_str = "success=#{success_count}"
             line << (
-              success_count.positive? ? SearchEngine::Logging::Color.apply(success_str, :green) : success_str
+              success_count.positive? ? SearchEngine::Logging::Color.bold(success_str) : success_str
             ) << ' '
             failed_count = (batch_stats[:failure_count] || batch_stats['failure_count'] || 0).to_i
             failed_str = "failed=#{failed_count}"
