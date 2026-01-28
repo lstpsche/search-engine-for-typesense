@@ -30,7 +30,7 @@ module SearchEngine
       datetime_string: 'string'
     }.freeze
 
-    FIELD_COMPARE_KEYS = %i[type reference async_reference locale sort optional infix].freeze
+    FIELD_COMPARE_KEYS = %i[type reference async_reference locale sort optional infix facet].freeze
 
     class << self
       # Build a Typesense-compatible schema hash from a model class DSL.
@@ -525,6 +525,7 @@ module SearchEngine
             sort: opts[:sort],
             optional: opts[:optional],
             infix: opts[:infix],
+            facet: opts[:facet],
             reference: references_by_local_key[attribute_name.to_sym],
             async_reference: async_reference_by_local_key[attribute_name.to_sym]
           }.compact
@@ -580,7 +581,7 @@ module SearchEngine
           entry = { name: fname, type: normalize_type(ftype) }
           entry[:reference] = fref.to_s unless fref.nil? || fref.to_s.strip.empty?
           # Preserve attribute-level flags from either compiled or live schemas.
-          %i[locale sort optional infix async_reference].each do |k|
+          %i[locale sort optional infix facet async_reference].each do |k|
             val = field[k] || field[k.to_s]
             entry[k] = val unless val.nil?
           end
