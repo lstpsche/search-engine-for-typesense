@@ -66,7 +66,7 @@ module SearchEngine
         # Relation (or nil, which is treated as `all`).
         #
         # Reserved names: scope names must not conflict with core query or
-        # materializer methods (e.g., :all, :first, :last, :find_by, :pluck).
+        # materializer methods (e.g., :all, :first, :last, :find_by, :pluck, :pick).
         def scope(name, body = nil, &block)
           raise ArgumentError, 'scope requires a name' if name.nil?
 
@@ -77,7 +77,7 @@ module SearchEngine
 
           # Avoid overriding core query methods and relation materializers.
           reserved = %i[
-            all first last take count exists? find find_by pluck delete_all update_all
+            all first last take count exists? find find_by pluck pick delete_all update_all
             where rewhere merge order select include_fields exclude reselect joins preset ranking prefix search
             limit offset page per_page per options cache
           ]

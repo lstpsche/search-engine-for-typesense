@@ -2,7 +2,7 @@
 
 module SearchEngine
   module Hydration
-    # Centralized executors for materialization: to_a/each/count/ids/pluck.
+    # Centralized executors for materialization: to_a/each/count/ids/pluck/pick.
     # Accepts a Relation instance; never mutates it; performs at most one HTTP call
     # per relation instance by reusing its internal memoization lock.
     module Materializers
@@ -225,6 +225,22 @@ module SearchEngine
 
       def ids(relation)
         pluck(relation, :id)
+      end
+
+      def pick(relation, *fields)
+        raise ArgumentError, 'pick requires at least one field' if fields.nil? || fields.empty?
+
+        loaded = relation.instance_variable_get(:@__loaded)
+        return pluck(relation, *fields).first if loaded
+
+        state = relation.instance_variable_get(:@state) || {}
+        relation_for_pick =
+          if state[:page] || state[:per_page]
+            relation
+          else
+            relation.limit(1)
+          end
+        pluck(relation_for_pick, *fields).first
       end
 
       def pluck(relation, *fields)

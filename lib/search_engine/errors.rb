@@ -233,8 +233,9 @@ module SearchEngine
     # Raised when a materializer requests fields that are not permitted by the
     # relation's effective selection (include − exclude, with exclude taking precedence).
     #
-    # Used by selection-aware materializers like {SearchEngine::Relation#pluck}
-    # and {SearchEngine::Relation#ids} to fail fast before any network call.
+    # Used by selection-aware materializers like {SearchEngine::Relation#pluck},
+    # {SearchEngine::Relation#pick}, and {SearchEngine::Relation#ids} to fail fast
+    # before any network call.
     class InvalidSelection < Error; end
 
     # Raised when a curated ID does not match the configured pattern.

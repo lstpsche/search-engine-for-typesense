@@ -71,6 +71,16 @@ module SearchEngine
         SearchEngine::Hydration::Materializers.ids(self)
       end
 
+      # Pick one or multiple fields from the first matching record.
+      # Returns a single value for one field, or an Array for multiple fields.
+      # Returns nil when no records match.
+      # @param fields [Array<#to_sym,#to_s>]
+      # @return [Object, Array<Object>, nil]
+      # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/materializers#pick
+      def pick(*fields)
+        SearchEngine::Hydration::Materializers.pick(self, *fields)
+      end
+
       # Fetch and hydrate all matching records across all pages.
       # Performs a count first, then retrieves pages in batches via multi-search.
       # Warning: This can be memory and time intensive.
