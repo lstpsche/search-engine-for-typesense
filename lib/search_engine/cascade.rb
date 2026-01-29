@@ -23,7 +23,11 @@ module SearchEngine
         raise ArgumentError, 'context must be :update or :full' unless %i[update full].include?(context.to_sym)
 
         src_collection = normalize_collection_name(source)
-        ts_client = client || (SearchEngine.config.respond_to?(:client) && SearchEngine.config.client) || SearchEngine::Client.new
+        source_klass = source.is_a?(Class) ? source : safe_collection_class(src_collection)
+        ts_client =
+          client ||
+          (SearchEngine.config.respond_to?(:client) && SearchEngine.config.client) ||
+          SearchEngine::Client.new
 
         graph = build_reverse_graph(client: ts_client)
         referencers = Array(graph[src_collection])
@@ -33,6 +37,14 @@ module SearchEngine
 
         # Per-run cache for alias lookups to avoid repeated network calls
         alias_cache = {}
+
+        ensure_source_reference_fields!(
+          source_klass,
+          src_collection,
+          referencers,
+          client: ts_client,
+          alias_cache: alias_cache
+        )
 
         outcomes = []
         partial_count = 0
@@ -136,7 +148,26 @@ into: nil
       # when no partitions are configured.
       # @param ref_klass [Class]
       # @return [void]
+      # rubocop:disable Metrics/PerceivedComplexity
       def __se_full_reindex_for_referrer(ref_klass, client:, alias_cache:)
+        logical = ref_klass.respond_to?(:collection) ? ref_klass.collection.to_s : ref_klass.name.to_s
+        physical = resolve_physical_collection_name(logical, client: client, cache: alias_cache)
+
+        # For cascade full reindex, force a schema rebuild (blue/green) to
+        # refresh reference targets before importing documents.
+        forced = reindex_referencer_with_fresh_schema!(
+          ref_klass,
+          logical,
+          physical,
+          client: client,
+          force_rebuild: true
+        )
+        return true if forced
+
+        # Fallback: force full destructive reindex when forced rebuild fails.
+        dropped = reindex_referencer_with_drop!(ref_klass, logical, physical)
+        return true if dropped
+
         begin
           compiled = SearchEngine::Partitioner.for(ref_klass)
         rescue StandardError
@@ -144,8 +175,6 @@ into: nil
         end
 
         executed = false
-        logical = ref_klass.respond_to?(:collection) ? ref_klass.collection.to_s : ref_klass.name.to_s
-        physical = resolve_physical_collection_name(logical, client: client, cache: alias_cache)
 
         if compiled
           parts = begin
@@ -191,6 +220,7 @@ into: nil
         end
         executed
       end
+      # rubocop:enable Metrics/PerceivedComplexity
 
       # Resolve logical alias to physical name with optional per-run memoization.
       # @param logical [String]
@@ -219,6 +249,115 @@ into: nil
         else
           source.name.to_s
         end
+      end
+
+      # Check if a collection's live schema has references pointing to physical
+      # collection names that no longer exist. This can happen after blue/green
+      # deployments when the referenced collection was reindexed but this
+      # referencer's schema still points to the old physical name.
+      #
+      # @param collection_name [String] physical or logical collection name
+      # @param client [SearchEngine::Client]
+      # @return [Boolean]
+      def referencer_has_stale_references?(collection_name, client:)
+        schema = begin
+          client.retrieve_collection_schema(collection_name)
+        rescue StandardError
+          nil
+        end
+        return false unless schema
+
+        fields = Array(schema[:fields] || schema['fields'])
+        fields.any? do |field|
+          ref = field[:reference] || field['reference']
+          next false if ref.nil? || ref.to_s.strip.empty?
+
+          ref_coll = ref.to_s.split('.', 2).first
+          next false if ref_coll.empty?
+
+          # Check if it looks like a physical name (has timestamp suffix)
+          next false unless ref_coll.match?(/_\d{8}_\d{6}_\d{3}$/)
+
+          logical = ref_coll.sub(/_\d{8}_\d{6}_\d{3}$/, '')
+          alias_target = begin
+            client.resolve_alias(logical)
+          rescue StandardError
+            nil
+          end
+
+          if alias_target && !alias_target.to_s.strip.empty? && alias_target.to_s != ref_coll
+            true
+          else
+            # Verify the referenced physical collection doesn't exist
+            ref_schema = begin
+              client.retrieve_collection_schema(ref_coll)
+            rescue StandardError
+              nil
+            end
+            ref_schema.nil?
+          end
+        end
+      end
+
+      # Determine whether a referencer schema needs a rebuild due to stale
+      # references, missing collection, or detected schema drift.
+      #
+      # @param ref_klass [Class]
+      # @param collection_name [String]
+      # @param client [SearchEngine::Client]
+      # @return [Boolean]
+      def referencer_requires_schema_rebuild?(ref_klass, collection_name, client:)
+        return true if referencer_has_stale_references?(collection_name, client: client)
+
+        diff = SearchEngine::Schema.diff(ref_klass, client: client)[:diff] || {}
+        stale_refs = Array(diff[:stale_references])
+        return true if stale_refs.any?
+
+        opts = (diff[:collection_options] || {}).to_h
+        return true if opts[:live] == :missing
+
+        added = Array(diff[:added_fields])
+        removed = Array(diff[:removed_fields])
+        changed = (diff[:changed_fields] || {}).to_h
+        coll_opts = (diff[:collection_options] || {}).to_h
+
+        added.any? || removed.any? || !changed.empty? || !coll_opts.empty?
+      rescue StandardError
+        false
+      end
+
+      # Force a full reindex of the referencer to rebuild its schema with valid
+      # alias references. Suppresses cascade to avoid infinite recursion.
+      #
+      # @param ref_klass [Class]
+      # @param logical [String]
+      # @param physical [String, nil]
+      # @return [Boolean]
+      def reindex_referencer_with_fresh_schema!(ref_klass, logical, physical, client:, force_rebuild: false)
+        coll_display = physical && physical != logical ? "#{logical} (physical: #{physical})" : logical
+        action = force_rebuild ? 'force_rebuild index_collection' : 'index_collection'
+        puts(%(  Referencer "#{coll_display}" — schema rebuild required, running #{action}))
+
+        SearchEngine::Instrumentation.with_context(bulk_suppress_cascade: true) do
+          ref_klass.index_collection(client: client, pre: :ensure, force_rebuild: force_rebuild)
+        end
+        true
+      rescue StandardError => error
+        puts(%(  Referencer "#{logical}" — schema rebuild failed: #{error.message}))
+        false
+      end
+
+      def reindex_referencer_with_drop!(ref_klass, logical, physical)
+        coll_display = physical && physical != logical ? "#{logical} (physical: #{physical})" : logical
+        puts(%(  Referencer "#{coll_display}" — force reindex (drop+index)))
+
+        SearchEngine::Instrumentation.with_context(bulk_suppress_cascade: true) do
+          ref_klass.reindex_collection!
+        end
+        true
+      rescue StandardError => error
+        puts(%(  Referencer "#{logical}" — force reindex failed: #{error.message}))
+        false
       end
 
       def post_partitions_to_pool!(pool, ctx, parts, ref_klass, mtx)
@@ -364,6 +503,31 @@ foreign_key: fk }
 
         src = dsl[:source]
         src && src[:type].to_s == 'active_record'
+      end
+
+      def ensure_source_reference_fields!(source_klass, logical_name, referencers, client:, alias_cache:)
+        return unless source_klass
+
+        required_fields = referencers.map { |edge| edge[:foreign_key].to_s }.reject(&:empty?).uniq
+        return if required_fields.empty?
+
+        physical =
+          resolve_physical_collection_name(logical_name, client: client, cache: alias_cache) || logical_name.to_s
+        schema = begin
+          client.retrieve_collection_schema(physical)
+        rescue StandardError
+          nil
+        end
+        return unless schema
+
+        live_fields =
+          Array(schema[:fields] || schema['fields']).map { |f| (f[:name] || f['name']).to_s }
+        missing = required_fields - live_fields
+        return if missing.empty?
+
+        SearchEngine::Instrumentation.with_context(bulk_suppress_cascade: true) do
+          source_klass.index_collection(pre: :ensure)
+        end
       end
     end
   end

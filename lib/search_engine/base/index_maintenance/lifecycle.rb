@@ -12,15 +12,16 @@ module SearchEngine
           # @param partition [Object, Array<Object>, nil]
           # @param client [SearchEngine::Client, nil]
           # @param pre [Symbol, nil] :ensure (ensure presence) or :index (ensure + fix drift)
+          # @param force_rebuild [Boolean] when true, force schema rebuild (blue/green)
           # @return [void]
-          def index_collection(partition: nil, client: nil, pre: nil)
+          def index_collection(partition: nil, client: nil, pre: nil, force_rebuild: false)
             logical = respond_to?(:collection) ? collection.to_s : name.to_s
             puts
             puts(%(>>>>>> Indexating Collection "#{logical}"))
             client_obj = client || (SearchEngine.config.respond_to?(:client) && SearchEngine.config.client) || SearchEngine::Client.new
 
             if partition.nil?
-              __se_index_full(client: client_obj, pre: pre)
+              __se_index_full(client: client_obj, pre: pre, force_rebuild: force_rebuild)
             else
               __se_index_partial(partition: partition, client: client_obj, pre: pre)
             end
@@ -48,7 +49,7 @@ module SearchEngine
             parts.map { |p| SearchEngine::Indexer.rebuild_partition!(self, partition: p, into: into) }
           end
 
-          def __se_index_full(client:, pre: nil)
+          def __se_index_full(client:, pre: nil, force_rebuild: false)
             logical = respond_to?(:collection) ? collection.to_s : name.to_s
             __se_preflight_dependencies!(mode: pre, client: client) if pre
 
@@ -57,8 +58,14 @@ module SearchEngine
             puts("Step 1: Presence — processing → #{missing ? 'missing' : 'present'}")
 
             applied, indexed_inside_apply = __se_full_apply_if_missing(client, missing)
-            drift = __se_full_check_drift(diff, missing)
-            applied, indexed_inside_apply = __se_full_apply_if_drift(client, drift, applied, indexed_inside_apply)
+            drift = __se_full_check_drift(diff, missing, force_rebuild)
+            applied, indexed_inside_apply = __se_full_apply_if_drift(
+              client,
+              drift,
+              applied,
+              indexed_inside_apply,
+              force_rebuild
+            )
             __se_full_indexation(applied, indexed_inside_apply)
             __se_full_retention(applied, logical, client)
           end
@@ -79,10 +86,14 @@ module SearchEngine
             [applied, indexed_inside_apply]
           end
 
-          def __se_full_check_drift(diff, missing)
+          def __se_full_check_drift(diff, missing, force_rebuild)
             unless missing
               puts('Step 3: Check Schema Status — processing')
               drift = __se_schema_drift?(diff)
+              if force_rebuild && !drift
+                puts('Step 3: Check Schema Status — force_rebuild')
+                return true
+              end
               puts("Step 3: Check Schema Status — #{drift ? 'drift' : 'in_sync'}")
               return drift
             end
@@ -90,10 +101,10 @@ module SearchEngine
             false
           end
 
-          def __se_full_apply_if_drift(client, drift, applied, indexed_inside_apply)
+          def __se_full_apply_if_drift(client, drift, applied, indexed_inside_apply, force_rebuild)
             if drift
               puts('Step 4: Apply New Schema — processing')
-              SearchEngine::Schema.apply!(self, client: client) do |new_physical|
+              SearchEngine::Schema.apply!(self, client: client, force_rebuild: force_rebuild) do |new_physical|
                 indexed_inside_apply = __se_index_partitions!(into: new_physical)
               end
               applied = true

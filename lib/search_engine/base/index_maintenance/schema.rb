@@ -107,7 +107,8 @@ module SearchEngine
             removed = Array(diff[:removed_fields])
             changed = (diff[:changed_fields] || {}).to_h
             coll_opts = (diff[:collection_options] || {}).to_h
-            added.any? || removed.any? || !changed.empty? || !coll_opts.empty?
+            stale_refs = Array(diff[:stale_references])
+            added.any? || removed.any? || !changed.empty? || !coll_opts.empty? || stale_refs.any?
           end
         end
       end

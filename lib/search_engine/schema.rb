@@ -31,6 +31,7 @@ module SearchEngine
     }.freeze
 
     FIELD_COMPARE_KEYS = %i[type reference async_reference locale sort optional infix facet].freeze
+    PHYSICAL_SUFFIX_RE = /_\d{8}_\d{6}_\d{3}\z/
 
     class << self
       # Build a Typesense-compatible schema hash from a model class DSL.
@@ -78,6 +79,7 @@ module SearchEngine
 
         physical_name = client.resolve_alias(logical_name) || logical_name
         live_schema = client.retrieve_collection_schema(physical_name)
+        stale_refs = live_schema ? detect_stale_references(live_schema, client: client) : []
 
         if live_schema.nil?
           diff_hash = {
@@ -85,7 +87,8 @@ module SearchEngine
             added_fields: compiled[:fields].dup.first(2),
             removed_fields: [],
             changed_fields: {},
-            collection_options: { live: :missing }
+            collection_options: { live: :missing },
+            stale_references: stale_refs
           }
           payload = {
             collection: klass.name.to_s,
@@ -94,6 +97,7 @@ module SearchEngine
             fields_changed_count: 0,
             added_count: diff_hash[:added_fields].size,
             removed_count: 0,
+            stale_references_count: stale_refs.size,
             in_sync: false
           }
           SearchEngine::Instrumentation.instrument('search_engine.schema.diff', payload) {}
@@ -111,8 +115,12 @@ module SearchEngine
           added_fields: added,
           removed_fields: removed,
           changed_fields: changed,
-          collection_options: collection_opts_changes
+          collection_options: collection_opts_changes,
+          stale_references: stale_refs
         }
+
+        in_sync = added.empty? && removed.empty? && changed.empty? &&
+                  collection_opts_changes.empty? && stale_refs.empty?
 
         payload = {
           collection: klass.name.to_s,
@@ -121,7 +129,8 @@ module SearchEngine
           fields_changed_count: changed.size,
           added_count: added.size,
           removed_count: removed.size,
-          in_sync: added.empty? && removed.empty? && changed.empty? && collection_opts_changes.empty?
+          stale_references_count: stale_refs.size,
+          in_sync: in_sync
         }
         SearchEngine::Instrumentation.instrument('search_engine.schema.diff', payload) {}
 
@@ -155,18 +164,13 @@ module SearchEngine
           # Resolve current physical to return consistent result
           physical = client.resolve_alias(logical) || logical
 
-          return {
-            logical: logical,
-            new_physical: physical,
-            previous_physical: physical,
-            alias_target: physical,
-            dropped_physicals: [],
-            action: :update
-          }
+          return update_result_payload(logical, physical)
         end
 
         compiled = compile(klass, client: client)
         logical = compiled[:name]
+
+        cleanup_logical_collection_conflict!(logical, client: client)
 
         start_ms = monotonic_ms
         current_target = client.resolve_alias(logical)
@@ -598,6 +602,63 @@ module SearchEngine
         }
       end
 
+      def detect_stale_references(schema, client:)
+        fields = Array(schema[:fields] || schema['fields'])
+        stale = []
+
+        fields.each do |field|
+          ref = field[:reference] || field['reference']
+          next if ref.nil? || ref.to_s.strip.empty?
+
+          ref_coll = ref.to_s.split('.', 2).first.to_s
+          next if ref_coll.empty?
+          next unless physical_reference_name?(ref_coll)
+
+          field_name = (field[:name] || field['name']).to_s
+          logical = strip_physical_suffix(ref_coll)
+          reason = nil
+
+          alias_target = begin
+            client.resolve_alias(logical)
+          rescue StandardError
+            nil
+          end
+
+          if alias_target && !alias_target.to_s.strip.empty? && alias_target.to_s != ref_coll
+            reason = 'alias_mismatch'
+          else
+            ref_schema = begin
+              client.retrieve_collection_schema(ref_coll)
+            rescue StandardError
+              nil
+            end
+            reason = ref_schema.nil? ? 'missing_physical' : 'physical_reference'
+          end
+
+          stale << {
+            field: field_name,
+            logical: logical,
+            physical: ref_coll,
+            reason: reason
+          }
+        end
+
+        stale
+      rescue StandardError
+        []
+      end
+      private :detect_stale_references
+
+      def physical_reference_name?(name)
+        name.to_s.match?(PHYSICAL_SUFFIX_RE)
+      end
+      private :physical_reference_name?
+
+      def strip_physical_suffix(name)
+        name.to_s.sub(PHYSICAL_SUFFIX_RE, '')
+      end
+      private :strip_physical_suffix
+
       def normalize_type(type_string)
         s = type_string.to_s
         return 'string[]' if s.casecmp('string[]').zero?
@@ -688,8 +749,10 @@ module SearchEngine
         removed = diff[:removed_fields] || []
         changed = diff[:changed_fields] || {}
         coll_opts = diff[:collection_options] || {}
+        stale_refs = diff[:stale_references] || []
 
-        if added.empty? && removed.empty? && changed.empty? && (coll_opts.nil? || coll_opts.empty?)
+        if added.empty? && removed.empty? && changed.empty? && stale_refs.empty? &&
+           (coll_opts.nil? || coll_opts.empty?)
           lines << 'No changes'
           return lines.join("\n")
         end
@@ -697,6 +760,7 @@ module SearchEngine
         lines.concat(format_added_fields(added)) unless added.empty?
         lines.concat(format_removed_fields(removed)) unless removed.empty?
         lines.concat(format_changed_fields(changed)) unless changed.empty?
+        lines.concat(format_stale_references(stale_refs)) unless stale_refs.empty?
         lines.concat(format_collection_options(coll_opts)) unless coll_opts.empty?
 
         lines.join("\n")
@@ -743,6 +807,23 @@ module SearchEngine
       end
       private :format_changed_fields
 
+      def format_stale_references(stale_refs)
+        lines = ['~ Stale references:']
+        stale_refs.each do |ref|
+          field = ref[:field] || ref['field']
+          logical = ref[:logical] || ref['logical']
+          physical = ref[:physical] || ref['physical']
+          reason = ref[:reason] || ref['reason']
+          line = +"  - #{field}"
+          line << " (logical=#{logical}, physical=#{physical}"
+          line << ", reason=#{reason}" if reason
+          line << ')'
+          lines << line
+        end
+        lines
+      end
+      private :format_stale_references
+
       def format_collection_options(opts)
         lines = ['~ Collection options:']
         opts.each do |key, (cval, lval)|
@@ -757,6 +838,17 @@ module SearchEngine
         lines
       end
       private :format_collection_options
+
+      def update_result_payload(logical, physical)
+        {
+          logical: logical,
+          new_physical: physical,
+          previous_physical: physical,
+          alias_target: physical,
+          dropped_physicals: [],
+          action: :update
+        }
+      end
 
       # Build a mapping of local attribute names to referenced collection names based on join declarations.
       # @param klass [Class]
@@ -857,12 +949,19 @@ module SearchEngine
         physical_coll = resolve_referenced_collection(logical_coll, client)
         referenced_schema = retrieve_referenced_schema(logical_coll, physical_coll, client)
         schema_fields = Array(referenced_schema[:fields] || referenced_schema['fields'])
-        field_exists = schema_fields.any? { |f| (f[:name] || f['name']).to_s == field_name }
+        target_field = schema_fields.find { |f| (f[:name] || f['name']).to_s == field_name }
 
-        return if field_exists
+        if target_field.nil?
+          raise ArgumentError,
+                build_field_not_found_error(logical_coll, field_name, schema_fields, physical_coll: physical_coll)
+        end
 
-        raise ArgumentError,
-              build_field_not_found_error(logical_coll, field_name, schema_fields, physical_coll: physical_coll)
+        # Typesense requires referenced fields to be indexed (for JOIN filtering)
+        index_val = target_field[:index] || target_field['index']
+        if index_val == false
+          raise ArgumentError,
+                build_field_not_indexed_error(logical_coll, field_name, physical_coll: physical_coll)
+        end
       rescue ArgumentError
         raise
       rescue StandardError => error
@@ -884,6 +983,31 @@ module SearchEngine
         end
 
         physical_coll
+      end
+
+      # Drop a physical collection that shadows an alias with the same name.
+      # Typesense allows alias/collection name collisions; when both exist,
+      # references to the alias resolve to the physical collection, which
+      # breaks joins after blue/green swaps. If an alias exists and points to
+      # a different physical, remove the conflicting logical-named collection.
+      def cleanup_logical_collection_conflict!(logical, client:)
+        logical_name = logical.to_s
+        alias_target = client.resolve_alias(logical_name)
+        return if alias_target.nil? || alias_target.to_s.strip.empty?
+        return if alias_target.to_s == logical_name
+
+        existing = client.retrieve_collection_schema(logical_name)
+        return unless existing
+
+        client.delete_collection(logical_name, timeout_ms: 60_000)
+        return unless defined?(ActiveSupport::Notifications)
+
+        SearchEngine::Instrumentation.instrument(
+          'search_engine.schema.cleanup_conflict',
+          logical: logical_name,
+          alias_target: alias_target.to_s,
+          dropped: logical_name
+        ) {}
       end
 
       # Retrieve the schema for a referenced collection.
@@ -933,6 +1057,21 @@ module SearchEngine
 
         error_msg += "Available fields in collection: #{available_fields.join(', ')}. " \
                      'Ensure the field is declared and indexed in the referenced collection.'
+        error_msg
+      end
+
+      # Build a detailed error message when a referenced field has index: false.
+      # @param logical_coll [String] logical collection name
+      # @param field_name [String] field name that is not indexed
+      # @param physical_coll [String, nil] physical collection name (optional)
+      # @return [String] error message
+      def build_field_not_indexed_error(logical_coll, field_name, physical_coll: nil)
+        coll_display =
+          physical_coll && physical_coll != logical_coll ? "#{logical_coll} (physical: #{physical_coll})" : logical_coll
+        error_msg = "Referenced field '#{field_name}' in collection '#{coll_display}' has index: false. "
+        error_msg += 'Typesense requires referenced fields to be indexed for JOIN operations. '
+        error_msg += "Reindex the '#{logical_coll}' collection to update its schema, ensuring the " \
+                     "'#{field_name}' field does not have `index: false` in the model declaration."
         error_msg
       end
     end

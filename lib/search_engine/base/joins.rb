@@ -23,8 +23,9 @@ module SearchEngine
         # @param local_key [#to_sym, nil]
         # @param foreign_key [#to_sym, nil]
         # @param async_ref [Boolean] when true, mark this reference as asynchronous in schema
+        # @param optional [Boolean, nil] when set, mark local_key as optional in schema
         # @return [void]
-        def belongs_to(name, collection: nil, local_key: nil, foreign_key: nil, async_ref: nil)
+        def belongs_to(name, collection: nil, local_key: nil, foreign_key: nil, async_ref: nil, optional: nil)
           assoc_name = name.to_sym
           raise ArgumentError, 'belongs_to name must be non-empty' if assoc_name.to_s.strip.empty?
 
@@ -61,6 +62,21 @@ module SearchEngine
             kind: :belongs_to,
             async_ref: normalized_async
           )
+
+          unless optional.nil?
+            type = (@attributes || {})[lk]
+            __se_update_attribute_options!(
+              lk,
+              type,
+              locale: nil,
+              optional: optional,
+              sort: nil,
+              infix: nil,
+              empty_filtering: nil,
+              facet: nil,
+              index: nil
+            )
+          end
 
           # Define an instance-level association reader for AR-like access.
           # Example: product.brand => returns single associated record or nil; product.brands => Relation

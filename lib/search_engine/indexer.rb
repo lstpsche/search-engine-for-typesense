@@ -4,10 +4,6 @@ require 'json'
 require 'timeout'
 require 'digest'
 require 'time'
-require 'search_engine/indexer/batch_planner'
-require 'search_engine/indexer/import_dispatcher'
-require 'search_engine/indexer/retry_policy'
-require 'search_engine/indexer/bulk_import'
 
 module SearchEngine
   # Batch importer for streaming JSONL documents into a physical collection.

@@ -368,6 +368,8 @@ module SearchEngine
           # Overwrite any provided value
           hash[:doc_updated_at] = now_i
 
+          normalize_optional_blank_strings!(hash)
+
           # Populate hidden flags
           set_hidden_empty_flags!(hash)
           set_hidden_blank_flags!(hash)
@@ -461,6 +463,25 @@ module SearchEngine
           value = doc[base_name.to_s] if value.nil?
           flag_name = "#{base_name}_empty"
           doc[flag_name.to_sym] = value.nil? || (value.is_a?(Array) && value.empty?)
+        end
+      end
+
+      # Normalize empty-string values for optional fields to nil.
+      def normalize_optional_blank_strings!(doc)
+        return if @__optional_blank_targets__.empty?
+
+        @__optional_blank_targets__.each do |base_name|
+          key_sym = base_name.to_sym
+          if doc.key?(key_sym)
+            value = doc[key_sym]
+            doc[key_sym] = nil if value.is_a?(String) && value.empty?
+            next
+          end
+
+          next unless doc.key?(base_name)
+
+          value = doc[base_name]
+          doc[base_name] = nil if value.is_a?(String) && value.empty?
         end
       end
 

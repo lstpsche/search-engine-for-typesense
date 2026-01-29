@@ -23,8 +23,9 @@ module SearchEngine
         # @param mode [Symbol] :ensure (only missing) or :index (missing + drift)
         # @param client [SearchEngine::Client]
         # @param visited [Set<String>, nil]
+        # @param depth [Integer] recursion depth for logging
         # @return [void]
-        def __se_preflight_dependencies!(mode:, client:, visited: nil)
+        def __se_preflight_dependencies!(mode:, client:, visited: nil, depth: 0)
           return unless mode
 
           visited ||= Set.new
@@ -38,8 +39,9 @@ module SearchEngine
           deps = __se_belongs_to_dependencies(configs)
           return if deps.empty?
 
-          puts
-          puts(%(>>>>>> Preflight Dependencies (mode: #{mode})))
+          indent = '  ' * depth
+          puts if depth.zero?
+          puts(%(#{indent}>>>>>> Preflight Dependencies (mode: #{mode}, collection: "#{current}")))
 
           deps.each do |cfg|
             dep_coll = (cfg[:collection] || cfg['collection']).to_s
@@ -48,23 +50,29 @@ module SearchEngine
             dep_klass = __se_resolve_dep_class(dep_coll)
 
             if dep_klass.nil?
-              puts(%(  "#{dep_coll}" → skipped (unregistered)))
+              puts(%(#{indent}  "#{dep_coll}" → skipped (unregistered)))
               visited.add(dep_coll)
               next
             end
 
-            # Recurse first to ensure deeper dependencies are handled
-            __se_preflight_recurse(dep_klass, mode, client, visited)
-
             diff = __se_diff_for(dep_klass, client)
             missing, drift = __se_dependency_status(diff, dep_klass)
 
-            __se_handle_preflight_action(mode, dep_coll, missing, drift, dep_klass, client)
+            should_index = case mode.to_s
+                           when 'ensure' then missing
+                           when 'index' then missing || drift
+                           else false
+                           end
+
+            # Only recurse when we are about to index this dependency.
+            __se_preflight_recurse(dep_klass, mode, client, visited, depth + 1) if should_index
+
+            __se_handle_preflight_action(mode, dep_coll, missing, drift, dep_klass, client, indent: "#{indent}  ")
 
             visited.add(dep_coll)
           end
 
-          puts('>>>>>> Preflight Done')
+          puts(%(#{indent}>>>>>> Preflight Done (collection: "#{current}")))
         end
 
         # @return [String] current collection logical name; empty string when unavailable
@@ -111,9 +119,10 @@ module SearchEngine
         # @param mode [Symbol]
         # @param client [SearchEngine::Client]
         # @param visited [Set<String>]
+        # @param depth [Integer]
         # @return [void]
-        def __se_preflight_recurse(dep_klass, mode, client, visited)
-          dep_klass.__se_preflight_dependencies!(mode: mode, client: client, visited: visited)
+        def __se_preflight_recurse(dep_klass, mode, client, visited, depth)
+          dep_klass.__se_preflight_dependencies!(mode: mode, client: client, visited: visited, depth: depth)
         rescue StandardError
           # ignore recursion errors to not block main flow
         end
@@ -150,32 +159,33 @@ module SearchEngine
         # @param drift [Boolean]
         # @param dep_klass [Class]
         # @param client [SearchEngine::Client]
+        # @param indent [String]
         # @return [void]
-        def __se_handle_preflight_action(mode, dep_coll, missing, drift, dep_klass, client)
+        def __se_handle_preflight_action(mode, dep_coll, missing, drift, dep_klass, client, indent: '  ')
           case mode.to_s
           when 'ensure'
             if missing
-              puts(%(  "#{dep_coll}" → ensure (missing) → index_collection))
+              puts(%(#{indent}"#{dep_coll}" → ensure (missing) → index_collection))
               # Avoid nested preflight to prevent redundant recursion cycles
               SearchEngine::Instrumentation.with_context(bulk_suppress_cascade: true) do
                 dep_klass.index_collection(client: client)
               end
             else
-              puts(%(  "#{dep_coll}" → present (skip)))
+              puts(%(#{indent}"#{dep_coll}" → present (skip)))
             end
           when 'index'
             if missing || drift
               reason = missing ? 'missing' : 'drift'
-              puts(%(  "#{dep_coll}" → index (#{reason}) → index_collection))
+              puts(%(#{indent}"#{dep_coll}" → index (#{reason}) → index_collection))
               # Avoid nested preflight to prevent redundant recursion cycles
               SearchEngine::Instrumentation.with_context(bulk_suppress_cascade: true) do
                 dep_klass.index_collection(client: client)
               end
             else
-              puts(%(  "#{dep_coll}" → in_sync (skip)))
+              puts(%(#{indent}"#{dep_coll}" → in_sync (skip)))
             end
           else
-            puts(%(  "#{dep_coll}" → skipped (unknown mode: #{mode})))
+            puts(%(#{indent}"#{dep_coll}" → skipped (unknown mode: #{mode})))
           end
         end
 
@@ -263,7 +273,8 @@ module SearchEngine
           removed = Array(diff[:removed_fields])
           changed = (diff[:changed_fields] || {}).to_h
           coll_opts = (diff[:collection_options] || {}).to_h
-          added.any? || removed.any? || !changed.empty? || !coll_opts.empty?
+          stale_refs = Array(diff[:stale_references])
+          added.any? || removed.any? || !changed.empty? || !coll_opts.empty? || stale_refs.any?
         end
       end
 
