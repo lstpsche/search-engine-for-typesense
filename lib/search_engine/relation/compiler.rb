@@ -376,12 +376,14 @@ module SearchEngine
 
       def assign_filter_by!(params, ast_nodes)
         filter_str = compiled_filter_by(ast_nodes)
+        filter_str = map_join_tokens(filter_str)
         params[:filter_by] = filter_str if filter_str
         filter_str
       end
 
       def assign_sort_by!(params, orders)
         sort_str = compiled_sort_by(orders)
+        sort_str = map_join_tokens(sort_str)
         params[:sort_by] = sort_str if sort_str
         sort_str
       end
@@ -389,11 +391,52 @@ module SearchEngine
       def compile_selection_fields!(params)
         include_str = compile_include_fields_string
         exclude_str = compile_exclude_fields_string
+        include_str = map_join_tokens(include_str)
+        exclude_str = map_join_tokens(exclude_str)
 
         params[:include_fields] = include_str unless include_str.to_s.strip.empty?
         params[:exclude_fields] = exclude_str unless exclude_str.to_s.strip.empty?
 
         [include_str, exclude_str]
+      end
+
+      def map_join_tokens(value)
+        return value if value.nil?
+
+        str = value.to_s
+        return value if str.strip.empty?
+
+        rewrites = join_token_rewrites
+        return value if rewrites.empty?
+
+        mapped = str.dup
+        rewrites.each do |assoc, collection|
+          coll = collection.to_s
+          assoc_token = assoc.to_s
+          next if coll.strip.empty? || assoc_token.empty? || coll == assoc_token
+
+          pattern = /\$#{Regexp.escape(assoc_token)}(?=[.(])/
+          mapped = mapped.gsub(pattern, "$#{coll}")
+        end
+
+        mapped
+      end
+
+      def join_token_rewrites
+        return {} unless @klass.respond_to?(:join_for)
+
+        applied = joins_list
+        return {} if applied.empty?
+
+        applied.each_with_object({}) do |assoc, acc|
+          cfg = @klass.join_for(assoc)
+          coll = cfg[:collection].to_s
+          next if coll.strip.empty?
+
+          acc[assoc.to_sym] = coll
+        rescue StandardError
+          next
+        end
       end
 
       def instrument_selection_compile(include_str, exclude_str)

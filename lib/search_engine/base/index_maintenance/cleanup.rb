@@ -33,15 +33,16 @@ module SearchEngine
 
           # Delete stale documents from the collection according to DSL rules.
           #
-          # Evaluates all stale definitions declared via the indexing DSL and
-          # `stale_filter_by`, building a filter that deletes matching documents
+          # Evaluates all stale definitions declared via the indexing DSL,
+          # building a filter that deletes matching documents
           # using {SearchEngine::Deletion.delete_by}. When no stale configuration
           # is present, the method logs a skip message and returns 0.
           #
           # @param into [String, nil] optional physical collection override
           # @param partition [Object, nil] optional partition token forwarded to resolvers
+          # @param clear_cache [Boolean] clear Typesense cache after cleanup
           # @return [Integer] number of deleted documents
-          def cleanup(into: nil, partition: nil)
+          def cleanup(into: nil, partition: nil, clear_cache: false)
             logical = respond_to?(:collection) ? collection.to_s : name.to_s
             puts
             puts(%(>>>>>> Cleanup Collection "#{logical}"))
@@ -72,6 +73,16 @@ module SearchEngine
             )
             0
           ensure
+            if clear_cache
+              begin
+                puts('Cleanup — cache clear')
+                SearchEngine::Cache.clear
+              rescue StandardError => error
+                warn(
+                  "Cleanup — cache clear error=#{error.class}: #{error.message.to_s[0, 200]}"
+                )
+              end
+            end
             puts(%(>>>>>> Cleanup Done))
           end
 

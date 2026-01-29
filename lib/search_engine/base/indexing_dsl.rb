@@ -33,9 +33,6 @@ module SearchEngine
 
           # Store definition on the class; Mapper.for will compile and cache
           instance_variable_set(:@__mapper_dsl__, definition)
-          if definition[:stale_filter_proc]
-            instance_variable_set(:@__stale_filter_proc__, definition[:stale_filter_proc])
-          end
           instance_variable_set(:@__stale_entries__, Array(definition[:stale]))
           nil
         end
@@ -251,18 +248,6 @@ module SearchEngine
         def stale_entries
           list = instance_variable_defined?(:@__stale_entries__) ? @__stale_entries__ : []
           list.dup.freeze
-        end
-
-        # Define a stale filter builder for delete-by-filter operations.
-        # @deprecated Prefer defining inside `index do ... end` as `stale_filter_by { |partition:| ... }`.
-        # @yieldparam partition [Object, nil]
-        # @yieldreturn [String, nil]
-        # @return [void]
-        def stale_filter_by(&block)
-          raise ArgumentError, 'stale_filter_by requires a block' unless block
-
-          instance_variable_set(:@__stale_filter_proc__, block)
-          nil
         end
       end
     end

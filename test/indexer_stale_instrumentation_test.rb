@@ -7,7 +7,10 @@ class IndexerStaleInstrumentationTest < Minitest::Test
 
   def setup
     StaleModel.collection 'stale_models'
-    StaleModel.stale_filter_by { |_partition:| 'status:stale' }
+    StaleModel.index do
+      stale filter: 'status:=stale'
+      map { |_| { id: 'stub' } }
+    end
   end
 
   def test_stale_delete_emits_started_and_finished

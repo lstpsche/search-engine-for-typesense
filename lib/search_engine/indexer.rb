@@ -93,7 +93,7 @@ module SearchEngine
       summary
     end
 
-    # Delete stale documents from a physical collection using a developer-provided filter.
+    # Delete stale documents from a physical collection using model stale rules.
     #
     # @param klass [Class] a {SearchEngine::Base} subclass
     # @param partition [Object, nil]
@@ -112,11 +112,15 @@ module SearchEngine
       skipped = skip_if_disabled(klass, sd_cfg, target_into, partition)
       return skipped if skipped
 
-      compiled = SearchEngine::StaleFilter.for(klass)
-      skipped = skip_if_no_filter(compiled, klass, target_into, partition)
+      defined = SearchEngine::StaleRules.defined_for?(klass)
+      filters = defined ? SearchEngine::StaleRules.compile_filters(klass, partition: partition) : []
+      filters.compact!
+      filters.reject! { |f| f.to_s.strip.empty? }
+      filter = SearchEngine::StaleRules.merge_filters(filters)
+
+      skipped = skip_if_no_filter_defined(defined, klass, target_into, partition)
       return skipped if skipped
 
-      filter = compiled.call(partition: partition)
       skipped = skip_if_empty_filter(filter, klass, target_into, partition)
       return skipped if skipped
 
@@ -190,8 +194,8 @@ module SearchEngine
         skip_summary(klass, into, partition)
       end
 
-      def skip_if_no_filter(compiled, klass, into, partition)
-        return nil if compiled
+      def skip_if_no_filter_defined(defined, klass, into, partition)
+        return nil if defined
 
         instrument_stale(:skipped, reason: :no_filter_defined, klass: klass, into: into, partition: partition)
         skip_summary(klass, into, partition)

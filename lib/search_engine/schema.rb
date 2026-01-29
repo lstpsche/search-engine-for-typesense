@@ -786,17 +786,9 @@ module SearchEngine
         refs
       end
 
-      def resolve_reference_collection_name(logical, client)
-        return logical unless client
-
-        physical = begin
-          client.resolve_alias(logical)
-        rescue StandardError
-          nil
-        end
-        physical = logical if physical.nil? || physical.to_s.strip.empty?
-        physical.to_s
-      rescue StandardError
+      def resolve_reference_collection_name(logical, _client)
+        # Keep reference targets stable across blue/green swaps by using
+        # logical collection names (aliases) instead of physical names.
         logical.to_s
       end
 

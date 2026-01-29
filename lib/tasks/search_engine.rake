@@ -379,8 +379,8 @@ namespace :search_engine do
       }
 
       # Pre-check for filter definition
-      if SearchEngine::StaleFilter.for(klass).nil?
-        msg = 'No stale_filter_by defined for this collection.'
+      unless SearchEngine::StaleRules.defined_for?(klass)
+        msg = 'No stale rules defined for this collection.'
         if strict
           warn("STRICT mode: #{msg}")
           Kernel.exit(3)

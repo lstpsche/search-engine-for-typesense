@@ -9,7 +9,24 @@ module SearchEngine
   module StaleRules
     module_function
 
-    # Build an Array of Typesense filter fragments from `stale` entries.
+    # Check whether any stale configuration is defined for this model.
+    #
+    # @param klass [Class]
+    # @return [Boolean]
+    def defined_for?(klass)
+      entries = begin
+        klass.respond_to?(:stale_entries) ? Array(klass.stale_entries) : []
+      rescue StandardError
+        []
+      end
+      return true if entries.any?
+
+      false
+    rescue StandardError
+      false
+    end
+
+    # Build an Array of Typesense filter fragments from stale rules.
     #
     # @param klass [Class]
     # @param partition [Object, nil]
@@ -20,7 +37,6 @@ module SearchEngine
       rescue StandardError
         []
       end
-      return [] if entries.empty?
 
       filters = []
       filters.concat(build_scope_filters(klass, entries, partition: partition))
