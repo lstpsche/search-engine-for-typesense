@@ -129,7 +129,7 @@ module SearchEngine
 
               case mode.to_sym
               when :index
-                klass.index_collection
+                klass.index_collection(pre: :ensure, force_rebuild: true)
               else
                 klass.reindex_collection!
               end
