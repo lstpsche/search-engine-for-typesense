@@ -17,7 +17,7 @@ module SearchEngine
           def index_collection(partition: nil, client: nil, pre: nil, force_rebuild: false)
             logical = respond_to?(:collection) ? collection.to_s : name.to_s
             puts
-            puts(%(>>>>>> Indexating Collection "#{logical}"))
+            puts(%(>>>>>> Indexing Collection "#{logical}"))
             client_obj = client || (SearchEngine.config.respond_to?(:client) && SearchEngine.config.client) || SearchEngine::Client.new
 
             if partition.nil?
@@ -118,16 +118,16 @@ module SearchEngine
           def __se_full_indexation(applied, indexed_inside_apply)
             cascade_ok = false
             if applied && indexed_inside_apply
-              puts('Step 5: Indexation — skip (performed during schema apply)')
+              puts('Step 5: Indexing — skip (performed during schema apply)')
               begin
                 cascade_ok = indexed_inside_apply.to_sym == :ok
               rescue StandardError
                 cascade_ok = false
               end
             else
-              puts('Step 5: Indexation — processing')
+              puts('Step 5: Indexing — processing')
               idx_status = __se_index_partitions!(into: nil)
-              puts('Step 5: Indexation — done')
+              puts('Step 5: Indexing — done')
               cascade_ok = (idx_status == :ok)
             end
             __se_cascade_after_indexation!(context: :full) if cascade_ok
@@ -158,14 +158,14 @@ module SearchEngine
             puts('Step 2: Check Schema Status — processing')
             drift = __se_schema_drift?(diff)
             if drift
-              puts('Partial: schema is not up-to-date. Quit early (run full indexation).')
+              puts('Partial: schema is not up-to-date. Exit early (run full indexing).')
               return
             end
             puts('Step 2: Check Schema Status — in_sync')
 
             __se_preflight_dependencies!(mode: pre, client: client) if pre
 
-            puts('Step 3: Partial Indexation — processing')
+            puts('Step 3: Partial Indexing — processing')
             all_ok = true
             partitions.each do |p|
               summary = SearchEngine::Indexer.rebuild_partition!(self, partition: p, into: nil)
@@ -176,7 +176,7 @@ module SearchEngine
                 all_ok &&= false
               end
             end
-            puts('Step 3: Partial Indexation — done')
+            puts('Step 3: Partial Indexing — done')
             __se_cascade_after_indexation!(context: :full) if all_ok
           end
 
