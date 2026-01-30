@@ -13,6 +13,9 @@ module SearchEngine
   # failures with exponential backoff and jitter.
   class Indexer
     # Aggregated summary of an import run.
+    #
+    # @!attribute [r] failed_batches_total
+    #   @return [Integer] count of batch stats with failures
     Summary = Struct.new(
       :collection,
       :status,
@@ -20,6 +23,7 @@ module SearchEngine
       :docs_total,
       :success_total,
       :failed_total,
+      :failed_batches_total,
       :duration_ms_total,
       :batches,
       keyword_init: true

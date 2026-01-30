@@ -18,7 +18,7 @@ module SearchEngine
       # When no targets are provided, all declared/registered collections are indexed
       # (models are eagerly loaded from the configured `search_engine_models` path).
       # @param targets [Array<Symbol, String, Class>] collections or model classes
-      # @return [Hash] summary
+      # @return [Hash] summary (includes :failed_collections_total for unresolved targets)
       def index_collections(*targets, client: nil)
         run!(mode: :index, targets: targets, client: client)
       end
@@ -30,7 +30,7 @@ module SearchEngine
       # and runs indexing as if they were passed to {.index_collections}.
       #
       # @param client [SearchEngine::Client, nil]
-      # @return [Hash] summary
+      # @return [Hash] summary (includes :failed_collections_total for unresolved targets)
       def index_all(client: nil)
         ensure_models_loaded_from_configured_path!
         names = SearchEngine::CollectionResolver.models_map.keys
@@ -41,7 +41,7 @@ module SearchEngine
       # When no targets are provided, all declared/registered collections are reindexed
       # (models are eagerly loaded from the configured `search_engine_models` path).
       # @param targets [Array<Symbol, String, Class>] collections or model classes
-      # @return [Hash] summary
+      # @return [Hash] summary (includes :failed_collections_total for unresolved targets)
       def reindex_collections!(*targets, client: nil)
         run!(mode: :reindex, targets: targets, client: client)
       end
@@ -53,7 +53,7 @@ module SearchEngine
       # and runs reindexing as if they were passed to {.reindex_collections!}.
       #
       # @param client [SearchEngine::Client, nil]
-      # @return [Hash] summary
+      # @return [Hash] summary (includes :failed_collections_total for unresolved targets)
       def reindex_all!(client: nil)
         ensure_models_loaded_from_configured_path!
         names = SearchEngine::CollectionResolver.models_map.keys
@@ -107,12 +107,17 @@ module SearchEngine
           cascade_count: cascade_order.size
         }
 
+        failed_collections_total = 0
+
         SearchEngine::Instrumentation.with_context(bulk: true, bulk_suppress_cascade: true, bulk_mode: mode.to_sym) do
-          SearchEngine::Instrumentation.instrument('search_engine.bulk.run', payload.merge(stats)) do
+          SearchEngine::Instrumentation.instrument('search_engine.bulk.run', payload.merge(stats)) do |ctx|
             # Stage 1 — process referenced-first inputs (that are not referrers of other inputs)
             stage1_list.each do |name|
               klass = safe_collection_class(name)
-              next unless klass
+              unless klass
+                failed_collections_total += 1
+                next
+              end
 
               case mode.to_sym
               when :index
@@ -125,7 +130,10 @@ module SearchEngine
             # Stage 2 — process collected referencers once
             cascade_order.each do |name|
               klass = safe_collection_class(name)
-              next unless klass
+              unless klass
+                failed_collections_total += 1
+                next
+              end
 
               case mode.to_sym
               when :index
@@ -134,9 +142,12 @@ module SearchEngine
                 klass.reindex_collection!
               end
             end
+
+            ctx[:failed_collections_total] = failed_collections_total
           end
         end
 
+        payload[:failed_collections_total] = failed_collections_total
         payload.merge(stats)
       end
 

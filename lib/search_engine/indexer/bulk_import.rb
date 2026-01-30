@@ -66,6 +66,7 @@ module SearchEngine
           docs_total = 0
           success_total = 0
           failed_total = 0
+          failed_batches_total = 0
           batches_total = 0
           # Capture start time before processing any batches to measure total wall-clock duration
           started_at = monotonic_ms
@@ -85,6 +86,7 @@ module SearchEngine
               docs_total += stats[:docs_count].to_i
               success_total += stats[:success_count].to_i
               failed_total += stats[:failure_count].to_i
+              failed_batches_total += 1 if stats[:failure_count].to_i.positive?
               batches_total += 1
               batches << stats
               validate_soft_batch_size!(batch_size, stats[:docs_count])
@@ -102,6 +104,7 @@ module SearchEngine
             docs_total: docs_total,
             success_total: success_total,
             failed_total: failed_total,
+            failed_batches_total: failed_batches_total,
             duration_ms_total: total_duration_ms,
             batches: batches
           )
@@ -202,6 +205,7 @@ module SearchEngine
             docs_total: 0,
             success_total: 0,
             failed_total: 0,
+            failed_batches_total: 0,
             batches_total: 0,
             idx_counter: -1,
             started_at: monotonic_ms,
@@ -316,6 +320,7 @@ module SearchEngine
             shared_state[:docs_total] += stats[:docs_count].to_i
             shared_state[:success_total] += stats[:success_count].to_i
             shared_state[:failed_total] += stats[:failure_count].to_i
+            shared_state[:failed_batches_total] += 1 if stats[:failure_count].to_i.positive?
             shared_state[:batches_total] += 1
             shared_state[:batches] << stats
             validate_soft_batch_size!(batch_size, stats[:docs_count])
@@ -355,6 +360,7 @@ module SearchEngine
             docs_total: shared_state[:docs_total],
             success_total: shared_state[:success_total],
             failed_total: shared_state[:failed_total],
+            failed_batches_total: shared_state[:failed_batches_total],
             duration_ms_total: total_duration_ms,
             batches: shared_state[:batches]
           )
