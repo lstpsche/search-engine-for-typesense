@@ -58,7 +58,7 @@ module SearchEngine
         def call_sequential(klass:, into:, enum:, batch_size:, action:, log_batches:)
           docs_enum = normalize_enum(enum)
           retry_policy = RetryPolicy.from_config(SearchEngine.config.indexer&.retries)
-          client = SearchEngine::Client.new
+          client = SearchEngine.client
           buffer = +''
           next_index = sequence_generator
 
@@ -269,7 +269,7 @@ module SearchEngine
         def process_single_batch_parallel(raw_batch:, into:, action:, retry_policy:, batch_size:, log_batches:,
                                           shared_state:)
           # Each thread gets its own resources
-          thread_client = SearchEngine::Client.new
+          thread_client = SearchEngine.client
           thread_buffer = +''
           thread_idx = shared_state[:mtx].synchronize { shared_state[:idx_counter] += 1 }
 

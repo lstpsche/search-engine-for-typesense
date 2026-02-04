@@ -18,16 +18,13 @@ module SearchEngine
       # @param context [Symbol] :update or :full
       # @param client [SearchEngine::Client, nil]
       # @return [Hash]
-      # rubocop:disable Metrics/AbcSize, Metrics/MethodLength, Metrics/PerceivedComplexity, Metrics/BlockNesting
+      # rubocop:disable Metrics/AbcSize, Metrics/MethodLength, Metrics/BlockNesting
       def cascade_reindex!(source:, ids:, context: :update, client: nil)
         raise ArgumentError, 'context must be :update or :full' unless %i[update full].include?(context.to_sym)
 
         src_collection = normalize_collection_name(source)
         source_klass = source.is_a?(Class) ? source : safe_collection_class(src_collection)
-        ts_client =
-          client ||
-          (SearchEngine.config.respond_to?(:client) && SearchEngine.config.client) ||
-          SearchEngine::Client.new
+        ts_client = client || SearchEngine.client
 
         graph = build_reverse_graph(client: ts_client)
         referencers = Array(graph[src_collection])
@@ -127,7 +124,7 @@ into: nil
 
         payload.merge(outcomes: outcomes)
       end
-      # rubocop:enable Metrics/AbcSize, Metrics/MethodLength, Metrics/PerceivedComplexity, Metrics/BlockNesting
+      # rubocop:enable Metrics/AbcSize, Metrics/MethodLength, Metrics/BlockNesting
 
       # Build a reverse graph from Typesense live schemas when possible, falling
       # back to compiled local schemas for registered models.

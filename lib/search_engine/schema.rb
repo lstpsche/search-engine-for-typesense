@@ -6,7 +6,7 @@ module SearchEngine
   #
   # Public API:
   # - {.compile(klass)} => Hash
-  # - {.diff(klass, client: SearchEngine::Client.new)} => { diff: Hash, pretty: String }
+  # - {.diff(klass, client: SearchEngine.client)} => { diff: Hash, pretty: String }
   module Schema
     # Deterministic mapping from DSL types to Typesense field types.
     #
@@ -73,7 +73,8 @@ module SearchEngine
       # @return [Hash] { diff: Hash, pretty: String }
       # @see `https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/schema-indexer-e2e`
       # @see `https://typesense.org/docs/latest/api/collections.html`
-      def diff(klass, client: SearchEngine::Client.new)
+      def diff(klass, client: nil)
+        client ||= SearchEngine.client
         compiled = compile(klass, client: client)
         logical_name = compiled[:name]
 
@@ -155,7 +156,8 @@ module SearchEngine
       # @raise [SearchEngine::Errors::Api, ArgumentError]
       # @see `https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/schema#lifecycle`
       # @see `https://typesense.org/docs/latest/api/collections.html`
-      def apply!(klass, client: SearchEngine::Client.new, force_rebuild: false)
+      def apply!(klass, client: nil, force_rebuild: false)
+        client ||= SearchEngine.client
         # Optimization: Try in-place update first if not forced to rebuild.
         # If update! returns true, the schema is synced (either no changes or successfully patched).
         if !force_rebuild && update!(klass, client: client)
@@ -244,7 +246,8 @@ module SearchEngine
       # @return [Hash] { logical: String, new_target: String, previous_target: String }
       # @raise [ArgumentError] when no previous physical exists
       # @see `https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/schema#retention`
-      def rollback(klass, client: SearchEngine::Client.new)
+      def rollback(klass, client: nil)
+        client ||= SearchEngine.client
         compiled = compile(klass)
         logical = compiled[:name]
 
@@ -287,7 +290,8 @@ module SearchEngine
       # @param klass [Class]
       # @param client [SearchEngine::Client]
       # @return [Boolean] true if updated in-place, false if changes required full rebuild or no changes needed
-      def update!(klass, client: SearchEngine::Client.new)
+      def update!(klass, client: nil)
+        client ||= SearchEngine.client
         res = diff(klass, client: client)
         diff_hash = res[:diff]
 

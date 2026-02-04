@@ -65,9 +65,29 @@ module SearchEngine
 
       config_mutex.synchronize do
         yield config
+        config.client = offline_client if config.respond_to?(:test_mode?) && config.test_mode? && config.client.nil?
         config.validate!
       end
       config
+    end
+
+    # Return the configured client or an offline client in test mode.
+    # @param config [SearchEngine::Config, nil] optional configuration override
+    # @param use_config_client [Boolean] whether to respect config.client (default: true)
+    # @return [SearchEngine::Client, SearchEngine::Test::OfflineClient, Object]
+    def client(config: nil, use_config_client: true)
+      cfg = config || self.config
+      return cfg.client if use_config_client && cfg.respond_to?(:client) && cfg.client
+      return offline_client if cfg.respond_to?(:test_mode?) && cfg.test_mode?
+
+      SearchEngine::Client.new(config: cfg)
+    end
+
+    # Return a memoized no-op client used in test/offline mode.
+    # @return [SearchEngine::Test::OfflineClient]
+    def offline_client
+      require 'search_engine/test'
+      @offline_client ||= SearchEngine::Test::OfflineClient.new
     end
 
     # Convenience accessor for operational helpers.
@@ -183,7 +203,7 @@ module SearchEngine
     #   g = SearchEngine.collections_graph
     #   puts g[:ascii]
     def collections_graph(style: :unicode, width: nil, client: nil)
-      ts_client = client || (SearchEngine.config.respond_to?(:client) && SearchEngine.config.client) || SearchEngine::Client.new
+      ts_client = client || SearchEngine.client
       SearchEngine::CollectionsGraph.build(client: ts_client, style: style, width: width)
     end
 
@@ -211,11 +231,7 @@ module SearchEngine
       payloads = builder.to_payloads(common: common)
       url_opts = SearchEngine::ClientOptions.url_options_from_config(SearchEngine.config)
 
-      client_obj = if use_custom_client
-                     (SearchEngine.config.respond_to?(:client) && SearchEngine.config.client) || SearchEngine::Client.new
-                   else
-                     SearchEngine::Client.new
-                   end
+      client_obj = SearchEngine.client(use_config_client: use_custom_client)
 
       if defined?(ActiveSupport::Notifications)
         se_payload = build_multi_event_payload(count, labels, url_opts)

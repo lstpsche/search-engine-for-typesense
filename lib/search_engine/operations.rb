@@ -15,7 +15,7 @@ module SearchEngine
       # @see SearchEngine::Client#metrics
       def metrics(client: nil)
         SearchEngine::Instrumentation.instrument('search_engine.operations.metrics', {}) do
-          ts_client = client || configured_client || SearchEngine::Client.new
+          ts_client = client || SearchEngine.client
           ts_client.metrics
         end
       end
@@ -27,7 +27,7 @@ module SearchEngine
       # @see SearchEngine::Client#stats
       def stats(client: nil)
         SearchEngine::Instrumentation.instrument('search_engine.operations.stats', {}) do
-          ts_client = client || configured_client || SearchEngine::Client.new
+          ts_client = client || SearchEngine.client
           ts_client.stats
         end
       end
@@ -39,7 +39,7 @@ module SearchEngine
       # @see SearchEngine::Client#health
       def health(client: nil)
         SearchEngine::Instrumentation.instrument('search_engine.operations.health', {}) do
-          ts_client = client || configured_client || SearchEngine::Client.new
+          ts_client = client || SearchEngine.client
           ts_client.health
         end
       end

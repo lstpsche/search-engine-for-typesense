@@ -544,7 +544,7 @@ module SearchEngine
       # Prefer legacy ivar when explicitly set (tests or injected stubs), otherwise memoize with conventional name
       return @__client if instance_variable_defined?(:@__client) && @__client
 
-      @client ||= (SearchEngine.config.respond_to?(:client) && SearchEngine.config.client) || SearchEngine::Client.new
+      @client ||= SearchEngine.client
     end
 
     def build_url_opts

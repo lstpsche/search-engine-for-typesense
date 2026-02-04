@@ -14,7 +14,7 @@ module SearchEngine
       # @see SearchEngine::Client#clear_cache
       def clear(client: nil)
         SearchEngine::Instrumentation.instrument('search_engine.cache.clear', {}) do
-          ts_client = client || configured_client || SearchEngine::Client.new
+          ts_client = client || SearchEngine.client
           ts_client.clear_cache
         end
       end

@@ -228,7 +228,7 @@ module SearchEngine
       def estimate_found_if_enabled(cfg, sd_cfg, into, filter)
         return nil unless sd_cfg.estimation_enabled && cfg.default_query_by && !cfg.default_query_by.to_s.strip.empty?
 
-        client = SearchEngine::Client.new
+        client = SearchEngine.client
         payload = { q: '*', query_by: cfg.default_query_by, per_page: 0, filter_by: filter }
         params = SearchEngine::CompiledParams.new(payload)
         res = client.search(collection: into, params: params, url_opts: {})
@@ -238,7 +238,7 @@ module SearchEngine
       end
 
       def perform_delete_and_count(into, filter, timeout_ms)
-        client = SearchEngine::Client.new
+        client = SearchEngine.client
         resp = client.delete_documents_by_filter(
           collection: into,
           filter_by: filter,

@@ -38,7 +38,7 @@ module SearchEngine
           into: into
         )
 
-        resp = SearchEngine::Client.new.update_document(
+        resp = SearchEngine.client.update_document(
           collection: collection,
           id: id_value,
           fields: attrs,

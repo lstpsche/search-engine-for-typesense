@@ -5,6 +5,7 @@ module SearchEngine
   #
   # Provides:
   # - SearchEngine::Test::StubClient — a programmable stub client that captures requests
+  # - SearchEngine::Test::OfflineClient — a no-op client for test/offline mode
   # - Event capture helpers (SearchEngine::Test.capture_events)
   # - Framework adapters (RSpec matcher `emit_event`, Minitest assertions)
   #
@@ -51,6 +52,7 @@ module SearchEngine
 end
 
 require 'search_engine/test/stub_client'
+require 'search_engine/test/offline_client'
 # Framework adapters are optional; require only when present
 begin
   require 'search_engine/test/rspec_matchers'

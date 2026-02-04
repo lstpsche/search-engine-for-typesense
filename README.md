@@ -119,6 +119,18 @@ SearchEngine::Product.upsert_bulk(data: [mapped])
 
 See the [Docs](https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/index)
 
+## Test/offline mode
+
+In test environments (`Rails.env.test?` or `RACK_ENV=test`), SearchEngine defaults to an offline client
+(`SearchEngine::Test::OfflineClient`) so no Typesense HTTP calls are made.
+
+You can control this explicitly with:
+- `SEARCH_ENGINE_TEST_MODE=1` to force offline mode
+- `SEARCH_ENGINE_TEST_MODE=0` to disable offline mode
+- `SEARCH_ENGINE_OFFLINE=1` (legacy alias)
+
+If you set `SearchEngine.configure { |c| c.client = ... }`, the custom client is always used.
+
 ## Example app
 
 See `examples/demo_shop` — demonstrates single/multi search, JOINs, grouping, presets/curation, and DX/observability. Supports offline mode via the stub client (see [Testing](https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/testing)).

@@ -48,6 +48,8 @@ module SearchEngine
     #     are still validated). Defaults to true in development/test.
     # @!attribute [rw] multi_search_limit
     #   @return [Integer] maximum number of searches allowed in a single multi-search call (default: 50)
+    # @!attribute [rw] test_mode
+    #   @return [Boolean] when true, avoid network I/O via an offline client
     # @!attribute [rw] default_console_model
     #   @return [Class, String, nil] default model used by console helpers (SE.q/SE.rel)
     # @!attribute [rw] search_engine_models
@@ -60,6 +62,7 @@ module SearchEngine
                   :use_cache,
                   :cache_ttl_s,
                   :strict_fields,
+                  :test_mode,
                   :multi_search_limit,
                   :client,
                   :default_console_model,
@@ -323,13 +326,13 @@ module SearchEngine
     # @param env [#[]] environment-like object (defaults to ::ENV)
     def initialize(env = ENV)
       @warned_incomplete = false
-      set_defaults!
+      set_defaults!(env)
       hydrate_from_env!(env, override_existing: true)
     end
 
     # Populate sane defaults for development.
     # @return [void]
-    def set_defaults!
+    def set_defaults!(env = ENV)
       # typesense transport defaults
       typesense.api_key = nil
       typesense.host = 'localhost'
@@ -343,6 +346,7 @@ module SearchEngine
       @use_cache = true
       @cache_ttl_s = 60
       @strict_fields = default_strict_fields
+      @test_mode = default_test_mode(env)
       @logger = default_logger
       @multi_search_limit = 50
       @schema = SchemaConfig.new
@@ -361,6 +365,12 @@ module SearchEngine
       @search_engine_models = 'app/search_engine'
       # When true, Relation#inspect/pretty_print materialize a preview (AR-like).
       @relation_print_materializes = true
+    end
+
+    # Whether the engine should avoid network I/O and use an offline client.
+    # @return [Boolean]
+    def test_mode?
+      @test_mode ? true : false
     end
 
     # Expose schema lifecycle configuration.
@@ -572,6 +582,10 @@ module SearchEngine
         normalized = %w[1 true yes on].include?(val.to_s.strip.downcase)
         set_if_present(:strict_fields, normalized, override_existing)
       end
+      test_mode_val = normalize_boolean(env['SEARCH_ENGINE_TEST_MODE'])
+      offline_val = normalize_boolean(env['SEARCH_ENGINE_OFFLINE'])
+      normalized = test_mode_val.nil? ? offline_val : test_mode_val
+      set_if_present(:test_mode, normalized, override_existing) unless normalized.nil?
       self
     end
 
@@ -628,6 +642,7 @@ module SearchEngine
         use_cache: use_cache ? true : false,
         cache_ttl_s: cache_ttl_s,
         strict_fields: strict_fields ? true : false,
+        test_mode: test_mode? || false,
         multi_search_limit: multi_search_limit,
         default_console_model: (
           default_console_model.respond_to?(:name) ? default_console_model.name : default_console_model
@@ -745,6 +760,17 @@ module SearchEngine
       end
     end
 
+    def default_test_mode(env)
+      if defined?(::Rails)
+        ::Rails.env.test?
+      else
+        env_value = env['RACK_ENV'] || env['RAILS_ENV']
+        env_value.to_s.strip.downcase == 'test'
+      end
+    rescue StandardError
+      false
+    end
+
     def default_logger
       if defined?(::Rails)
         ::Rails.logger
@@ -773,6 +799,19 @@ module SearchEngine
 
     def string_blank?(value)
       value.nil? || (value.respond_to?(:strip) && value.strip.empty?)
+    end
+
+    def normalize_boolean(value)
+      return nil if value.nil?
+
+      str = value.to_s.strip
+      return nil if str.empty?
+
+      downcased = str.downcase
+      return true if %w[1 true yes on].include?(downcased)
+      return false if %w[0 false no off].include?(downcased)
+
+      nil
     end
 
     def validate_protocol

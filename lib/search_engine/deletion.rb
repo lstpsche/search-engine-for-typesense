@@ -30,7 +30,7 @@ module SearchEngine
                             end
                           end
 
-      resp = SearchEngine::Client.new.delete_documents_by_filter(
+      resp = SearchEngine.client.delete_documents_by_filter(
         collection: collection,
         filter_by: filter_str,
         timeout_ms: effective_timeout

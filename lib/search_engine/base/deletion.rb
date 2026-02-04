@@ -48,7 +48,7 @@ module SearchEngine
                               end
                             end
 
-        resp = SearchEngine::Client.new.delete_document(
+        resp = SearchEngine.client.delete_document(
           collection: collection,
           id: id_value,
           timeout_ms: effective_timeout

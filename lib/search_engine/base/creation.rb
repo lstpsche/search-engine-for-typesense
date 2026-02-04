@@ -504,7 +504,7 @@ module SearchEngine
           end
 
           count, bytes, jsonl = encode_jsonl!(docs)
-          raw = SearchEngine::Client.new.import_documents(collection: collection, jsonl: jsonl, action: :upsert)
+          raw = SearchEngine.client.import_documents(collection: collection, jsonl: jsonl, action: :upsert)
           success_count, failure_count, errors_sample = parse_import_response(raw)
 
           result = {
@@ -673,7 +673,7 @@ module SearchEngine
           Helpers.validate_required_and_unknown!(self, present, allowed_keys, required_keys)
           Helpers.validate_and_coerce_types!(self, document, types_by_field, Helpers.coercions_enabled?)
 
-          client = SearchEngine::Client.new
+          client = SearchEngine.client
           logical = respond_to?(:collection) ? collection.to_s : name.to_s
           target = if into && !into.to_s.strip.empty?
                      into.to_s

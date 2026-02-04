@@ -13,20 +13,20 @@ module SearchEngine
           end
 
           def current_schema
-            client = (SearchEngine.config.respond_to?(:client) && SearchEngine.config.client) || SearchEngine::Client.new
+            client = SearchEngine.client
             logical = respond_to?(:collection) ? collection.to_s : name.to_s
             physical = client.resolve_alias(logical) || logical
             client.retrieve_collection_schema(physical)
           end
 
           def schema_diff
-            client = (SearchEngine.config.respond_to?(:client) && SearchEngine.config.client) || SearchEngine::Client.new
+            client = SearchEngine.client
             res = SearchEngine::Schema.diff(self, client: client)
             res[:diff]
           end
 
           def update_collection!
-            client = (SearchEngine.config.respond_to?(:client) && SearchEngine.config.client) || SearchEngine::Client.new
+            client = SearchEngine.client
 
             puts 'Update Collection — analyzing diff for in-place update...'
             updated = SearchEngine::Schema.update!(self, client: client)
@@ -40,7 +40,7 @@ module SearchEngine
           end
 
           def drop_collection!
-            client = (SearchEngine.config.respond_to?(:client) && SearchEngine.config.client) || SearchEngine::Client.new
+            client = SearchEngine.client
             logical = respond_to?(:collection) ? collection.to_s : name.to_s
 
             # Resolve alias with a safer timeout for control-plane operations
@@ -68,7 +68,7 @@ module SearchEngine
           end
 
           def recreate_collection!
-            client = (SearchEngine.config.respond_to?(:client) && SearchEngine.config.client) || SearchEngine::Client.new
+            client = SearchEngine.client
             logical = respond_to?(:collection) ? collection.to_s : name.to_s
 
             alias_target = client.resolve_alias(logical)

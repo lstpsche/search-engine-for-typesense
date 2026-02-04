@@ -18,7 +18,7 @@ module SearchEngine
             logical = respond_to?(:collection) ? collection.to_s : name.to_s
             puts
             puts(%(>>>>>> Indexing Collection "#{logical}"))
-            client_obj = client || (SearchEngine.config.respond_to?(:client) && SearchEngine.config.client) || SearchEngine::Client.new
+            client_obj = client || SearchEngine.client
 
             if partition.nil?
               __se_index_full(client: client_obj, pre: pre, force_rebuild: force_rebuild)
@@ -35,7 +35,7 @@ module SearchEngine
 
           def rebuild_partition!(partition:, into: nil, pre: nil)
             if pre
-              client_obj = (SearchEngine.config.respond_to?(:client) && SearchEngine.config.client) || SearchEngine::Client.new
+              client_obj = SearchEngine.client
               __se_preflight_dependencies!(mode: pre, client: client_obj)
             end
             parts = if partition.nil? || (partition.respond_to?(:empty?) && partition.empty?)

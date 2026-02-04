@@ -81,7 +81,7 @@ module SearchEngine
         private
 
         def client
-          @client ||= (SearchEngine.config.respond_to?(:client) && SearchEngine.config.client) || SearchEngine::Client.new
+          @client ||= SearchEngine.client
         end
 
         def normalize_collection!(value)

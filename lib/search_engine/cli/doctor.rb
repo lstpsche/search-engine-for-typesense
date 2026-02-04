@@ -485,7 +485,7 @@ module SearchEngine
           cfg.retries = base.retries
           cfg.logger = base.logger
 
-          SearchEngine::Client.new(config: cfg)
+          SearchEngine.client(config: cfg)
         end
 
         def env_int(name)

@@ -69,7 +69,7 @@ module SearchEngine
       def run!(mode:, targets:, client: nil)
         raise ArgumentError, 'mode must be :index or :reindex' unless %i[index reindex].include?(mode.to_sym)
 
-        ts_client = client || (SearchEngine.config.respond_to?(:client) && SearchEngine.config.client) || SearchEngine::Client.new
+        ts_client = client || SearchEngine.client
         input_names = normalize_targets(targets)
 
         # Ensure models are loaded before resolving collection classes.

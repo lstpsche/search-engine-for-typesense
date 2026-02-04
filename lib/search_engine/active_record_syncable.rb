@@ -95,7 +95,7 @@ module SearchEngine
         return
       end
 
-      client = SearchEngine::Client.new
+      client = SearchEngine.client
       into = client.resolve_alias(logical) || logical
       client.delete_document(collection: into, id: document_id)
     rescue StandardError => error

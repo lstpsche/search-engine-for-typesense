@@ -61,7 +61,7 @@ module SearchEngine
         reg = SearchEngine::Registry.mapping
         return nil if reg.nil? || reg.empty?
 
-        cli = client || (SearchEngine.config.respond_to?(:client) && SearchEngine.config.client) || SearchEngine::Client.new
+        cli = client || SearchEngine.client
         reg.each_key do |logical|
           target = cli.resolve_alias(logical)
           return reg[logical] if target && target.to_s == phys

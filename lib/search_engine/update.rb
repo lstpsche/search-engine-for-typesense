@@ -23,7 +23,7 @@ module SearchEngine
       filter_str = SearchEngine::Deletion.build_filter(filter, hash)
       collection = SearchEngine::Deletion.resolve_into(klass: klass, partition: partition, into: into)
 
-      resp = SearchEngine::Client.new.update_documents_by_filter(
+      resp = SearchEngine.client.update_documents_by_filter(
         collection: collection,
         filter_by: filter_str,
         fields: attributes,
