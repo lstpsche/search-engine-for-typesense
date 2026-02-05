@@ -6,8 +6,10 @@ module SearchEngine
     collection 'brands'
 
     attribute :id, :integer
-    attribute :name, :string
+    attribute :name, :string, sort: true
     attribute :updated_at, :datetime
+
+    query_by :name
 
     index do
       source :active_record, model: ::Brand

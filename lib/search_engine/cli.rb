@@ -8,7 +8,7 @@ module SearchEngine
   # This module is intentionally minimal and only used by task definitions
   # located under `lib/tasks/search_engine.rake`. It avoids changing the
   # library require graph by being required from the Rake file.
-  module CLI
+  module Cli
     class << self
       # Resolve a collection argument into a model class.
       #
@@ -97,13 +97,13 @@ module SearchEngine
       # @param name [String]
       # @return [Boolean]
       def boolean_env?(name)
-        SearchEngine::CLI::Support.boolean_env?(name)
+        SearchEngine::Cli::Support.boolean_env?(name)
       end
 
       # Whether JSON output is requested via FORMAT=json.
       # @return [Boolean]
       def json_output?
-        SearchEngine::CLI::Support.json_output?
+        SearchEngine::Cli::Support.json_output?
       end
 
       # Build an Enumerator that yields a single mapped documents batch for dry-run preview.

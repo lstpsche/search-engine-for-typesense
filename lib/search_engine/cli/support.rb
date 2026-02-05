@@ -5,7 +5,7 @@ require 'tmpdir'
 require 'pathname'
 
 module SearchEngine
-  module CLI
+  module Cli
     # Small, pure helpers shared by CLI tasks/commands.
     #
     # Side‑effect free and safe to require in task context.

@@ -6,12 +6,14 @@ module SearchEngine
     collection 'books'
 
     attribute :id, :integer
-    attribute :title, :string
+    attribute :title, :string, sort: true
     attribute :author_id, :integer
     attribute :author_name, :string
     attribute :updated_at, :datetime
 
     join :authors, collection: 'authors', local_key: :author_id, foreign_key: :id
+
+    query_by %i[title author_name]
 
     index do
       source :active_record, model: ::Book

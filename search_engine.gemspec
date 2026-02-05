@@ -16,8 +16,7 @@ Gem::Specification.new do |spec|
   spec.required_ruby_version = '>= 3.1'
 
   spec.metadata['homepage_uri'] = spec.homepage
-  # spec.metadata['source_code_uri'] = 'https://github.com/lstpsche/search-engine-for-typesense'
-  # spec.metadata['changelog_uri']   = 'https://github.com/lstpsche/search-engine-for-typesense/releases'
+  spec.metadata['source_code_uri'] = 'https://github.com/lstpsche/search-engine-for-typesense'
 
   spec.files = Dir[
     'lib/**/*',
@@ -25,7 +24,7 @@ Gem::Specification.new do |spec|
     'exe/*',
     'README.md',
     'LICENSE'
-  ]
+  ].reject { |f| File.basename(f) == '.DS_Store' }
   spec.require_paths = ['lib']
   spec.bindir = 'exe'
 

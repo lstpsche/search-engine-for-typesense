@@ -13,7 +13,7 @@ module SearchEngine
   # - .enabled?   => Boolean (config + SDK present)
   # - .start!     => idempotently subscribes to events
   # - .stop!      => unsubscribes
-  module OTel
+  module Otel
     class << self
       # @return [Boolean] whether the OpenTelemetry SDK is available
       # @since M8

@@ -1,28 +1,129 @@
 <h1>Products</h1>
 
 <form method="get" action="/products">
-  <input type="text" name="q" value="<%= params[:q].to_s %>" placeholder="Search products" />
-  <input type="number" name="per" value="<%= params[:per] || 10 %>" min="1" />
-  <button type="submit">Search</button>
+  <div>
+    <input type="text" name="q" value="<%= params[:q].to_s %>" placeholder="Search products" />
+    <input type="number" name="per" value="<%= params[:per] || 10 %>" min="1" />
+    <select name="sort">
+      <option value="">Sort: relevance</option>
+      <option value="price_asc" <%= 'selected' if params[:sort] == 'price_asc' %>>Price: low → high</option>
+      <option value="price_desc" <%= 'selected' if params[:sort] == 'price_desc' %>>Price: high → low</option>
+      <option value="updated_desc" <%= 'selected' if params[:sort] == 'updated_desc' %>>Updated: newest</option>
+      <option value="name_asc" <%= 'selected' if params[:sort] == 'name_asc' %>>Name: A → Z</option>
+    </select>
+    <button type="submit">Search</button>
+  </div>
+  <div style="margin-top: 0.5rem;">
+    <input type="text" name="category" value="<%= params[:category].to_s %>" placeholder="Category (e.g., books)" />
+    <input type="text" name="brand" value="<%= params[:brand].to_s %>" placeholder="Brand (e.g., Acme)" />
+    <input type="hidden" name="facet" value="0" />
+    <label style="margin-left: 0.5rem;">
+      <input type="checkbox" name="facet" value="1" <%= params.fetch(:facet, '1') != '0' ? 'checked' : '' %> />
+      Facets
+    </label>
+  </div>
+  <details style="margin-top: 0.75rem;">
+    <summary>Advanced options</summary>
+    <div style="margin-top: 0.5rem;">
+      <label>Preset:
+        <input type="text" name="preset" value="<%= params[:preset].to_s %>" placeholder="demo_popular" />
+      </label>
+      <select name="preset_mode">
+        <option value="">Mode: merge</option>
+        <option value="only" <%= 'selected' if params[:preset_mode] == 'only' %>>only</option>
+        <option value="lock" <%= 'selected' if params[:preset_mode] == 'lock' %>>lock</option>
+      </select>
+    </div>
+    <div style="margin-top: 0.5rem;">
+      <label>Pin IDs:
+        <input type="text" name="pin" value="<%= params[:pin].to_s %>" placeholder="1,2" />
+      </label>
+      <label style="margin-left: 0.5rem;">Hide IDs:
+        <input type="text" name="hide" value="<%= params[:hide].to_s %>" placeholder="3,4" />
+      </label>
+      <select name="filter_curated_hits">
+        <option value="">Filter curated hits: default</option>
+        <option value="1" <%= 'selected' if params[:filter_curated_hits] == '1' %>>on</option>
+        <option value="0" <%= 'selected' if params[:filter_curated_hits] == '0' %>>off</option>
+      </select>
+    </div>
+    <div style="margin-top: 0.5rem;">
+      <label>Early limit:
+        <input type="number" name="early_limit" value="<%= params[:early_limit].to_s %>" min="1" />
+      </label>
+      <label style="margin-left: 0.5rem;">Validate max:
+        <input type="number" name="max_hits" value="<%= params[:max_hits].to_s %>" min="1" />
+      </label>
+      <select name="rank">
+        <option value="">Ranking: default</option>
+        <option value="strict" <%= 'selected' if params[:rank] == 'strict' %>>strict</option>
+        <option value="fuzzy" <%= 'selected' if params[:rank] == 'fuzzy' %>>fuzzy</option>
+      </select>
+    </div>
+    <div style="margin-top: 0.5rem;">
+      <select name="synonyms">
+        <option value="">Synonyms: default</option>
+        <option value="1" <%= 'selected' if params[:synonyms] == '1' %>>on</option>
+        <option value="0" <%= 'selected' if params[:synonyms] == '0' %>>off</option>
+      </select>
+      <select name="stopwords">
+        <option value="">Stopwords: default</option>
+        <option value="1" <%= 'selected' if params[:stopwords] == '1' %>>on</option>
+        <option value="0" <%= 'selected' if params[:stopwords] == '0' %>>off</option>
+      </select>
+      <select name="cache">
+        <option value="">Cache: default</option>
+        <option value="1" <%= 'selected' if params[:cache] == '1' %>>on</option>
+        <option value="0" <%= 'selected' if params[:cache] == '0' %>>off</option>
+      </select>
+    </div>
+  </details>
 </form>
 
-<p>Preset: <a href="/products?q=rud">rud</a></p>
+<p style="margin-top: 1rem;">Found: <%= @result&.found.to_i %></p>
 
-<p>Found: <%= @relation.fetch_found_only %></p>
-
-<% if @result.any? %>
-  <ul>
-    <% @result.each do |p| %>
-      <li>
-        <%= p.instance_variable_get(:@name) || p.name rescue p.to_s %>
-      </li>
+<div style="display: flex; gap: 2rem;">
+  <div style="flex: 2;">
+    <% if @hits.any? %>
+      <ul>
+        <% @hits.each do |p| %>
+          <li>
+            <strong><%= p.instance_variable_get(:@name) || p.name rescue p.to_s %></strong>
+            — <%= p.instance_variable_get(:@brand_name) || p.brand_name rescue '' %>
+            (<%= p.instance_variable_get(:@category) || p.category rescue '' %>)
+            <%= p.instance_variable_get(:@price_cents) || p.price_cents rescue '' %>
+          </li>
+        <% end %>
+      </ul>
+    <% else %>
+      <p>No results.</p>
     <% end %>
-  </ul>
-<% else %>
-  <p>No results.</p>
-<% end %>
+  </div>
+  <div style="flex: 1;">
+    <% if @result %>
+      <% categories = @result.facet_values('category') %>
+      <% if categories.any? %>
+        <h3>Category facets</h3>
+        <ul>
+          <% categories.each do |f| %>
+            <li><%= f[:value] %> (<%= f[:count] %>)</li>
+          <% end %>
+        </ul>
+      <% end %>
+      <% brands = @result.facet_values('brand_name') %>
+      <% if brands.any? %>
+        <h3>Brand facets</h3>
+        <ul>
+          <% brands.each do |f| %>
+            <li><%= f[:value] %> (<%= f[:count] %>)</li>
+          <% end %>
+        </ul>
+      <% end %>
+    <% end %>
+  </div>
+</div>
 
-<details>
+<details style="margin-top: 1rem;">
   <summary>Explain</summary>
   <pre><%= @relation.explain %></pre>
   <pre><%= @relation.to_params_json %></pre>

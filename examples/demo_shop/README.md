@@ -15,9 +15,9 @@ Set Typesense env vars or run offline. See `.env.example` for placeholders.
 
 - Start the server: `bin/rails s`
 - Visit:
-  - `/products` — single search with pagination
+  - `/products` — single search with pagination, sorting, faceting, curation, presets, hit limits
   - `/brands` — simple list for multi‑search pairing
-  - `/books` — JOINs with authors + nested `include_fields`
+  - `/books` — JOINs with authors + nested `include_fields` + title search
   - `/groups` — `group_by :brand_id`
   - `/search/multi` — federated multi‑search (products + brands)
 
@@ -43,7 +43,7 @@ Set Typesense env vars or run offline. See `.env.example` for placeholders.
 
 ```ruby
 # app/controllers/search_controller.rb
-@multi = SearchEngine.multi_search_result(common: { query_by: SearchEngine.config.default_query_by }) do |m|
+@multi = SearchEngine.multi_search_result do |m|
   m.add :products, SearchEngine::Product.all.per(5)
   m.add :brands,   SearchEngine::Brand.all.per(3)
 end
@@ -56,12 +56,29 @@ See docs: [Multi-search Guide](https://nikita-shkoda.mintlify.app/projects/searc
 Try adding a curated list in code:
 
 ```ruby
-SearchEngine::Product.preset(:popular_products, mode: :only).pin("p_12").hide("p_99").explain
+SearchEngine::Product.preset(:popular_products, mode: :only).pin("12").hide("99").explain
 ```
 
 See docs:
 - [Presets](https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/presets)
 - [Curation](https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/curation)
+
+## Products Advanced Options (Query Params)
+
+The `/products` page accepts additional query params to showcase core DSL:
+
+- `category` / `brand` — filter with `where`
+- `sort` — `price_asc`, `price_desc`, `updated_desc`, `name_asc`
+- `facet=1` — facet on `category` and `brand_name`
+- `pin` / `hide` — curation IDs (`pin=1,2&hide=3`)
+- `filter_curated_hits=1|0` — filter curated hits
+- `preset` / `preset_mode` — presets (`merge`, `only`, `lock`)
+- `early_limit` / `max_hits` — hit limits and validator
+- `synonyms=1|0`, `stopwords=1|0`, `cache=1|0`
+- `rank=strict|fuzzy` — ranking presets
+
+Note: presets are server-side in Typesense. With the demo namespace enabled,
+`preset=popular` resolves to `demo_popular`.
 
 ## Environment
 

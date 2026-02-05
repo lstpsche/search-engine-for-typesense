@@ -21,8 +21,6 @@ class ReproStrictMissingSelectionTest < Minitest::Test
   end
 
   def test_strict_missing_raises_when_requested_root_absent
-    pending 'fix in M11'
-
     # Enqueue hit missing the requested root field :name
     @stub.enqueue_response(:search, {
                              'hits' => [

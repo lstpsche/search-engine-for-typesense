@@ -7,15 +7,17 @@ module SearchEngine
     collection 'products'
 
     attribute :id, :integer
-    attribute :name, :string
+    attribute :name, :string, sort: true
     attribute :description, :string
-    attribute :price_cents, :integer
+    attribute :price_cents, :integer, sort: true
     attribute :brand_id, :integer
-    attribute :brand_name, :string
-    attribute :category, :string
-    attribute :updated_at, :datetime
+    attribute :brand_name, :string, facet: true
+    attribute :category, :string, facet: true
+    attribute :updated_at, :datetime, sort: true
 
     join :brands, collection: 'brands', local_key: :brand_id, foreign_key: :id
+
+    query_by %i[name description brand_name category]
 
     # Minimal index mapping; kept simple for demo
     index do

@@ -4,10 +4,10 @@ require 'json'
 require 'search_engine/cli/support'
 
 module SearchEngine
-  module CLI
+  module Cli
     # Orchestrates diagnostics checks and renders output for the doctor task.
     #
-    # Public API: SearchEngine::CLI::Doctor.run
+    # Public API: SearchEngine::Cli::Doctor.run
     #
     # Supports FORMAT env var (table/json) and redaction-aware details.
     #
@@ -112,11 +112,11 @@ module SearchEngine
         # --- Flags -----------------------------------------------------------
 
         def json?
-          SearchEngine::CLI::Support.json_output?
+          SearchEngine::Cli::Support.json_output?
         end
 
         def verbose?
-          SearchEngine::CLI.boolean_env?('VERBOSE')
+          SearchEngine::Cli.boolean_env?('VERBOSE')
         end
 
         # --- Checks ----------------------------------------------------------
@@ -321,7 +321,7 @@ module SearchEngine
           details = {
             url: preview[:url],
             url_opts: SearchEngine::Observability.filtered_url_opts(preview[:url_opts] || {}),
-            body_preview: SearchEngine::CLI::Support.parse_json_or_string(preview[:body])
+            body_preview: SearchEngine::Cli::Support.parse_json_or_string(preview[:body])
           }
           Builder.result_for_check(
             name: 'dry_run_single',
@@ -421,9 +421,9 @@ module SearchEngine
 
         def check_opentelemetry
           started = monotonic_ms
-          installed = SearchEngine::OTel.installed?
+          installed = SearchEngine::Otel.installed?
           enabled = begin
-            SearchEngine::OTel.enabled?
+            SearchEngine::Otel.enabled?
           rescue StandardError
             false
           end

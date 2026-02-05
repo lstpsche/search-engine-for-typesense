@@ -10,8 +10,6 @@ class ReproHitsLimitChainersTest < Minitest::Test
   end
 
   def test_documented_hits_limit_chainers_exist
-    pending 'fix in M11'
-
     # This is documentation-driven: DSL should exist
     rel = Product.all
     assert_respond_to rel, :limit_hits

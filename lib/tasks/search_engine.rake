@@ -12,7 +12,7 @@ namespace :search_engine do
     desc "Diff compiled schema vs live collection. Usage: rails 'search_engine:schema:diff[collection]'"
     task :diff, [:collection] => :environment do |_t, args|
       begin
-        klass = SearchEngine::CLI.resolve_collection!(args[:collection])
+        klass = SearchEngine::Cli.resolve_collection!(args[:collection])
       rescue ArgumentError => error
         warn("Error: #{error.message}")
         print_schema_usage
@@ -24,7 +24,7 @@ namespace :search_engine do
         collection: (klass.respond_to?(:collection) ? klass.collection : klass.name)
       }
       result = nil
-      SearchEngine::CLI.with_task_instrumentation('schema:diff', payload) do
+      SearchEngine::Cli.with_task_instrumentation('schema:diff', payload) do
         result = SearchEngine::Schema.diff(klass)
       end
 
@@ -34,12 +34,12 @@ namespace :search_engine do
               !diff[:changed_fields].to_h.empty? ||
               !diff[:collection_options].to_h.empty?
 
-      if SearchEngine::CLI.json_output?
+      if SearchEngine::Cli.json_output?
         out = { status: (drift ? 'drift' : 'in_sync'), diff: diff }
         puts(JSON.generate(out))
       else
         puts(result[:pretty])
-        if SearchEngine::CLI.boolean_env?('VERBOSE')
+        if SearchEngine::Cli.boolean_env?('VERBOSE')
           puts("\n-- diff (verbose) --\n")
           puts(JSON.pretty_generate(diff))
         end
@@ -54,7 +54,7 @@ namespace :search_engine do
     desc "Apply schema (create + reindex + swap + retention). Usage: rails 'search_engine:schema:apply[collection]'"
     task :apply, [:collection] => :environment do |_t, args|
       begin
-        klass = SearchEngine::CLI.resolve_collection!(args[:collection])
+        klass = SearchEngine::Cli.resolve_collection!(args[:collection])
       rescue ArgumentError => error
         warn("Error: #{error.message}")
         print_schema_usage
@@ -66,10 +66,10 @@ namespace :search_engine do
         collection: (klass.respond_to?(:collection) ? klass.collection : klass.name)
       }
       summary = nil
-      SearchEngine::CLI.with_task_instrumentation('schema:apply', payload) do
+      SearchEngine::Cli.with_task_instrumentation('schema:apply', payload) do
         summary = SearchEngine::Schema.apply!(klass) do |physical|
           # Inline reindex across all partitions into the new physical
-          parts = SearchEngine::CLI.partitions_for(klass)
+          parts = SearchEngine::Cli.partitions_for(klass)
           parts = [nil] if parts.nil? || parts.respond_to?(:empty?) && parts.empty?
           parts.each do |part|
             SearchEngine::Indexer.rebuild_partition!(klass, partition: part, into: physical)
@@ -77,7 +77,7 @@ namespace :search_engine do
         end
       end
 
-      if SearchEngine::CLI.json_output?
+      if SearchEngine::Cli.json_output?
         puts(JSON.generate({ status: 'ok' }.merge(summary)))
       else
         puts("Logical: #{summary[:logical]}")
@@ -98,7 +98,7 @@ namespace :search_engine do
     desc "Rollback schema alias to previous retained physical. Usage: rails 'search_engine:schema:rollback[collection]'"
     task :rollback, [:collection] => :environment do |_t, args|
       begin
-        klass = SearchEngine::CLI.resolve_collection!(args[:collection])
+        klass = SearchEngine::Cli.resolve_collection!(args[:collection])
       rescue ArgumentError => error
         warn("Error: #{error.message}")
         print_schema_usage
@@ -111,7 +111,7 @@ namespace :search_engine do
       }
       summary = nil
       begin
-        SearchEngine::CLI.with_task_instrumentation('schema:rollback', payload) do
+        SearchEngine::Cli.with_task_instrumentation('schema:rollback', payload) do
           summary = SearchEngine::Schema.rollback(klass)
         end
       rescue ArgumentError => error
@@ -119,7 +119,7 @@ namespace :search_engine do
         Kernel.exit(2)
       end
 
-      if SearchEngine::CLI.json_output?
+      if SearchEngine::Cli.json_output?
         puts(JSON.generate({ status: 'ok' }.merge(summary)))
       else
         puts("Logical: #{summary[:logical]}")
@@ -139,14 +139,14 @@ namespace :search_engine do
     desc "Rebuild entire index (all partitions or single). Usage: rails 'search_engine:index:rebuild[collection]'"
     task :rebuild, [:collection] => :environment do |_t, args|
       begin
-        klass = SearchEngine::CLI.resolve_collection!(args[:collection])
+        klass = SearchEngine::Cli.resolve_collection!(args[:collection])
       rescue ArgumentError => error
         warn("Error: #{error.message}")
         print_index_usage
         Kernel.exit(1)
       end
 
-      dry_run = SearchEngine::CLI.boolean_env?('DRY_RUN')
+      dry_run = SearchEngine::Cli.boolean_env?('DRY_RUN')
       payload = {
         task: 'index:rebuild',
         collection: (klass.respond_to?(:collection) ? klass.collection : klass.name),
@@ -154,19 +154,19 @@ namespace :search_engine do
       }
 
       if dry_run
-        SearchEngine::CLI.with_task_instrumentation('index:rebuild', payload) do
-          partitions = Array(SearchEngine::CLI.partitions_for(klass))
+        SearchEngine::Cli.with_task_instrumentation('index:rebuild', payload) do
+          partitions = Array(SearchEngine::Cli.partitions_for(klass))
           partition = partitions.first
-          into = SearchEngine::CLI.resolve_into!(klass, partition: partition, into: nil)
-          enum = SearchEngine::CLI.docs_enum_for_first_batch(klass, partition)
+          into = SearchEngine::Cli.resolve_into!(klass, partition: partition, into: nil)
+          enum = SearchEngine::Cli.docs_enum_for_first_batch(klass, partition)
           preview = SearchEngine::Indexer.dry_run!(klass, into: into, enum: enum, action: :upsert)
-          if SearchEngine::CLI.json_output?
+          if SearchEngine::Cli.json_output?
             puts(JSON.generate(preview.merge(partition: partition)))
           else
             puts("Into: #{preview[:collection]} (partition=#{partition.inspect})")
             puts("Action: #{preview[:action]}")
             puts("Docs (first batch): #{preview[:docs_count]}, Bytes est: #{preview[:bytes_estimate]}")
-            if SearchEngine::CLI.boolean_env?('VERBOSE') && preview[:sample_line]
+            if SearchEngine::Cli.boolean_env?('VERBOSE') && preview[:sample_line]
               puts("Sample: #{preview[:sample_line]}")
             end
           end
@@ -176,10 +176,10 @@ namespace :search_engine do
 
       # Non-dry run
       actions = []
-      SearchEngine::CLI.with_task_instrumentation('index:rebuild', payload) do
+      SearchEngine::Cli.with_task_instrumentation('index:rebuild', payload) do
         compiled = SearchEngine::Partitioner.for(klass)
         if compiled
-          mode = SearchEngine::CLI.resolve_dispatch_mode(ENV['DISPATCH'])
+          mode = SearchEngine::Cli.resolve_dispatch_mode(ENV['DISPATCH'])
           compiled.partitions.each do |part|
             res = SearchEngine::Dispatcher.dispatch!(
               klass,
@@ -196,7 +196,7 @@ namespace :search_engine do
           summary = SearchEngine::Indexer.rebuild_partition!(
             klass,
             partition: nil,
-            into: SearchEngine::CLI.resolve_into!(klass, partition: nil, into: nil)
+            into: SearchEngine::Cli.resolve_into!(klass, partition: nil, into: nil)
           )
           # Aggregate a small sample of error messages for visibility when failed/partial
           error_samples = []
@@ -226,7 +226,7 @@ namespace :search_engine do
         end
       end
 
-      if SearchEngine::CLI.json_output?
+      if SearchEngine::Cli.json_output?
         puts(JSON.generate({ status: 'ok', actions: actions }))
       elsif actions.empty?
         puts('No actions performed')
@@ -276,13 +276,13 @@ namespace :search_engine do
     desc "Rebuild a single partition. Usage: rails 'search_engine:index:rebuild_partition[collection,partition]'"
     task :rebuild_partition, %i[collection partition] => :environment do |_t, args|
       begin
-        klass = SearchEngine::CLI.resolve_collection!(args[:collection])
+        klass = SearchEngine::Cli.resolve_collection!(args[:collection])
       rescue ArgumentError => error
         warn("Error: #{error.message}")
         print_index_usage
         Kernel.exit(1)
       end
-      partition = SearchEngine::CLI.parse_partition(args[:partition])
+      partition = SearchEngine::Cli.parse_partition(args[:partition])
       payload = {
         task: 'index:rebuild_partition',
         collection: (klass.respond_to?(:collection) ? klass.collection : klass.name),
@@ -290,8 +290,8 @@ namespace :search_engine do
       }
 
       action = nil
-      SearchEngine::CLI.with_task_instrumentation('index:rebuild_partition', payload) do
-        mode = SearchEngine::CLI.resolve_dispatch_mode(ENV['DISPATCH'])
+      SearchEngine::Cli.with_task_instrumentation('index:rebuild_partition', payload) do
+        mode = SearchEngine::Cli.resolve_dispatch_mode(ENV['DISPATCH'])
         if mode == :active_job
           action = SearchEngine::Dispatcher.dispatch!(
             klass,
@@ -305,7 +305,7 @@ namespace :search_engine do
           summary = SearchEngine::Indexer.rebuild_partition!(
             klass,
             partition: partition,
-            into: SearchEngine::CLI.resolve_into!(klass, partition: partition, into: nil)
+            into: SearchEngine::Cli.resolve_into!(klass, partition: partition, into: nil)
           )
           action = {
             mode: :inline,
@@ -319,7 +319,7 @@ namespace :search_engine do
         end
       end
 
-      if SearchEngine::CLI.json_output?
+      if SearchEngine::Cli.json_output?
         puts(JSON.generate({ status: 'ok' }.merge(action)))
       elsif action[:mode] == :active_job
         puts("Enqueued partition=#{partition.inspect} to queue=#{action[:queue]} (job_id=#{action[:job_id]})")
@@ -360,15 +360,15 @@ namespace :search_engine do
     desc "Delete stale documents (by filter). Usage: rails 'search_engine:index:delete_stale[collection,partition]'"
     task :delete_stale, %i[collection partition] => :environment do |_t, args|
       begin
-        klass = SearchEngine::CLI.resolve_collection!(args[:collection])
+        klass = SearchEngine::Cli.resolve_collection!(args[:collection])
       rescue ArgumentError => error
         warn("Error: #{error.message}")
         print_index_usage
         Kernel.exit(1)
       end
-      partition = SearchEngine::CLI.parse_partition(args[:partition])
-      strict = SearchEngine::CLI.boolean_env?('STRICT')
-      dry_run = SearchEngine::CLI.boolean_env?('DRY_RUN')
+      partition = SearchEngine::Cli.parse_partition(args[:partition])
+      strict = SearchEngine::Cli.boolean_env?('STRICT')
+      dry_run = SearchEngine::Cli.boolean_env?('DRY_RUN')
 
       payload = {
         task: 'index:delete_stale',
@@ -391,11 +391,11 @@ namespace :search_engine do
       end
 
       summary = nil
-      SearchEngine::CLI.with_task_instrumentation('index:delete_stale', payload) do
+      SearchEngine::Cli.with_task_instrumentation('index:delete_stale', payload) do
         summary = SearchEngine::Indexer.delete_stale!(klass, partition: partition, dry_run: dry_run)
       end
 
-      if SearchEngine::CLI.json_output?
+      if SearchEngine::Cli.json_output?
         puts(JSON.generate(summary))
       elsif summary[:status] == :ok
         puts(

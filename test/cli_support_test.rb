@@ -4,7 +4,7 @@ require 'test_helper'
 require 'search_engine/cli/support'
 
 class CliSupportTest < Minitest::Test
-  Support = SearchEngine::CLI::Support
+  Support = SearchEngine::Cli::Support
 
   def with_env(temp)
     backup = {}

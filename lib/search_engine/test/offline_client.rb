@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+# rubocop:disable Lint/UnusedMethodArgument
+
 require 'search_engine/result'
 
 module SearchEngine
@@ -128,3 +130,5 @@ module SearchEngine
     end
   end
 end
+
+# rubocop:enable Lint/UnusedMethodArgument

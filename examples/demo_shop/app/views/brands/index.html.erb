@@ -6,11 +6,11 @@
   <button type="submit">Search</button>
 </form>
 
-<p>Found: <%= @relation.fetch_found_only %></p>
+<p>Found: <%= @result&.found.to_i %></p>
 
-<% if @result.any? %>
+<% if @hits.any? %>
   <ul>
-    <% @result.each do |b| %>
+    <% @hits.each do |b| %>
       <li>
         <%= b.instance_variable_get(:@name) || b.name rescue b.to_s %>
       </li>

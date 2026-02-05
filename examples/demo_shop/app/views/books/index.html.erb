@@ -1,16 +1,17 @@
 <h1>Books</h1>
 
 <form method="get" action="/books">
-  <input type="text" name="q" value="<%= params[:q].to_s %>" placeholder="Author last name (e.g., Rowling)" />
+  <input type="text" name="q" value="<%= params[:q].to_s %>" placeholder="Search titles" />
+  <input type="text" name="author" value="<%= params[:author].to_s %>" placeholder="Author last name (e.g., Rowling)" />
   <input type="number" name="per" value="<%= params[:per] || 10 %>" min="1" />
   <button type="submit">Search</button>
 </form>
 
-<p>Found: <%= @relation.fetch_found_only %></p>
+<p>Found: <%= @result&.found.to_i %></p>
 
-<% if @result.any? %>
+<% if @hits.any? %>
   <ul>
-    <% @result.each do |b| %>
+    <% @hits.each do |b| %>
       <li>
         <%= b.instance_variable_get(:@title) || b.title rescue b.to_s %>
       </li>

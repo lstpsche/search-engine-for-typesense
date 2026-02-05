@@ -7,7 +7,7 @@ require 'ostruct'
 class OTelAdapterTest < Minitest::Test
   def setup
     # Ensure clean adapter state
-    SearchEngine::OTel.stop! if defined?(SearchEngine::OTel)
+    SearchEngine::Otel.stop! if defined?(SearchEngine::Otel)
   rescue StandardError
     nil
   end
@@ -15,7 +15,7 @@ class OTelAdapterTest < Minitest::Test
   def test_installed_flag_reflects_sdk_presence
     return if defined?(OpenTelemetry::SDK)
 
-    refute SearchEngine::OTel.installed?
+    refute SearchEngine::Otel.installed?
   end
 
   def test_disabled_path_no_error
@@ -23,7 +23,7 @@ class OTelAdapterTest < Minitest::Test
       c.opentelemetry = OpenStruct.new(enabled: false, service_name: 'search_engine')
     end
 
-    handle = SearchEngine::OTel.start!
+    handle = SearchEngine::Otel.start!
     assert_nil handle
 
     # Emit a test event; should be a no-op for OTel

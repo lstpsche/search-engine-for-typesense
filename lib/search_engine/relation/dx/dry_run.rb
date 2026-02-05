@@ -12,7 +12,15 @@ module SearchEngine
         # @param params [Hash]
         # @return [Hash]
         def self.redact_params(params)
-          SearchEngine::Observability.redact(params)
+          redacted = SearchEngine::Observability.redact(params)
+          return redacted unless params.is_a?(Hash)
+
+          hits = params[:_hits] || params['_hits']
+          return redacted unless hits
+
+          out = redacted.is_a?(Hash) ? redacted.dup : {}
+          out[:_hits] = hits
+          out
         end
 
         # Return pretty or compact JSON with stable key ordering when pretty.

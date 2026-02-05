@@ -21,8 +21,8 @@ module SearchEngine
       cfg.warn_if_incomplete!
     end
 
-    # Ignore hyphenated compatibility shim and CLI module so Zeitwerk doesn't try to constantize them.
-    # These files are manually required (CLI is required from Rake tasks) and use non-standard naming.
+    # Ignore hyphenated compatibility shim and CLI entrypoint so Zeitwerk doesn't try to constantize them.
+    # These files are manually required (CLI is required from Rake tasks).
     initializer 'search_engine.zeitwerk_ignores', before: :set_autoload_paths do
       # Rails 6.1+ exposes a loader per engine via `loader`. Guard presence for safety.
       loader = respond_to?(:loader) ? self.loader : nil
@@ -92,9 +92,9 @@ module SearchEngine
         # no-op; adapter is fully optional
       end
 
-      if defined?(SearchEngine::OTel)
+      if defined?(SearchEngine::Otel)
         # Start adapter only when SDK is present and config enables it
-        SearchEngine::OTel.start!
+        SearchEngine::Otel.start!
       end
     end
 
