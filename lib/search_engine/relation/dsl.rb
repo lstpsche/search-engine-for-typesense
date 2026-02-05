@@ -145,7 +145,7 @@ module SearchEngine
 
       # Set multiple curation knobs in one call.
       # @return [SearchEngine::Relation]
-      def curate(pin: nil, hide: nil, override_tags: nil, filter_curated_hits: :__unset__)
+      def curate(pin: nil, hide: nil, override_tags: nil, curation_tags: nil, filter_curated_hits: :__unset__)
         spawn do |s|
           cur = s[:curation] || { pinned: [], hidden: [], override_tags: [], filter_curated_hits: nil }
 
@@ -157,7 +157,12 @@ module SearchEngine
             list = normalize_curation_ids(hide)
             cur[:hidden] = list.each_with_object([]) { |t, acc| acc << t unless acc.include?(t) }
           end
-          cur[:override_tags] = normalize_curation_tags(override_tags) unless override_tags.nil?
+          tags_input = if !curation_tags.nil?
+                         curation_tags
+                       else
+                         override_tags
+                       end
+          cur[:override_tags] = normalize_curation_tags(tags_input) unless tags_input.nil?
           if filter_curated_hits != :__unset__
             cur[:filter_curated_hits] =
               filter_curated_hits.nil? ? nil : coerce_boolean_strict(filter_curated_hits, :filter_curated_hits)
@@ -820,7 +825,13 @@ module SearchEngine
 
         pinned = normalize_curation_ids(value[:pinned] || value['pinned'])
         hidden = normalize_curation_ids(value[:hidden] || value['hidden'])
-        tags = normalize_curation_tags(value[:override_tags] || value['override_tags'])
+        raw_tags =
+          if value.key?(:curation_tags) || value.key?('curation_tags')
+            value[:curation_tags] || value['curation_tags']
+          else
+            value[:override_tags] || value['override_tags']
+          end
+        tags = normalize_curation_tags(raw_tags)
 
         raw_fch = (value.key?(:filter_curated_hits) ? value[:filter_curated_hits] : value['filter_curated_hits'])
         fch = raw_fch.nil? ? nil : coerce_boolean_strict(raw_fch, :filter_curated_hits)

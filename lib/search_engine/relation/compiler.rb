@@ -311,7 +311,7 @@ module SearchEngine
 
         lines << "  Pinned: #{pinned.join(', ')}" unless pinned.empty?
         lines << "  Hidden: #{hidden.join(', ')}" unless hidden.empty?
-        lines << "  Override tags: #{tags.join(', ')}" unless tags.empty?
+        lines << "  Curation tags: #{tags.join(', ')}" unless tags.empty?
         lines << "  Filter curated hits: #{fch}" unless fch.nil?
         lines
       end
@@ -510,7 +510,7 @@ module SearchEngine
 
         params[:pinned_hits] = pinned.join(',') if pinned.any?
         params[:hidden_hits] = hidden.join(',') if hidden.any?
-        params[:override_tags] = tags.join(',') if tags.any?
+        params[:curation_tags] = tags.join(',') if tags.any?
         params[:filter_curated_hits] = fch unless fch.nil?
         # Expose a compact curation meta segment for callers (not sent over HTTP)
         params[:_curation] = { filter_curated_hits: fch } if cur.key?(:filter_curated_hits)

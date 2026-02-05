@@ -61,7 +61,7 @@ class MultiCurationTest < Minitest::Test
           assert_equal true, s[:filter_curated_hits]
         end
         # none of the curation keys should appear in URL opts
-        %i[pinned_hits hidden_hits override_tags filter_curated_hits].each do |k|
+        %i[pinned_hits hidden_hits curation_tags filter_curated_hits].each do |k|
           refute_includes url_opts.keys, k
         end
       end

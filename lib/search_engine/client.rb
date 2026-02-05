@@ -163,7 +163,7 @@ module SearchEngine
     end
 
     # --- Admin: Synonyms ----------------------------------------------------
-    # NOTE: We rely on the official client's endpoints; names are mapped here.
+    # We map per-collection synonym IDs to a dedicated synonym set.
 
     # @param collection [String]
     # @param id [String]
@@ -172,10 +172,10 @@ module SearchEngine
     # @see `https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/synonyms-stopwords`
     # @see `https://typesense.org/docs/latest/api/synonyms.html#upsert-a-synonym`
     def synonyms_upsert(collection:, id:, terms:)
-      admin_resource_request(
-        resource_type: :synonyms,
+      set = synonym_set_name_for_collection(collection)
+      synonym_set_item_request(
         method: :put,
-        collection: collection,
+        set: set,
         id: id,
         body_data: Array(terms)
       )
@@ -183,23 +183,24 @@ module SearchEngine
 
     # @return [Array<Hash>]
     # @see `https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/synonyms-stopwords`
-    # @see `https://typesense.org/docs/latest/api/synonyms.html#list-all-synonyms-of-a-collection`
+    # @see `https://typesense.org/docs/latest/api/synonyms.html#list-all-synonyms-in-a-synonym-set`
     def synonyms_list(collection:)
-      admin_resource_request(
-        resource_type: :synonyms,
+      set = synonym_set_name_for_collection(collection)
+      raw = synonym_set_item_request(
         method: :get,
-        collection: collection
+        set: set
       )
+      extract_synonym_items(raw)
     end
 
     # @return [Hash, nil]
     # @see `https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/synonyms-stopwords`
     # @see `https://typesense.org/docs/latest/api/synonyms.html#retrieve-a-synonym`
     def synonyms_get(collection:, id:)
-      admin_resource_request(
-        resource_type: :synonyms,
+      set = synonym_set_name_for_collection(collection)
+      synonym_set_item_request(
         method: :get,
-        collection: collection,
+        set: set,
         id: id,
         return_nil_on_404: true
       )
@@ -209,10 +210,10 @@ module SearchEngine
     # @see `https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/synonyms-stopwords`
     # @see `https://typesense.org/docs/latest/api/synonyms.html#delete-a-synonym`
     def synonyms_delete(collection:, id:)
-      admin_resource_request(
-        resource_type: :synonyms,
+      set = synonym_set_name_for_collection(collection)
+      synonym_set_item_request(
         method: :delete,
-        collection: collection,
+        set: set,
         id: id
       )
     end
@@ -440,6 +441,91 @@ module SearchEngine
       instrument(method, path, (start ? (current_monotonic_ms - start) : 0.0), {})
     end
 
+    # Internal helper for synonym set item CRUD.
+    #
+    # @param method [Symbol]
+    # @param set [String] synonym set name
+    # @param id [String, nil] synonym id
+    # @param body_data [Array<String>, nil]
+    # @param return_nil_on_404 [Boolean]
+    # @return [Hash, Array<Hash>, nil]
+    def synonym_set_item_request(method:, set:, id: nil, body_data: nil, return_nil_on_404: false)
+      set_name = set.to_s
+      sid = id.to_s if id
+      start = current_monotonic_ms
+
+      path = if sid
+               "/synonym_sets/#{escape_segment(set_name)}/synonyms/#{escape_segment(sid)}"
+             else
+               "/synonym_sets/#{escape_segment(set_name)}/synonyms"
+             end
+
+      request_body = if method == :put && body_data
+                       { synonyms: body_data }
+                     else
+                       {}
+                     end
+
+      result = with_exception_mapping(method, path, {}, start) do
+        execute_synonym_set_request(typesense_api_call, method, path, request_body)
+      end
+      symbolize_keys_deep(result)
+    rescue Errors::Api => error
+      return nil if return_nil_on_404 && error.status.to_i == 404
+
+      raise
+    ensure
+      instrument(method, path, (start ? (current_monotonic_ms - start) : 0.0), {})
+    end
+
+    def execute_synonym_set_request(api_call, method, path, request_body)
+      raise ArgumentError, 'Typesense client missing configuration' unless api_call
+
+      case method
+      when :get
+        api_call.get(path)
+      when :put
+        api_call.put(path, request_body)
+      when :delete
+        api_call.delete(path)
+      else
+        raise ArgumentError, "Unsupported method: #{method.inspect}"
+      end
+    end
+
+    def extract_synonym_items(raw)
+      return [] if raw.nil?
+      return raw if raw.is_a?(Array)
+
+      if raw.is_a?(Hash)
+        list = raw[:synonyms] || raw['synonyms'] || raw[:items] || raw['items'] || raw[:results] || raw['results']
+        return Array(list) if list
+      end
+
+      Array(raw)
+    end
+
+    def synonym_set_name_for_collection(collection)
+      "#{collection}_synonyms_index"
+    end
+
+    def typesense_api_call
+      @typesense_api_call ||= begin
+        require 'typesense'
+        ts = typesense
+        if ts.respond_to?(:configuration)
+          Typesense::ApiCall.new(ts.configuration)
+        else
+          nil
+        end
+      end
+    end
+
+    def escape_segment(value)
+      require 'uri'
+      URI.encode_www_form_component(value.to_s)
+    end
+
     # Execute the actual Typesense API call for admin resources.
     def execute_admin_resource_request(ts, collection, id, resource_type, method, request_body)
       case method
@@ -481,7 +567,7 @@ module SearchEngine
       Typesense::Client.new(
         nodes: build_nodes,
         api_key: config.api_key,
-        # typesense-ruby v4.1.0 uses a single connection timeout for both open+read
+        # typesense-ruby uses a single connection timeout for both open+read
         connection_timeout_seconds: read_timeout_seconds,
         num_retries: safe_retry_attempts,
         retry_interval_seconds: safe_retry_backoff,

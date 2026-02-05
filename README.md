@@ -9,6 +9,12 @@ Mountless Rails::Engine for [Typesense](https://typesense.org). Expressive Relat
 > [!NOTE]
 > This project is not affiliated with [Typesense](https://typesense.org) and is a wrapper for the [`typesense` gem](https://github.com/typesense/typesense-ruby).
 
+## Versioning
+
+The gem version mirrors the Typesense server major/minor it targets. Patch releases are reserved for gem-only fixes and enhancements.
+
+Example: `30.1.x` targets Typesense `30.1`.
+
 ## Quickstart
 
 ```ruby

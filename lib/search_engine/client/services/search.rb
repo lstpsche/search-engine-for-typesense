@@ -129,7 +129,7 @@ module SearchEngine
 
           pinned = params[:pinned_hits]
           hidden = params[:hidden_hits]
-          tags   = params[:override_tags]
+          tags   = params[:curation_tags] || params[:override_tags]
 
           pinned_count =
             case pinned

@@ -500,7 +500,7 @@ module SearchEngine
         joins = Array(state[:joins]).flatten.compact
         return relation if joins.empty?
 
-        # Guard: sorting or selection on joined fields not supported in v1
+        # Guard: sorting or selection on joined fields not supported by client-side join fallback
         orders = Array(state[:orders]).map(&:to_s)
         if orders.any? { |o| o.start_with?('$') }
           raise SearchEngine::Errors::InvalidOption.new(
