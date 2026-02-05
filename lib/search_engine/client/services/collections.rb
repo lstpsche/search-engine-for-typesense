@@ -28,7 +28,7 @@ module SearchEngine
 
           raise
         ensure
-          instrument(:get, path, (start ? (current_monotonic_ms - start) : 0.0), {})
+          instrument(:get, path, (start ? (current_monotonic_ms - start) : 0.0), {}, request_token: start)
         end
 
         # @param collection_name [String]
@@ -54,7 +54,7 @@ module SearchEngine
 
           raise
         ensure
-          instrument(:get, path, (start ? (current_monotonic_ms - start) : 0.0), {})
+          instrument(:get, path, (start ? (current_monotonic_ms - start) : 0.0), {}, request_token: start)
         end
 
         # @param alias_name [String]
@@ -72,7 +72,7 @@ module SearchEngine
 
           symbolize_keys_deep(result)
         ensure
-          instrument(:put, path, (start ? (current_monotonic_ms - start) : 0.0), {})
+          instrument(:put, path, (start ? (current_monotonic_ms - start) : 0.0), {}, request_token: start)
         end
 
         # @param schema [Hash]
@@ -88,7 +88,7 @@ module SearchEngine
 
           symbolize_keys_deep(result)
         ensure
-          instrument(:post, path, (start ? (current_monotonic_ms - start) : 0.0), {})
+          instrument(:post, path, (start ? (current_monotonic_ms - start) : 0.0), {}, request_token: start)
         end
 
         # @param name [String]
@@ -106,7 +106,7 @@ module SearchEngine
 
           symbolize_keys_deep(result)
         ensure
-          instrument(:patch, path, (start ? (current_monotonic_ms - start) : 0.0), {})
+          instrument(:patch, path, (start ? (current_monotonic_ms - start) : 0.0), {}, request_token: start)
         end
 
         # @param name [String]
@@ -133,7 +133,7 @@ module SearchEngine
 
           raise
         ensure
-          instrument(:delete, path, (start ? (current_monotonic_ms - start) : 0.0), {})
+          instrument(:delete, path, (start ? (current_monotonic_ms - start) : 0.0), {}, request_token: start)
         end
 
         # @return [Array<Hash>]
@@ -153,7 +153,7 @@ module SearchEngine
 
           symbolize_keys_deep(result)
         ensure
-          instrument(:get, path, (start ? (current_monotonic_ms - start) : 0.0), {})
+          instrument(:get, path, (start ? (current_monotonic_ms - start) : 0.0), {}, request_token: start)
         end
       end
     end

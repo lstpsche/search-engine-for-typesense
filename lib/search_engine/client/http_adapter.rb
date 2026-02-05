@@ -56,7 +56,7 @@ module SearchEngine
 
         # Fallback: attempt a generic call via low-level typesense endpoint access if available.
         # This keeps adapter permissive for future endpoints without adding Faraday here.
-        raise ArgumentError, "Unsupported request path for adapter: #{request.method} #{request.path}"
+        raise ArgumentError, "Unsupported request path for adapter: #{request.http_method} #{request.path}"
       end
     end
   end

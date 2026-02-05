@@ -21,6 +21,8 @@ class IndexerStaleInstrumentationTest < Minitest::Test
 
     # Stub internal delete to avoid network and force predictable count
     sc = SearchEngine::Indexer.singleton_class
+    old_verbose = $VERBOSE
+    $VERBOSE = nil
     sc.class_eval do
       alias_method :__orig_pdc_for_test, :perform_delete_and_count
       define_method(:perform_delete_and_count) { |_into, _filter, _timeout| 3 }
@@ -48,5 +50,6 @@ class IndexerStaleInstrumentationTest < Minitest::Test
       alias_method :perform_delete_and_count, :__orig_pdc_for_test
       remove_method :__orig_pdc_for_test
     end
+    $VERBOSE = old_verbose
   end
 end

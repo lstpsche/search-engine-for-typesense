@@ -12,6 +12,10 @@ module SearchEngine
   # Provides single-search and federated multi-search while enforcing that cache
   # knobs live in URL/common-params and not in per-search request bodies.
   class Client
+    REQUEST_ERROR_INSTRUMENTED_KEY = :__se_request_error_instrumented_queue__
+    REQUEST_ERROR_INSTRUMENTED_MAX = 32
+    REQUEST_ERROR_INSTRUMENTED_TTL_MS = 60_000.0
+
     # @param config [SearchEngine::Config]
     # @param typesense_client [Object, nil] optional injected Typesense::Client (for tests)
     def initialize(config: SearchEngine.config, typesense_client: nil)
@@ -438,7 +442,7 @@ module SearchEngine
 
       raise
     ensure
-      instrument(method, path, (start ? (current_monotonic_ms - start) : 0.0), {})
+      instrument(method, path, (start ? (current_monotonic_ms - start) : 0.0), {}, request_token: start)
     end
 
     # Internal helper for synonym set item CRUD.
@@ -475,7 +479,7 @@ module SearchEngine
 
       raise
     ensure
-      instrument(method, path, (start ? (current_monotonic_ms - start) : 0.0), {})
+      instrument(method, path, (start ? (current_monotonic_ms - start) : 0.0), {}, request_token: start)
     end
 
     def execute_synonym_set_request(api_call, method, path, request_body)
@@ -513,11 +517,7 @@ module SearchEngine
       @typesense_api_call ||= begin
         require 'typesense'
         ts = typesense
-        if ts.respond_to?(:configuration)
-          Typesense::ApiCall.new(ts.configuration)
-        else
-          nil
-        end
+        Typesense::ApiCall.new(ts.configuration) if ts.respond_to?(:configuration)
       end
     end
 
@@ -714,12 +714,25 @@ module SearchEngine
     def map_and_raise(error, method, path, cache_params, start_ms)
       duration_ms = current_monotonic_ms - start_ms
 
-      return handle_api_error(error, method, path, cache_params, duration_ms) if api_error?(error)
-      return handle_timeout_error(error, method, path, cache_params, duration_ms) if timeout_error?(error)
-      return handle_connection_error(error, method, path, cache_params, duration_ms) if connection_error?(error)
+      if api_error?(error)
+        return handle_api_error(
+          error, method, path, cache_params, duration_ms, request_token: start_ms
+        )
+      end
+      if timeout_error?(error)
+        return handle_timeout_error(
+          error, method, path, cache_params, duration_ms, request_token: start_ms
+        )
+      end
+      if connection_error?(error)
+        return handle_connection_error(
+          error, method, path, cache_params, duration_ms, request_token: start_ms
+        )
+      end
 
       # Unmapped error: instrument and re-raise as-is
-      instrument(method, path, duration_ms, cache_params, error_class: error.class.name)
+      instrument(method, path, duration_ms, cache_params, error_class: error.class.name, request_token: start_ms)
+      mark_request_error_instrumented(method, path, start_ms)
       raise error
     end
 
@@ -729,7 +742,7 @@ module SearchEngine
     end
 
     # Handle Typesense API errors by converting to SearchEngine::Errors::Api.
-    def handle_api_error(error, method, path, cache_params, duration_ms)
+    def handle_api_error(error, method, path, cache_params, duration_ms, request_token: nil)
       status = if error.respond_to?(:http_code)
                  error.http_code
                else
@@ -743,13 +756,22 @@ module SearchEngine
         doc: Client::RequestBuilder::DOC_CLIENT_ERRORS,
         details: { http_status: status, body: body.is_a?(String) ? body[0, 120] : body }
       )
-      instrument(method, path, duration_ms, cache_params, error_class: err.class.name)
+      instrument(method, path, duration_ms, cache_params, error_class: err.class.name, request_token: request_token)
+      mark_request_error_instrumented(method, path, request_token)
       raise err
     end
 
     # Handle timeout errors by converting to SearchEngine::Errors::Timeout.
-    def handle_timeout_error(error, method, path, cache_params, duration_ms)
-      instrument(method, path, duration_ms, cache_params, error_class: Errors::Timeout.name)
+    def handle_timeout_error(error, method, path, cache_params, duration_ms, request_token: nil)
+      instrument(
+        method,
+        path,
+        duration_ms,
+        cache_params,
+        error_class: Errors::Timeout.name,
+        request_token: request_token
+      )
+      mark_request_error_instrumented(method, path, request_token)
       raise Errors::Timeout.new(
         error.message,
         doc: Client::RequestBuilder::DOC_CLIENT_ERRORS,
@@ -758,8 +780,16 @@ module SearchEngine
     end
 
     # Handle connection errors by converting to SearchEngine::Errors::Connection.
-    def handle_connection_error(error, method, path, cache_params, duration_ms)
-      instrument(method, path, duration_ms, cache_params, error_class: Errors::Connection.name)
+    def handle_connection_error(error, method, path, cache_params, duration_ms, request_token: nil)
+      instrument(
+        method,
+        path,
+        duration_ms,
+        cache_params,
+        error_class: Errors::Connection.name,
+        request_token: request_token
+      )
+      mark_request_error_instrumented(method, path, request_token)
       raise Errors::Connection.new(
         error.message,
         doc: Client::RequestBuilder::DOC_CLIENT_ERRORS,
@@ -791,8 +821,9 @@ module SearchEngine
       500
     end
 
-    def instrument(method, path, duration_ms, cache_params, error_class: nil)
+    def instrument(method, path, duration_ms, cache_params, error_class: nil, request_token: nil)
       return unless defined?(ActiveSupport::Notifications)
+      return if error_class.nil? && consume_request_error_instrumented?(method, path, request_token)
 
       ActiveSupport::Notifications.instrument(
         'search_engine.request',
@@ -802,6 +833,44 @@ module SearchEngine
         url_opts: Observability.filtered_url_opts(cache_params),
         error_class: error_class
       )
+    end
+
+    def mark_request_error_instrumented(method, path, request_token = nil)
+      return nil if request_token.nil?
+
+      queue = Thread.current[REQUEST_ERROR_INSTRUMENTED_KEY] ||= []
+      now = current_monotonic_ms
+      prune_request_error_instrumented_queue!(queue, now)
+      queue << { method: method.to_sym, path: path.to_s, token: request_token, at: now }
+      queue.shift while queue.size > REQUEST_ERROR_INSTRUMENTED_MAX
+      nil
+    rescue StandardError
+      nil
+    end
+
+    def consume_request_error_instrumented?(method, path, request_token = nil)
+      return false if request_token.nil?
+
+      queue = Thread.current[REQUEST_ERROR_INSTRUMENTED_KEY]
+      return false unless queue.is_a?(Array) && !queue.empty?
+
+      now = current_monotonic_ms
+      prune_request_error_instrumented_queue!(queue, now)
+      idx = queue.index do |entry|
+        entry[:method] == method.to_sym && entry[:path] == path.to_s && entry[:token] == request_token
+      end
+      return false unless idx
+
+      queue.delete_at(idx)
+      true
+    rescue StandardError
+      false
+    end
+
+    def prune_request_error_instrumented_queue!(queue, now_ms)
+      queue.reject! do |entry|
+        now_ms - entry[:at].to_f > REQUEST_ERROR_INSTRUMENTED_TTL_MS
+      end
     end
 
     def log_success(method, path, start_ms, cache_params)

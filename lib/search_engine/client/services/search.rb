@@ -21,7 +21,7 @@ module SearchEngine
 
           result = instrumented_search(collection, params_obj, cache_params, path, payload, start)
           duration = current_monotonic_ms - start
-          instrument(:post, path, duration, cache_params)
+          instrument(:post, path, duration, cache_params, request_token: start)
           log_success(:post, path, start, cache_params)
 
           klass = begin
@@ -48,7 +48,7 @@ module SearchEngine
             typesense.multi_search.perform({ searches: bodies }, common_params: cache_params)
           end
 
-          instrument(:post, path, current_monotonic_ms - start, cache_params)
+          instrument(:post, path, current_monotonic_ms - start, cache_params, request_token: start)
           symbolize_keys_deep(result)
         end
 

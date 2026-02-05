@@ -41,8 +41,8 @@ module SearchEngine
           client.__send__(:with_exception_mapping, *args, &block)
         end
 
-        def instrument(*args)
-          client.__send__(:instrument, *args)
+        def instrument(*args, **kwargs)
+          client.__send__(:instrument, *args, **kwargs)
         end
 
         def log_success(*args)

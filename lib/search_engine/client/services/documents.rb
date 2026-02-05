@@ -23,7 +23,7 @@ module SearchEngine
             ts.collections[collection].documents.import(jsonl, action: action.to_s)
           end
 
-          instrument(:post, path, current_monotonic_ms - start, {})
+          instrument(:post, path, current_monotonic_ms - start, {}, request_token: start)
           result
         end
 
@@ -51,7 +51,7 @@ module SearchEngine
             ts.collections[collection].documents.delete(filter_by: filter_by)
           end
 
-          instrument(:delete, path, current_monotonic_ms - start, {})
+          instrument(:delete, path, current_monotonic_ms - start, {}, request_token: start)
           symbolize_keys_deep(result)
         end
 
@@ -84,7 +84,7 @@ module SearchEngine
 
           raise
         ensure
-          instrument(:delete, path, current_monotonic_ms - start, {}) if defined?(start)
+          instrument(:delete, path, current_monotonic_ms - start, {}, request_token: start) if defined?(start)
         end
 
         # @param collection [String]
@@ -112,7 +112,7 @@ module SearchEngine
           result = with_exception_mapping(:patch, path, {}, start) do
             ts.collections[collection].documents[s].update(fields)
           end
-          instrument(:patch, path, current_monotonic_ms - start, {})
+          instrument(:patch, path, current_monotonic_ms - start, {}, request_token: start)
           symbolize_keys_deep(result)
         end
 
@@ -142,7 +142,7 @@ module SearchEngine
             ts.collections[collection].documents.update(fields, filter_by: filter_by)
           end
 
-          instrument(:patch, path, current_monotonic_ms - start, {})
+          instrument(:patch, path, current_monotonic_ms - start, {}, request_token: start)
           symbolize_keys_deep(result)
         end
 
@@ -162,7 +162,7 @@ module SearchEngine
             typesense.collections[collection].documents.create(document)
           end
 
-          instrument(:post, path, current_monotonic_ms - start, {})
+          instrument(:post, path, current_monotonic_ms - start, {}, request_token: start)
           symbolize_keys_deep(result)
         end
 
@@ -196,7 +196,11 @@ module SearchEngine
 
           raise
         ensure
-          instrument(:get, path, (start ? (current_monotonic_ms - start) : 0.0), {}) if defined?(start)
+          if defined?(start)
+            instrument(:get, path, (start ? (current_monotonic_ms - start) : 0.0), {},
+                       request_token: start
+            )
+          end
         end
 
         private

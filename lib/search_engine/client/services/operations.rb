@@ -15,7 +15,7 @@ module SearchEngine
 
           symbolize_keys_deep(result)
         ensure
-          instrument(:get, path, (start ? (current_monotonic_ms - start) : 0.0), {})
+          instrument(:get, path, (start ? (current_monotonic_ms - start) : 0.0), {}, request_token: start)
         end
 
         def list_api_keys
@@ -37,7 +37,7 @@ module SearchEngine
 
           symbolize_keys_deep(result)
         ensure
-          instrument(:get, path, (start ? (current_monotonic_ms - start) : 0.0), {})
+          instrument(:get, path, (start ? (current_monotonic_ms - start) : 0.0), {}, request_token: start)
         end
 
         def clear_cache
@@ -48,7 +48,7 @@ module SearchEngine
             typesense.operations.perform('cache/clear')
           end
 
-          instrument(:post, path, current_monotonic_ms - start, {})
+          instrument(:post, path, current_monotonic_ms - start, {}, request_token: start)
           symbolize_keys_deep(result)
         end
 
@@ -75,7 +75,7 @@ module SearchEngine
             end
           end
         ensure
-          instrument(:get, path, (start ? (current_monotonic_ms - start) : 0.0), {})
+          instrument(:get, path, (start ? (current_monotonic_ms - start) : 0.0), {}, request_token: start)
         end
 
         # Return raw server statistics from Typesense.
@@ -101,7 +101,7 @@ module SearchEngine
             end
           end
         ensure
-          instrument(:get, path, (start ? (current_monotonic_ms - start) : 0.0), {})
+          instrument(:get, path, (start ? (current_monotonic_ms - start) : 0.0), {}, request_token: start)
         end
 
         private
