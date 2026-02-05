@@ -1,7 +1,7 @@
 PATH
   remote: .
   specs:
-    search-engine-for-typesense (1.0.0)
+    search-engine-for-typesense (1.0.2)
       concurrent-ruby (>= 1.2)
       rails (>= 6.1)
       typesense (>= 4.1.0)

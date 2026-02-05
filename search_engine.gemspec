@@ -17,6 +17,7 @@ Gem::Specification.new do |spec|
 
   spec.metadata['homepage_uri'] = spec.homepage
   spec.metadata['source_code_uri'] = 'https://github.com/lstpsche/search-engine-for-typesense'
+  spec.metadata['github_repo'] = 'https://github.com/lstpsche/search-engine-for-typesense'
 
   spec.files = Dir[
     'lib/**/*',
