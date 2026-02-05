@@ -142,7 +142,7 @@ See [Docs Style Guide](https://nikita-shkoda.mintlify.app/projects/search-engine
 <!-- Badge references (placeholders) -->
 [ci-badge]: https://img.shields.io/github/actions/workflow/status/lstpsche/search-engine-for-typesense/ci.yml?branch=main
 [ci-url]: #
-[gem-badge]: https://img.shields.io/gem/v/search-engine-for-typesense.svg?label=gem
+[gem-badge]: https://badge.fury.io/rb/search-engine-for-typesense.svg?icon=si%3Arubygems
 [gem-url]: https://rubygems.org/gems/search-engine-for-typesense
 [docs-badge]: https://img.shields.io/badge/docs-index-blue
 [docs-url]: https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/index
