@@ -202,7 +202,7 @@ module SearchEngine
     #   - :type [Symbol] one of :overlap, :limit_exceeded
     #   - :count [Integer]
     #   - :limit [Integer, optional] present when type==:limit_exceeded
-    #   # See also: https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/presets#observability
+    #   # See also: https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/presets#observability
     # Measure a block and attach duration_ms to payload.
     # @param event [String]
     # @param base_payload [Hash]

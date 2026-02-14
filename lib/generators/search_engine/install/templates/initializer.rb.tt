@@ -11,10 +11,10 @@
 # - Explore queries in `rails console` using SE helpers: `SE.q("milk")`
 #
 # Docs:
-# - Quickstart: https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/quickstart
-# - CLI (Doctor): https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/cli
-# - DX helpers: https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/dx
-# - Configuration: https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/configuration
+# - Quickstart: https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/quickstart
+# - CLI (Doctor): https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/cli
+# - DX helpers: https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/dx
+# - Configuration: https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/configuration
 SearchEngine.configure do |c|
   c.host = ENV.fetch('TYPESENSE_HOST', 'localhost')
   c.port = Integer(ENV.fetch('TYPESENSE_PORT', 8108))
@@ -83,7 +83,7 @@ SearchEngine.configure do |c|
   # c.logger = Rails.logger
 
   # --- Presets -------------------------------------------------------------
-  # See: https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/presets
+  # See: https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/presets
 
   # Enable preset namespacing and resolution. Default: true
   # c.presets.enabled = true
@@ -95,7 +95,7 @@ SearchEngine.configure do |c|
   # c.presets.locked_domains = %i[filter_by sort_by include_fields exclude_fields]
 
   # --- Selection & Grouping ------------------------------------------------
-  # See: https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/field-selection
+  # See: https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/field-selection
 
   # Raise when requested fields are missing during hydration. Default: false
   # c.selection.strict_missing = false
@@ -104,7 +104,7 @@ SearchEngine.configure do |c|
   # c.grouping.warn_on_ambiguous = true
 
   # --- Observability & Logging --------------------------------------------
-  # See: https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/observability
+  # See: https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/observability
 
   # Quiet by default: structured instrumentation logs ([se.*]) are OFF unless
   # explicitly enabled below.
@@ -129,13 +129,13 @@ SearchEngine.configure do |c|
   # c.opentelemetry = { enabled: false, service_name: 'search_engine' }
 
   # --- Schema lifecycle ----------------------------------------------------
-  # See: https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/schema
+  # See: https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/schema
 
   # Retention: how many previous physical collections to keep after swap. Default: 0
   # c.schema.retention.keep_last = 0
 
   # --- Indexer -------------------------------------------------------------
-  # See: https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/indexer
+  # See: https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/indexer
 
   # Default batch size for imports when not provided. Default: 2000
   # c.indexer.batch_size = 2000
@@ -202,7 +202,7 @@ SearchEngine.configure do |c|
   # c.partitioning.max_error_samples = 5
 
   # --- Stale deletes -------------------------------------------------------
-  # See: https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/deletion
+  # See: https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/deletion
 
   # Global kill switch for stale delete workflows. Default: true
   # c.stale_deletes.enabled = true
@@ -217,7 +217,7 @@ SearchEngine.configure do |c|
   # c.stale_deletes.estimation_enabled = false
 
   # --- Curation ------------------------------------------------------------
-  # See: https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/curation
+  # See: https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/curation
 
   # Maximum number of pinned IDs allowed. Default: 50
   # c.curation.max_pins = 50

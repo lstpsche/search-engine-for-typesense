@@ -20,7 +20,8 @@ class ClientErrorMappingTest < Minitest::Test
     error = assert_raises(SearchEngine::Errors::Api) do
       client.send(:map_and_raise, FakeError.new, :get, '/health', {}, SearchEngine::Instrumentation.monotonic_ms)
     end
-    assert_equal 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/client#errors', error.doc
+    assert_equal 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/client#errors',
+                 error.doc
   end
 
   def test_timeout_error_doc_link_is_stable
@@ -30,7 +31,8 @@ class ClientErrorMappingTest < Minitest::Test
     error = assert_raises(SearchEngine::Errors::Timeout) do
       client.send(:map_and_raise, dummy, :get, '/health', {}, SearchEngine::Instrumentation.monotonic_ms)
     end
-    assert_equal 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/client#errors', error.doc
+    assert_equal 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/client#errors',
+                 error.doc
   end
 
   def test_connection_error_doc_link_is_stable
@@ -40,6 +42,7 @@ class ClientErrorMappingTest < Minitest::Test
     error = assert_raises(SearchEngine::Errors::Connection) do
       client.send(:map_and_raise, conn_error, :get, '/health', {}, SearchEngine::Instrumentation.monotonic_ms)
     end
-    assert_equal 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/client#errors', error.doc
+    assert_equal 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/client#errors',
+                 error.doc
   end
 end

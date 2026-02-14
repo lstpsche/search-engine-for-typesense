@@ -42,7 +42,7 @@ module SearchEngine
     # @param into [String, nil] target collection; defaults to resolver or the logical collection alias
     # @return [Summary]
     # @raise [SearchEngine::Errors::InvalidParams]
-    # @see `https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/indexer#partitioning`
+    # @see `https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/indexer#partitioning`
     def self.rebuild_partition!(klass, partition:, into: nil)
       raise Errors::InvalidParams, 'klass must be a Class' unless klass.is_a?(Class)
       unless klass.ancestors.include?(SearchEngine::Base)
@@ -102,7 +102,7 @@ module SearchEngine
     # @param dry_run [Boolean]
     # @return [Hash]
     # @raise [SearchEngine::Errors::InvalidParams]
-    # @see `https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/indexer#stale-deletes`
+    # @see `https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/indexer#stale-deletes`
     def self.delete_stale!(klass, partition: nil, into: nil, dry_run: false)
       validate_stale_args!(klass)
 
@@ -164,7 +164,7 @@ module SearchEngine
     # @param max_parallel [Integer] maximum parallel threads for batch processing (default: 1)
     # @return [Summary]
     # @raise [SearchEngine::Errors::InvalidParams]
-    # @see `https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/indexer`
+    # @see `https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/indexer`
     # @see `https://typesense.org/docs/latest/api/documents.html#import-documents`
     def self.import!(klass, into:, enum:, batch_size: nil, action: :upsert, log_batches: true, max_parallel: 1)
       SearchEngine::Indexer::BulkImport.call(
@@ -511,7 +511,7 @@ module SearchEngine
         else
           raise Errors::InvalidParams,
                 'Indexer requires batches of Hash-like documents with at least an :id key. ' \
-                'Mapping DSL is not available yet. See https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/indexer.'
+                'Mapping DSL is not available yet. See https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/indexer.'
         end
       end
 

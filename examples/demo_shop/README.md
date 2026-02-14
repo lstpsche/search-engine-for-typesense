@@ -49,7 +49,7 @@ Set Typesense env vars or run offline. See `.env.example` for placeholders.
 end
 ```
 
-See docs: [Multi-search Guide](https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/multi-search-guide).
+See docs: [Multi-search Guide](https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/multi-search-guide).
 
 ## Presets & Curation
 
@@ -60,8 +60,8 @@ SearchEngine::Product.preset(:popular_products, mode: :only).pin("12").hide("99"
 ```
 
 See docs:
-- [Presets](https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/presets)
-- [Curation](https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/curation)
+- [Presets](https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/presets)
+- [Curation](https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/curation)
 
 ## Products Advanced Options (Query Params)
 
@@ -100,8 +100,8 @@ Note: presets are server-side in Typesense. With the demo namespace enabled,
 ## Troubleshooting
 
 - Missing API key or connection errors: run doctor `bin/rails search_engine:doctor`.
-- Unknown fields: adjust model attributes or selection; see [Field Selection](https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/field-selection).
-- Observability: see [Observability + DX + Testing](https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/observability-dx-testing).
+- Unknown fields: adjust model attributes or selection; see [Field Selection](https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/field-selection).
+- Observability: see [Observability + DX + Testing](https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/observability-dx-testing).
 
 ## Cross‑links
 

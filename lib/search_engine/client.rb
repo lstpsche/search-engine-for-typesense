@@ -31,7 +31,7 @@ module SearchEngine
     # @param url_opts [Hash] URL/common knobs (use_cache, cache_ttl)
     # @return [SearchEngine::Result] Wrapped response with hydrated hits
     # @raise [SearchEngine::Errors::InvalidParams, SearchEngine::Errors::*]
-    # @see `https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/client`
+    # @see `https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/client`
     # @see `https://typesense.org/docs/latest/api/documents.html#search-document`
     def search(collection:, params:, url_opts: {})
       services.fetch(:search).call(collection: collection, params: params, url_opts: url_opts)
@@ -43,7 +43,7 @@ module SearchEngine
     # @param timeout_ms [Integer, nil] optional read-timeout override in ms
     # @return [String, nil] physical collection name when alias exists; nil when alias not found
     # @raise [SearchEngine::Errors::*] on network or API errors other than 404
-    # @see `https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/schema`
+    # @see `https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/schema`
     # @see `https://typesense.org/docs/latest/api/aliases.html`
     def resolve_alias(logical_name, timeout_ms: nil)
       services.fetch(:collections).resolve_alias(logical_name, timeout_ms: timeout_ms)
@@ -55,7 +55,7 @@ module SearchEngine
     # @param timeout_ms [Integer, nil] optional read-timeout override in ms
     # @return [Hash, nil] schema hash when found; nil when collection not found (404)
     # @raise [SearchEngine::Errors::*] on other network or API errors
-    # @see `https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/schema`
+    # @see `https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/schema`
     # @see `https://typesense.org/docs/latest/api/collections.html`
     def retrieve_collection_schema(collection_name, timeout_ms: nil)
       services.fetch(:collections).retrieve_schema(collection_name, timeout_ms: timeout_ms)
@@ -65,7 +65,7 @@ module SearchEngine
     # @param alias_name [String]
     # @param physical_name [String]
     # @return [Hash]
-    # @see `https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/schema#lifecycle`
+    # @see `https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/schema#lifecycle`
     # @see `https://typesense.org/docs/latest/api/aliases.html#upsert-an-alias`
     def upsert_alias(alias_name, physical_name)
       services.fetch(:collections).upsert_alias(alias_name, physical_name)
@@ -74,7 +74,7 @@ module SearchEngine
     # Create a new physical collection with the given schema.
     # @param schema [Hash] Typesense schema body
     # @return [Hash] created collection schema
-    # @see `https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/schema#lifecycle`
+    # @see `https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/schema#lifecycle`
     # @see `https://typesense.org/docs/latest/api/collections.html#create-a-collection`
     def create_collection(schema)
       services.fetch(:collections).create(schema)
@@ -95,7 +95,7 @@ module SearchEngine
     #   default suitable for destructive operations is used (prefers indexer timeout, with
     #   a minimum of 30s).
     # @return [Hash] Typesense delete response
-    # @see `https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/schema#lifecycle`
+    # @see `https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/schema#lifecycle`
     # @see `https://typesense.org/docs/latest/api/collections.html#delete-a-collection`
     def delete_collection(name, timeout_ms: nil)
       effective_timeout_ms = begin
@@ -120,7 +120,7 @@ module SearchEngine
     # List all collections.
     # @param timeout_ms [Integer, nil] optional read-timeout override in ms
     # @return [Array<Hash>] list of collection metadata
-    # @see `https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/schema`
+    # @see `https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/schema`
     # @see `https://typesense.org/docs/latest/api/collections.html#list-all-collections`
     def list_collections(timeout_ms: nil)
       services.fetch(:collections).list(timeout_ms: timeout_ms)
@@ -128,7 +128,7 @@ module SearchEngine
 
     # Perform a server health check.
     # @return [Hash] Typesense health response (symbolized where applicable)
-    # @see `https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/troubleshooting`
+    # @see `https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/troubleshooting`
     # @see `https://typesense.org/docs/latest/api/cluster-operations.html#health`
     def health
       services.fetch(:operations).health
@@ -173,7 +173,7 @@ module SearchEngine
     # @param id [String]
     # @param terms [Array<String>]
     # @return [Hash]
-    # @see `https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/synonyms-stopwords`
+    # @see `https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/synonyms-stopwords`
     # @see `https://typesense.org/docs/latest/api/synonyms.html#upsert-a-synonym`
     def synonyms_upsert(collection:, id:, terms:)
       set = synonym_set_name_for_collection(collection)
@@ -186,7 +186,7 @@ module SearchEngine
     end
 
     # @return [Array<Hash>]
-    # @see `https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/synonyms-stopwords`
+    # @see `https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/synonyms-stopwords`
     # @see `https://typesense.org/docs/latest/api/synonyms.html#list-all-synonyms-in-a-synonym-set`
     def synonyms_list(collection:)
       set = synonym_set_name_for_collection(collection)
@@ -198,7 +198,7 @@ module SearchEngine
     end
 
     # @return [Hash, nil]
-    # @see `https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/synonyms-stopwords`
+    # @see `https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/synonyms-stopwords`
     # @see `https://typesense.org/docs/latest/api/synonyms.html#retrieve-a-synonym`
     def synonyms_get(collection:, id:)
       set = synonym_set_name_for_collection(collection)
@@ -211,7 +211,7 @@ module SearchEngine
     end
 
     # @return [Hash]
-    # @see `https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/synonyms-stopwords`
+    # @see `https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/synonyms-stopwords`
     # @see `https://typesense.org/docs/latest/api/synonyms.html#delete-a-synonym`
     def synonyms_delete(collection:, id:)
       set = synonym_set_name_for_collection(collection)
@@ -228,7 +228,7 @@ module SearchEngine
     # @param id [String]
     # @param terms [Array<String>]
     # @return [Hash]
-    # @see `https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/synonyms-stopwords`
+    # @see `https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/synonyms-stopwords`
     # @see `https://typesense.org/docs/latest/api/stopwords.html#upsert-a-stopwords`
     def stopwords_upsert(collection:, id:, terms:)
       admin_resource_request(
@@ -241,7 +241,7 @@ module SearchEngine
     end
 
     # @return [Array<Hash>]
-    # @see `https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/synonyms-stopwords`
+    # @see `https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/synonyms-stopwords`
     # @see `https://typesense.org/docs/latest/api/stopwords.html#list-all-stopwords-of-a-collection`
     def stopwords_list(collection:)
       admin_resource_request(
@@ -252,7 +252,7 @@ module SearchEngine
     end
 
     # @return [Hash, nil]
-    # @see `https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/synonyms-stopwords`
+    # @see `https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/synonyms-stopwords`
     # @see `https://typesense.org/docs/latest/api/stopwords.html#retrieve-a-stopword`
     def stopwords_get(collection:, id:)
       admin_resource_request(
@@ -265,7 +265,7 @@ module SearchEngine
     end
 
     # @return [Hash]
-    # @see `https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/synonyms-stopwords`
+    # @see `https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/synonyms-stopwords`
     # @see `https://typesense.org/docs/latest/api/stopwords.html#delete-a-stopword`
     def stopwords_delete(collection:, id:)
       admin_resource_request(
@@ -285,7 +285,7 @@ module SearchEngine
     # @param action [Symbol, String] one of :upsert, :create, :update (default: :upsert)
     # @return [Object] upstream return (String of JSONL statuses or Array of Hashes depending on gem version)
     # @raise [SearchEngine::Errors::*]
-    # @see `https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/indexer`
+    # @see `https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/indexer`
     # @see `https://typesense.org/docs/latest/api/documents.html#import-documents`
     def import_documents(collection:, jsonl:, action: :upsert)
       services.fetch(:documents).import(collection: collection, jsonl: jsonl, action: action)
@@ -296,7 +296,7 @@ module SearchEngine
     # @param filter_by [String] Typesense filter string
     # @param timeout_ms [Integer, nil] optional read timeout override in ms
     # @return [Hash] response from Typesense client (symbolized)
-    # @see `https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/indexer#stale-deletes`
+    # @see `https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/indexer#stale-deletes`
     # @see `https://typesense.org/docs/latest/api/documents.html#delete-documents-by-query`
     def delete_documents_by_filter(collection:, filter_by:, timeout_ms: nil)
       services.fetch(:documents).delete_by_filter(collection: collection, filter_by: filter_by, timeout_ms: timeout_ms)
@@ -366,7 +366,7 @@ module SearchEngine
     # @param url_opts [Hash] URL/common knobs (use_cache, cache_ttl)
     # @return [Hash] Raw Typesense multi-search response with key 'results'
     # @raise [SearchEngine::Errors::InvalidParams, SearchEngine::Errors::*]
-    # @see `https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/multi-search-guide`
+    # @see `https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/multi-search-guide`
     # @see `https://typesense.org/docs/latest/api/#multi-search`
     def multi_search(searches:, url_opts: {})
       services.fetch(:search).multi(searches: searches, url_opts: url_opts)

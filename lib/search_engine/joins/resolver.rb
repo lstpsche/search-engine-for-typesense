@@ -52,7 +52,7 @@ module SearchEngine
         model_name = klass.respond_to?(:name) && klass.name ? klass.name : klass.to_s
         raise SearchEngine::Errors::InvalidJoin.new(
           "Unknown #{side} key :#{key} for #{model_name}. Declare it via `attribute :#{key}, ...`.",
-          doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/joins#troubleshooting',
+          doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/joins#troubleshooting',
           details: { side: side, key: key, model: model_name }
         )
       end
@@ -82,7 +82,7 @@ module SearchEngine
               "Could not infer a unique shared key. Candidates: #{sugg}"
         raise SearchEngine::Errors::InvalidJoinConfig.new(
           msg,
-          doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/joins#client-side-fallback',
+          doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/joins#client-side-fallback',
           details: { assoc: assoc_name, candidates: candidates }
         )
       end

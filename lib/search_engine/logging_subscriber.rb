@@ -20,8 +20,8 @@ module SearchEngine
   # sample: 0.0 or mode: nil.
   #
   # @since M8
-  # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/observability#logging
-  # @see `https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/observability`
+  # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/observability#logging
+  # @see `https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/observability`
   module LoggingSubscriber
     class << self
       # Install the subscriber in a reloader-safe and idempotent way.
@@ -29,7 +29,7 @@ module SearchEngine
       # @param config [#mode,#level,#sample,#logger,nil]
       # @return [Object, nil] subscription handle
       # @since M8
-      # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/observability#logging
+      # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/observability#logging
       def install!(config = nil)
         uninstall!
 
@@ -60,7 +60,7 @@ module SearchEngine
       # Uninstall previously installed subscriber.
       # @return [Boolean]
       # @since M8
-      # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/observability#logging
+      # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/observability#logging
       def uninstall!
         return false unless defined?(ActiveSupport::Notifications)
         return false unless @handle

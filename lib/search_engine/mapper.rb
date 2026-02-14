@@ -15,7 +15,7 @@ module SearchEngine
     # Describes where data is fetched from and how records are transformed into
     # Typesense documents. Compiled by {SearchEngine::Mapper.for}.
     #
-    # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/indexer
+    # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/indexer
     class Dsl
       # @return [Hash, nil] original source definition captured from DSL
       attr_reader :source_def
@@ -42,7 +42,7 @@ module SearchEngine
       # @yield for :lambda sources
       # @return [void]
       # @raise [ArgumentError] when type is nil/blank
-      # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/indexer
+      # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/indexer
       def source(type, **options, &block)
         @source_def = { type: type.to_sym, options: options, block: block }
         nil
@@ -54,7 +54,7 @@ module SearchEngine
       # @yieldreturn [Hash, #to_h, #as_json] a document-like object
       # @return [void]
       # @raise [ArgumentError] when no block is given
-      # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/indexer
+      # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/indexer
       def map(&block)
         raise ArgumentError, 'map requires a block' unless block
 
@@ -129,7 +129,7 @@ module SearchEngine
       # @yieldreturn [Enumerable] a list/Enumerable of opaque partition keys
       # @return [void]
       # @raise [ArgumentError] when no block is given
-      # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/indexer#partitioning
+      # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/indexer#partitioning
       def partitions(&block)
         raise ArgumentError, 'partitions requires a block' unless block
 
@@ -173,7 +173,7 @@ module SearchEngine
       # @yieldreturn [Enumerable<Array>] yields Arrays of records per batch
       # @return [void]
       # @raise [ArgumentError] when no block is given
-      # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/indexer#partitioning
+      # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/indexer#partitioning
       def partition_fetch(&block)
         raise ArgumentError, 'partition_fetch requires a block' unless block
 
@@ -186,7 +186,7 @@ module SearchEngine
       # @yieldparam partition [Object]
       # @return [void]
       # @raise [ArgumentError] when no block is given
-      # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/indexer#partitioning
+      # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/indexer#partitioning
       def before_partition(&block)
         raise ArgumentError, 'before_partition requires a block' unless block
 
@@ -212,7 +212,7 @@ module SearchEngine
       # @yieldparam partition [Object]
       # @return [void]
       # @raise [ArgumentError] when no block is given
-      # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/indexer#partitioning
+      # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/indexer#partitioning
       def after_partition(&block)
         raise ArgumentError, 'after_partition requires a block' unless block
 
@@ -234,7 +234,7 @@ module SearchEngine
 
       # Freeze internal state for immutability and return a definition Hash.
       # @return [Hash]
-      # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/indexer
+      # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/indexer
       def to_definition
         {
           source: @source_def,
@@ -316,7 +316,7 @@ module SearchEngine
     # Validates mapped documents against the compiled schema, sets hidden flags
     # for array/optional fields and emits instrumentation.
     #
-    # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/indexer
+    # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/indexer
     class Compiled
       attr_reader :klass
 
@@ -340,7 +340,7 @@ module SearchEngine
       # @return [Array<Array<Hash>, Hash>] [documents, report]
       # @raise [SearchEngine::Errors::InvalidParams] on missing required fields or invalid document shape
       # @raise [SearchEngine::Errors::InvalidField] when strict_unknown_keys is enabled and extras are present
-      # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/indexer#troubleshooting
+      # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/indexer#troubleshooting
       def map_batch!(rows, batch_index: nil)
         start_ms = monotonic_ms
         docs = []
@@ -505,7 +505,7 @@ module SearchEngine
         instrument_error(error_class: 'SearchEngine::Errors::InvalidParams', message: message)
         raise SearchEngine::Errors::InvalidParams.new(
           message,
-          doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/indexer#troubleshooting',
+          doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/indexer#troubleshooting',
           details: { missing_required: stats[:missing_required].sort }
         )
       end
@@ -520,7 +520,7 @@ module SearchEngine
         instrument_error(error_class: 'SearchEngine::Errors::InvalidField', message: message)
         raise SearchEngine::Errors::InvalidField.new(
           message,
-          doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/indexer#troubleshooting',
+          doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/indexer#troubleshooting',
           details: { extras: stats[:extras_samples].sort }
         )
       end

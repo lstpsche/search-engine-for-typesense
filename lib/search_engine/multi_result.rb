@@ -34,7 +34,7 @@ module SearchEngine
     # @param raw_results [Array<Hash>] ordered raw result items (one per label)
     # @param klasses [Array<Class>, Hash{(String,Symbol)=>Class}, nil] optional model classes
     # @raise [ArgumentError] when sizes mismatch, labels invalid/duplicate, or inputs malformed
-    # @see `https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/multi-search-guide`
+    # @see `https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/multi-search-guide`
     def initialize(labels:, raw_results:, klasses: nil)
       @labels = canonicalize_labels(labels)
       @map = {}

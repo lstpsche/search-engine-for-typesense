@@ -5,7 +5,7 @@ module SearchEngine
     # Manage synonym sets for a collection.
     #
     # @since 0.1.0
-    # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/synonyms-stopwords#management
+    # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/synonyms-stopwords#management
     # @see `https://typesense.org/docs/latest/api/synonyms.html`
     module Synonyms
       class << self

@@ -12,9 +12,9 @@ module SearchEngine
     # Supports FORMAT env var (table/json) and redaction-aware details.
     #
     # @since M8
-    # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/cli#doctor
+    # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/cli#doctor
     module Doctor
-      DOCS_BASE = 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/'
+      DOCS_BASE = 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/'
 
       module_function
 
@@ -30,7 +30,7 @@ module SearchEngine
         # Returns exit code (0 success, 1 failure).
         # @return [Integer]
         # @since M8
-        # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/cli#doctor
+        # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/cli#doctor
         def run
           puts 'Executing doctor checks...'
 
@@ -136,7 +136,7 @@ module SearchEngine
           ok = missing.empty?
           hint = unless ok
                    'Set TYPESENSE_* envs or configure in an initializer. ' \
-                   'See https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/installation#configuration'
+                   'See https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/installation#configuration'
                  end
 
           details = cfg.to_h_redacted
@@ -158,7 +158,7 @@ module SearchEngine
             started,
             error,
             hint: 'Unexpected error reading configuration',
-            doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/configuration'
+            doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/configuration'
           )
         end
 
@@ -275,7 +275,7 @@ module SearchEngine
                    nil
                  else
                    'Run schema lifecycle to create physical collections and swap alias. ' \
-                   'See https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/schema#lifecycle'
+                   'See https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/schema#lifecycle'
                  end
           details = { resolved: resolved, missing: missing }
           Builder.result_for_check(

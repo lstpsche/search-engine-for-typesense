@@ -8,7 +8,7 @@ module SearchEngine
     #
     # @example
     #   rails g search_engine:install
-    # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/dx
+    # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/dx
     class InstallGenerator < Rails::Generators::Base
       source_root File.expand_path('templates', __dir__)
 

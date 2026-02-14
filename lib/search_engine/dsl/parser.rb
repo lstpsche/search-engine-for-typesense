@@ -189,7 +189,7 @@ module SearchEngine
         unless m
           raise SearchEngine::Errors::InvalidOperator.new(
             "invalid template '#{template}'. Supported: =, !=, >, >=, <, <=, IN, NOT IN, MATCHES, PREFIX",
-            doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/query-dsl#troubleshooting',
+            doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/query-dsl#troubleshooting',
             details: { template: template }
           )
         end
@@ -272,7 +272,7 @@ module SearchEngine
 
         raise SearchEngine::Errors::InvalidOperator.new(
           "expected #{needed} args for #{needed} placeholders in template '#{template}', got #{provided}.",
-          doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/query-dsl#troubleshooting',
+          doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/query-dsl#troubleshooting',
           details: { needed: needed, provided: provided, template: template }
         )
       end
@@ -337,7 +337,7 @@ module SearchEngine
 
         raise SearchEngine::Errors::InvalidType.new(
           invalid_type_message(field: field, klass: klass, expectation: 'a non-empty Array', got: values),
-          doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/query-dsl#troubleshooting',
+          doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/query-dsl#troubleshooting',
           details: { field: field, got_class: values.class.name }
         )
       end
@@ -394,7 +394,7 @@ module SearchEngine
 
         raise SearchEngine::Errors::InvalidType.new(
           invalid_type_message(field: nil, klass: nil, expectation: 'boolean', got: value),
-          doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/query-dsl#troubleshooting',
+          doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/query-dsl#troubleshooting',
           details: { got: value }
         )
       end
@@ -426,7 +426,7 @@ module SearchEngine
       rescue StandardError
         raise SearchEngine::Errors::InvalidType.new(
           invalid_type_message(field: field, klass: klass, expectation: 'time', got: value),
-          doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/query-dsl#troubleshooting',
+          doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/query-dsl#troubleshooting',
           details: { field: field, got: value }
         )
       end
@@ -443,7 +443,7 @@ module SearchEngine
             rescue StandardError
               raise SearchEngine::Errors::InvalidType.new(
                 invalid_type_message(field: field, klass: klass, expectation: 'integer', got: value),
-                doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/query-dsl#troubleshooting',
+                doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/query-dsl#troubleshooting',
                 details: { field: field, got: value }
               )
             end
@@ -452,7 +452,7 @@ module SearchEngine
           if value.is_a?(Numeric)
             raise SearchEngine::Errors::InvalidType.new(
               invalid_type_message(field: field, klass: klass, expectation: 'integer', got: value),
-              doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/query-dsl#troubleshooting',
+              doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/query-dsl#troubleshooting',
               details: { field: field, got: value }
             )
           end
@@ -470,7 +470,7 @@ module SearchEngine
             rescue StandardError
               raise SearchEngine::Errors::InvalidType.new(
                 invalid_type_message(field: field, klass: klass, expectation: 'numeric', got: value),
-                doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/query-dsl#troubleshooting',
+                doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/query-dsl#troubleshooting',
                 details: { field: field, got: value }
               )
             end
@@ -573,7 +573,7 @@ module SearchEngine
 
         raise SearchEngine::Errors::JoinNotApplied.new(
           "Call .joins(:#{assoc_name}) before filtering/sorting on #{assoc_name} fields",
-          doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/joins#troubleshooting',
+          doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/joins#troubleshooting',
           details: { assoc: assoc_name, used_for: 'filtering' }
         )
       end

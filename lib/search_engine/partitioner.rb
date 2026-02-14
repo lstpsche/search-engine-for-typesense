@@ -34,7 +34,7 @@ module SearchEngine
       # Enumerate partition keys. Validates the return value shape.
       # @return [Enumerable] list/Enumerable of opaque partition tokens
       # @raise [SearchEngine::Errors::InvalidParams] when the block does not return an Enumerable
-      # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/indexer#partitioning
+      # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/indexer#partitioning
       def partitions
         return [] unless @partitions_proc
 
@@ -42,7 +42,7 @@ module SearchEngine
         unless res.respond_to?(:each)
           raise SearchEngine::Errors::InvalidParams,
                 'partitions block must return an Enumerable of partition keys (Array acceptable). ' \
-                'See https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/indexer#partitioning.'
+                'See https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/indexer#partitioning.'
         end
         res
       end
@@ -52,7 +52,7 @@ module SearchEngine
       # @return [Enumerable<Array>] enumerator yielding Arrays of records
       # @raise [ArgumentError] when partition_fetch is not defined
       # @raise [SearchEngine::Errors::InvalidParams] when the block returns a non-enumerable or yields non-arrays
-      # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/indexer#partitioning
+      # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/indexer#partitioning
       def partition_fetch_enum(partition)
         raise ArgumentError, 'partition_fetch not defined' unless @partition_fetch_proc
 
@@ -60,7 +60,7 @@ module SearchEngine
         unless enum.respond_to?(:each)
           raise SearchEngine::Errors::InvalidParams,
                 'partition_fetch must return an Enumerable yielding Arrays of records. ' \
-                'See https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/indexer#partitioning.'
+                'See https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/indexer#partitioning.'
         end
 
         Enumerator.new do |y|
@@ -90,7 +90,7 @@ module SearchEngine
       # Resolve a compiled partitioner for a model class, or nil if directives are absent.
       # @param klass [Class]
       # @return [SearchEngine::Partitioner::Compiled, nil]
-      # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/indexer#partitioning
+      # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/indexer#partitioning
       def for(klass)
         dsl = mapper_dsl_for(klass)
         return nil unless dsl

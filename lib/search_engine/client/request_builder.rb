@@ -10,7 +10,7 @@ module SearchEngine
     # Sanitizes internal-only keys before encoding to ensure the payload is
     # compatible with the Typesense API.
     #
-    # @see `https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/client`
+    # @see `https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/client`
     # @see `https://typesense.org/docs/latest/api/`
     class RequestBuilder
       # Normalized request container used by the transport adapter.
@@ -39,7 +39,7 @@ module SearchEngine
       DEFAULT_HEADERS_JSON = { 'Content-Type' => CONTENT_TYPE_JSON }.freeze
 
       # Centralized doc links used by client error mapping
-      DOC_CLIENT_ERRORS = 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/client#errors'
+      DOC_CLIENT_ERRORS = 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/client#errors'
 
       INTERNAL_ONLY_KEYS = %i[
         _join

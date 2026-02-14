@@ -12,7 +12,7 @@ module SearchEngine
   # These helpers are allocation-light, thread-safe, and never perform network I/O.
   #
   # @since M8
-  # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/testing
+  # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/testing
   module Test
     class << self
       # Subscribe to `search_engine.*` for the duration of the block and return captured events.
@@ -22,7 +22,7 @@ module SearchEngine
       # @yield block within which events are captured
       # @return [Array<Hash>]
       # @since M8
-      # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/testing#event-assertions
+      # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/testing#event-assertions
       def capture_events(name = nil)
         require 'active_support/notifications'
         pattern = name.is_a?(Regexp) ? name : /^search_engine\./

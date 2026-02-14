@@ -45,7 +45,7 @@ end
 SearchEngine::Product.where(name: "milk").select(:id, :name).limit(5).to_a
 ```
 
-See [Quickstart](https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/quickstart).
+See [Quickstart](https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/quickstart).
 
 ### Host app SearchEngine models
 
@@ -123,7 +123,7 @@ SearchEngine::Product.upsert_bulk(data: [mapped])
 
 ## Documentation
 
-See the [Docs](https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/index)
+See the [Docs](https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/index)
 
 ## Test/offline mode
 
@@ -139,11 +139,11 @@ If you set `SearchEngine.configure { |c| c.client = ... }`, the custom client is
 
 ## Example app
 
-See `examples/demo_shop` — demonstrates single/multi search, JOINs, grouping, presets/curation, and DX/observability. Supports offline mode via the stub client (see [Testing](https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/testing)).
+See `examples/demo_shop` — demonstrates single/multi search, JOINs, grouping, presets/curation, and DX/observability. Supports offline mode via the stub client (see [Testing](https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/testing)).
 
 ## Contributing
 
-See [Docs Style Guide](https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/docs-style-guide). Follow YARDoc for public APIs, add backlinks on docs landing pages, and redact secrets in examples.
+See [Docs Style Guide](https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/docs-style-guide). Follow YARDoc for public APIs, add backlinks on docs landing pages, and redact secrets in examples.
 
 <!-- Badge references (placeholders) -->
 [ci-badge]: https://img.shields.io/github/actions/workflow/status/lstpsche/search-engine-for-typesense/ci.yml?branch=main
@@ -151,4 +151,4 @@ See [Docs Style Guide](https://nikita-shkoda.mintlify.app/projects/search-engine
 [gem-badge]: https://badge.fury.io/rb/search-engine-for-typesense.svg?icon=si%3Arubygems
 [gem-url]: https://rubygems.org/gems/search-engine-for-typesense
 [docs-badge]: https://img.shields.io/badge/docs-index-blue
-[docs-url]: https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/index
+[docs-url]: https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/index

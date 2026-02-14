@@ -12,7 +12,7 @@ module SearchEngine
     #   src.each_batch { |rows| ... }
     #
     # @note Emits "search_engine.source.batch_fetched" and "search_engine.source.error".
-    # @see `https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/indexer`
+    # @see `https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/indexer`
     class SqlSource
       include Base
 

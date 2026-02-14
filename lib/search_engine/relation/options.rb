@@ -44,7 +44,7 @@ module SearchEngine
         unless value.is_a?(Hash)
           raise SearchEngine::Errors::InvalidOption.new(
             'InvalidOption: hit_limits expects a Hash of options',
-            doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/hit-limits'
+            doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/hit-limits'
           )
         end
 

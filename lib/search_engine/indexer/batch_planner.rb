@@ -19,7 +19,7 @@ module SearchEngine
       # @param buffer [String] a reusable String buffer to encode into
       # @return [Array(Integer, Integer)] [docs_count, bytes_sent]
       # @raise [SearchEngine::Errors::InvalidParams] when a document is not a Hash or missing :id
-      # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/indexer
+      # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/indexer
       def self.encode_jsonl!(docs, buffer)
         count = 0
         buffer.clear
@@ -62,7 +62,7 @@ module SearchEngine
             raise SearchEngine::Errors::InvalidParams,
                   'Indexer requires batches of Hash-like documents with at least an :id key. ' \
                   'Mapping DSL is not available yet. See ' \
-                  'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/indexer.'
+                  'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/indexer.'
           end
         end
 

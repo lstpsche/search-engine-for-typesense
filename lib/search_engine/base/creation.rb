@@ -234,7 +234,7 @@ module SearchEngine
             elsif !valid
               raise SearchEngine::Errors::InvalidParams.new(
                 err,
-                doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/indexer#troubleshooting',
+                doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/indexer#troubleshooting',
                 details: { field: key.to_s, expected: expected, got: value.class.name }
               )
             end
@@ -338,7 +338,7 @@ module SearchEngine
             msg = "Missing required fields: #{missing.to_a.sort.inspect} for #{klass.name}."
             raise SearchEngine::Errors::InvalidParams.new(
               msg,
-              doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/indexer#troubleshooting',
+              doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/indexer#troubleshooting',
               details: { missing_required: missing.to_a.sort }
             )
           end
@@ -352,7 +352,7 @@ module SearchEngine
           ].join(' ')
           raise SearchEngine::Errors::InvalidField.new(
             msg,
-            doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/indexer#troubleshooting',
+            doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/indexer#troubleshooting',
             details: { extras: extras.to_a.sort }
           )
         end
@@ -523,7 +523,7 @@ module SearchEngine
             msg = "#{msg} (e.g., #{sample})" if sample
             raise SearchEngine::Errors::InvalidParams.new(
               msg,
-              doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/indexer#troubleshooting',
+              doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/indexer#troubleshooting',
               details: result
             )
           end

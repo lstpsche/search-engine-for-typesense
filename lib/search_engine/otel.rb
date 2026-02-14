@@ -6,7 +6,7 @@ module SearchEngine
   # OpenTelemetry SDK and by `SearchEngine.config.opentelemetry.enabled`.
   #
   # @since M8
-  # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/observability#opentelemetry
+  # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/observability#opentelemetry
   #
   # Public API:
   # - .installed? => Boolean
@@ -17,14 +17,14 @@ module SearchEngine
     class << self
       # @return [Boolean] whether the OpenTelemetry SDK is available
       # @since M8
-      # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/observability#opentelemetry
+      # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/observability#opentelemetry
       def installed?
         defined?(::OpenTelemetry::SDK)
       end
 
       # @return [Boolean] whether the adapter should be active
       # @since M8
-      # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/observability#opentelemetry
+      # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/observability#opentelemetry
       def enabled?
         installed? && SearchEngine.respond_to?(:config) && SearchEngine.config&.opentelemetry&.enabled
       end
@@ -32,7 +32,7 @@ module SearchEngine
       # Start the adapter (idempotent). No-ops when disabled or SDK unavailable.
       # @return [Object, nil] subscription handle or nil when not installed/enabled
       # @since M8
-      # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/observability#opentelemetry
+      # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/observability#opentelemetry
       def start!
         stop!
         return nil unless enabled?
@@ -58,7 +58,7 @@ module SearchEngine
       # Stop the adapter if previously started.
       # @return [Boolean]
       # @since M8
-      # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/observability#opentelemetry
+      # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/observability#opentelemetry
       def stop!
         return false unless defined?(ActiveSupport::Notifications)
         return false unless @handle

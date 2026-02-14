@@ -8,10 +8,10 @@ module SearchEngine
     # Controls namespacing and enablement.
     class Presets
       # @return [Boolean] when false, namespace is ignored but declared tokens remain usable
-      # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/presets
+      # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/presets
       attr_accessor :enabled
       # @return [String, nil] optional namespace prepended to preset names when enabled
-      # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/presets
+      # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/presets
       attr_accessor :namespace
 
       def initialize
@@ -25,7 +25,7 @@ module SearchEngine
       # Accepts true/false, or common String forms ("true","false","1","0","yes","no","on","off").
       # @param value [Object]
       # @return [Boolean]
-      # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/presets#config-default-preset
+      # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/presets#config-default-preset
       def self.normalize_enabled(value)
         return true  if value == true
         return false if value == false
@@ -42,7 +42,7 @@ module SearchEngine
       # Normalize namespace to a non-empty String or return original for validation.
       # @param value [Object]
       # @return [String, nil, Object]
-      # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/presets#config-default-preset
+      # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/presets#config-default-preset
       def self.normalize_namespace(value)
         return nil if value.nil?
 
@@ -60,7 +60,7 @@ module SearchEngine
       # normalized to Symbols. Internal membership checks use a frozen Set.
       # @param value [Array<#to_sym>, Set<#to_sym>, #to_sym, nil]
       # @return [void]
-      # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/presets#strategies-merge-only-lock
+      # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/presets#strategies-merge-only-lock
       def locked_domains=(value)
         list =
           case value
@@ -76,14 +76,14 @@ module SearchEngine
 
       # Return the locked domains as an Array of Symbols.
       # @return [Array<Symbol>]
-      # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/presets#strategies-merge-only-lock
+      # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/presets#strategies-merge-only-lock
       def locked_domains
         Array(@locked_domains).map(&:to_sym)
       end
 
       # Return a frozen Set of locked domains for fast membership checks.
       # @return [Set<Symbol>]
-      # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/presets#strategies-merge-only-lock
+      # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/presets#strategies-merge-only-lock
       def locked_domains_set
         @locked_domains_set ||= locked_domains.to_set.freeze
       end

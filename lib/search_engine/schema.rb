@@ -71,7 +71,7 @@ module SearchEngine
       # @param klass [Class] model class inheriting from {SearchEngine::Base}
       # @param client [SearchEngine::Client] optional client wrapper (for tests)
       # @return [Hash] { diff: Hash, pretty: String }
-      # @see `https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/schema-indexer-e2e`
+      # @see `https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/schema-indexer-e2e`
       # @see `https://typesense.org/docs/latest/api/collections.html`
       def diff(klass, client: nil)
         client ||= SearchEngine.client
@@ -154,7 +154,7 @@ module SearchEngine
       # @yieldparam physical_name [String] the newly created physical collection name
       # @return [Hash] { logical: String, new_physical: String, previous_physical: String, alias_target: String, dropped_physicals: Array<String> }
       # @raise [SearchEngine::Errors::Api, ArgumentError]
-      # @see `https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/schema#lifecycle`
+      # @see `https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/schema#lifecycle`
       # @see `https://typesense.org/docs/latest/api/collections.html`
       def apply!(klass, client: nil, force_rebuild: false)
         client ||= SearchEngine.client
@@ -245,7 +245,7 @@ module SearchEngine
       # @param client [SearchEngine::Client]
       # @return [Hash] { logical: String, new_target: String, previous_target: String }
       # @raise [ArgumentError] when no previous physical exists
-      # @see `https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/schema#retention`
+      # @see `https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/schema#retention`
       def rollback(klass, client: nil)
         client ||= SearchEngine.client
         compiled = compile(klass)
@@ -477,7 +477,7 @@ module SearchEngine
               "(got #{type_descriptor.inspect}).",
               hint: "Declare attribute :#{attribute_name}, :string in #{klass.name} to match " \
                     'Typesense reference requirements.',
-              doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/joins#declaring-references',
+              doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/joins#declaring-references',
               details: {
                 field: attribute_name.to_s,
                 declared_type: type_descriptor,

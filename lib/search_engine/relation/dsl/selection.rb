@@ -9,7 +9,7 @@ module SearchEngine
         # Select a subset of fields for Typesense `include_fields`.
         # @param fields [Array<Symbol,String,Hash,Array>]
         # @return [SearchEngine::Relation]
-        # @see `https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/field-selection`
+        # @see `https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/field-selection`
         def select(*fields)
           normalized = normalize_select_input(fields)
           spawn do |s|
@@ -46,7 +46,7 @@ module SearchEngine
         # Exclude a subset of fields from the final selection.
         # @param fields [Array<Symbol,String,Hash,Array>]
         # @return [SearchEngine::Relation]
-        # @see `https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/field-selection`
+        # @see `https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/field-selection`
         #
         # When excluding, you may also pass a joined association name (after calling
         # `joins(:assoc)`) to exclude the entire joined payload from the response.
@@ -88,7 +88,7 @@ module SearchEngine
         # Replace the selected fields list (Typesense `include_fields`).
         # @param fields [Array<#to_sym,#to_s>]
         # @return [SearchEngine::Relation]
-        # @see `https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/field-selection`
+        # @see `https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/field-selection`
         def reselect(*fields)
           normalized = normalize_select_input(fields)
 

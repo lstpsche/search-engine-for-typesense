@@ -20,7 +20,7 @@ module SearchEngine
     # or Procs that receive the captured request and return a response.
     #
     # @since M8
-    # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/testing
+    # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/testing
     class StubClient
       Call = Struct.new(
         :timestamp,
@@ -45,7 +45,7 @@ module SearchEngine
       # @param value [Hash, Exception, Proc]
       # @return [void]
       # @since M8
-      # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/testing#quick-start
+      # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/testing#quick-start
       def enqueue_response(method, value)
         @lock.synchronize do
           queue_for(method) << value
@@ -54,7 +54,7 @@ module SearchEngine
 
       # Reset all internal state (queues and captures).
       # @since M8
-      # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/testing#parallel-test-safety
+      # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/testing#parallel-test-safety
       def reset!
         @lock.synchronize do
           @queues.each_value(&:clear)
@@ -65,7 +65,7 @@ module SearchEngine
       # Return captured calls for search.
       # @return [Array<Call>]
       # @since M8
-      # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/testing
+      # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/testing
       def search_calls
         @lock.synchronize { @calls[:search].dup }
       end
@@ -73,7 +73,7 @@ module SearchEngine
       # Return captured calls for multi_search.
       # @return [Array<Call>]
       # @since M8
-      # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/testing
+      # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/testing
       def multi_search_calls
         @lock.synchronize { @calls[:multi_search].dup }
       end
@@ -81,7 +81,7 @@ module SearchEngine
       # All calls in chronological order.
       # @return [Array<Call>]
       # @since M8
-      # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/testing
+      # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/testing
       def all_calls
         @lock.synchronize { (@calls[:search] + @calls[:multi_search]).sort_by(&:timestamp) }
       end
@@ -91,7 +91,7 @@ module SearchEngine
       # @param params [Hash]
       # @param url_opts [Hash]
       # @since M8
-      # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/testing
+      # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/testing
       def search(collection:, params:, url_opts: {})
         unless collection.is_a?(String) && !collection.strip.empty?
           raise ArgumentError, 'collection must be a non-empty String'
@@ -109,7 +109,7 @@ module SearchEngine
       # @param searches [Array<Hash>]
       # @param url_opts [Hash]
       # @since M8
-      # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/testing
+      # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/testing
       def multi_search(searches:, url_opts: {})
         unless searches.is_a?(Array) && searches.all? { |h| h.is_a?(Hash) }
           raise ArgumentError, 'searches must be an Array of Hashes'

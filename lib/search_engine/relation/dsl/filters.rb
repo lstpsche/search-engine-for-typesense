@@ -169,7 +169,7 @@ module SearchEngine
             raise SearchEngine::Errors::InvalidParams.new(
               "merge: cannot infer association for #{other.klass}",
               hint: 'Declare a collection on the joined model or pass assoc: :name',
-              doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/joins#troubleshooting'
+              doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/joins#troubleshooting'
             )
           end
 
@@ -180,7 +180,7 @@ module SearchEngine
             raise SearchEngine::Errors::InvalidParams.new(
               "merge: no join association for #{collection_name} on #{klass_name_for_inspect}",
               hint: "#{hint} Pass assoc: :name to disambiguate.",
-              doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/joins#troubleshooting',
+              doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/joins#troubleshooting',
               details: { target_collection: collection_name, available: cfgs.keys }
             )
           end
@@ -190,7 +190,7 @@ module SearchEngine
             raise SearchEngine::Errors::InvalidParams.new(
               "merge: ambiguous association for #{collection_name} on #{klass_name_for_inspect}",
               hint: "Pass assoc: :#{names.first} (available: #{names.map(&:inspect).join(', ')})",
-              doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/joins#troubleshooting',
+              doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/joins#troubleshooting',
               details: { target_collection: collection_name, matches: names }
             )
           end
@@ -207,7 +207,7 @@ module SearchEngine
               raise SearchEngine::Errors::InvalidParams.new(
                 "merge: expected a join scope Symbol or Array<Symbol> for #{assoc.inspect}",
                 hint: 'Use merge(assoc: :scope) or merge(assoc: [:scope1, :scope2])',
-                doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/query-dsl#join-scope',
+                doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/query-dsl#join-scope',
                 details: { assoc: assoc, value: scope_value }
               )
             end
@@ -350,7 +350,7 @@ module SearchEngine
             unless target_klass.respond_to?(sym)
               raise SearchEngine::Errors::InvalidParams.new(
                 %(Unknown join-scope :#{sym} on association :#{assoc} for #{target_klass}),
-                doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/query-dsl#join-scope'
+                doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/query-dsl#join-scope'
               )
             end
 
@@ -358,7 +358,7 @@ module SearchEngine
             unless rel.is_a?(SearchEngine::Relation)
               raise SearchEngine::Errors::InvalidParams.new(
                 %(join-scope :#{sym} on :#{assoc} must return a SearchEngine::Relation (got #{rel.class})),
-                doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/query-dsl#join-scope'
+                doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/query-dsl#join-scope'
               )
             end
 
@@ -397,7 +397,7 @@ module SearchEngine
             if fragment.include?('$')
               raise SearchEngine::Errors::InvalidParams.new(
                 'join-scope raw fragments must use base fields only (no nested join paths)',
-                doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/query-dsl#join-scope',
+                doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/query-dsl#join-scope',
                 details: { fragment: fragment, assoc: assoc_sym }
               )
             end
@@ -416,7 +416,7 @@ module SearchEngine
             if lhs.start_with?('$') || lhs.include?('.')
               raise SearchEngine::Errors::InvalidParams.new(
                 %(join-scope cannot reference nested join field #{lhs.inspect}; use base fields only),
-                doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/query-dsl#join-scope',
+                doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/query-dsl#join-scope',
                 details: { field: lhs, assoc: assoc_sym }
               )
             end
@@ -553,7 +553,7 @@ module SearchEngine
         def raise_empty_array_type!(field_sym)
           raise SearchEngine::Errors::InvalidType.new(
             %(expected #{field_sym.inspect} to be a non-empty Array),
-            doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/query-dsl#troubleshooting',
+            doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/query-dsl#troubleshooting',
             details: { field: field_sym }
           )
         end

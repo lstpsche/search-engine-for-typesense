@@ -16,7 +16,7 @@ module SearchEngine
     #
     # @example
     #   rails g search_engine:model Product --collection products --attrs id:integer name:string
-    # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/dx
+    # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/dx
     class ModelGenerator < Rails::Generators::NamedBase
       source_root File.expand_path('templates', __dir__)
 
@@ -31,7 +31,7 @@ module SearchEngine
 
         raise Thor::Error,
               '--collection is required. See ' \
-              'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/dx#generators--console-helpers'
+              'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/dx#generators--console-helpers'
       end
 
       def create_model

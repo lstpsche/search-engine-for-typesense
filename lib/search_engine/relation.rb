@@ -591,7 +591,7 @@ module SearchEngine
       raise SearchEngine::Errors::HitLimitExceeded.new(
         msg,
         hint: 'Increase `validate_hits!(max:)` or narrow filters. Prefer `limit_hits(n)` to avoid work when supported.',
-        doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/hit-limits#validation',
+        doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/hit-limits#validation',
         details: { total_hits: th, max: max, collection: coll, relation_summary: inspect }
       )
     end

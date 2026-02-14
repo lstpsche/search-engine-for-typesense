@@ -76,7 +76,7 @@ module SearchEngine
       # Returns nil when no records match.
       # @param fields [Array<#to_sym,#to_s>]
       # @return [Object, Array<Object>, nil]
-      # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/materializers#pick
+      # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/materializers#pick
       def pick(*fields)
         SearchEngine::Hydration::Materializers.pick(self, *fields)
       end

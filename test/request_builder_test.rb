@@ -76,7 +76,7 @@ class RequestBuilderTest < Minitest::Test
     assert_equal '/stopwords', rb::STOPWORDS_SUFFIX
     assert_equal '/stopwords/', rb::STOPWORDS_PREFIX
     assert_equal '/health', rb::HEALTH_PATH
-    expected_doc = 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/' \
+    expected_doc = 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/' \
                    'client#errors'
     assert_equal expected_doc, rb::DOC_CLIENT_ERRORS
 

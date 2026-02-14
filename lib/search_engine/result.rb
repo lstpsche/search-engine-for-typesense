@@ -500,7 +500,7 @@ module SearchEngine
       raise SearchEngine::Errors::MissingField.new(
         msg,
         hint: 'Adjust select/exclude or disable strict_missing to avoid raising.',
-        doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/field-selection#strict-vs-lenient-selection',
+        doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/field-selection#strict-vs-lenient-selection',
         details: { requested: requested, present_keys: present_keys }
       )
     end
