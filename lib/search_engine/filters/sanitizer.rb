@@ -22,31 +22,13 @@ module SearchEngine
       # @return [String]
       def quote(value)
         case value
-        when NilClass
-          'null'
-        when TrueClass
-          'true'
-        when FalseClass
-          'false'
-        when Numeric
-          value.to_s
         when String
           %("#{escape_string(value)}")
-        when Time
-          %("#{value.iso8601}")
-        when DateTime
-          %("#{value.iso8601}")
-        when Date
-          %("#{value.iso8601}")
         when Array
           elements = value.flatten(1).map { |el| quote(el) }
           "[#{elements.join(', ')}]"
         else
-          if value.respond_to?(:to_time)
-            %("#{value.to_time.iso8601}")
-          else
-            %("#{escape_string(value.to_s)}")
-          end
+          quote_non_string(value)
         end
       end
 
@@ -64,37 +46,14 @@ module SearchEngine
         return quote(value) if value.is_a?(Array)
 
         case value
-        when NilClass
-          'null'
-        when TrueClass
-          'true'
-        when FalseClass
-          'false'
-        when Numeric
-          value.to_s
         when String, Symbol
           str = value.to_s
           lc = str.strip.downcase
-          # Avoid ambiguity with special literals when user passes them as strings
           return %("#{escape_string(str)}") if %w[true false null].include?(lc)
 
-          if safe_bare_string?(str)
-            str
-          else
-            %("#{escape_string(str)}")
-          end
-        when Time
-          %("#{value.iso8601}")
-        when DateTime
-          %("#{value.iso8601}")
-        when Date
-          %("#{value.iso8601}")
+          safe_bare_string?(str) ? str : %("#{escape_string(str)}")
         else
-          if value.respond_to?(:to_time)
-            %("#{value.to_time.iso8601}")
-          else
-            %("#{escape_string(value.to_s)}")
-          end
+          quote_non_string(value)
         end
       end
 
@@ -158,6 +117,27 @@ module SearchEngine
           end
         end
         count
+      end
+
+      # Shared quoting logic for non-String, non-Array values.
+      # @param value [Object]
+      # @return [String]
+      # @api private
+      def quote_non_string(value)
+        case value
+        when NilClass then 'null'
+        when TrueClass then 'true'
+        when FalseClass then 'false'
+        when Numeric then value.to_s
+        when Time, DateTime then %("#{value.iso8601}")
+        when Date then %("#{value.iso8601}")
+        else
+          if value.respond_to?(:to_time)
+            %("#{value.to_time.iso8601}")
+          else
+            %("#{escape_string(value.to_s)}")
+          end
+        end
       end
 
       # Escape a raw string for inclusion inside double quotes.

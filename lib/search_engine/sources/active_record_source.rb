@@ -81,7 +81,6 @@ module SearchEngine
           end
         elsif relation.respond_to?(:find_in_batches)
           relation.find_in_batches(batch_size: @batch_size) do |rows|
-            rows = rows.map { |r| r }
             duration = monotonic_ms - started
             instrument_batch_fetched(source: 'active_record', batch_index: idx, rows_count: rows.size,
                                      duration_ms: duration, partition: partition, cursor: cursor,

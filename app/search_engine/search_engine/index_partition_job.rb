@@ -18,7 +18,7 @@ module SearchEngine
     rescue_from(SearchEngine::Errors::Timeout) { |error| retry_if_possible(error) }
     rescue_from(SearchEngine::Errors::Connection) { |error| retry_if_possible(error) }
     rescue_from(SearchEngine::Errors::Api) do |error|
-      if transient_status?(error.status.to_i)
+      if SearchEngine::Indexer::RetryPolicy.transient_status?(error.status.to_i)
         retry_if_possible(error)
       else
         instrument_error(error)
@@ -82,14 +82,14 @@ module SearchEngine
     end
 
     def retry_if_possible(error)
-      attempts, base, max, jitter = retry_settings
-      attempt_no = executions.to_i # number of times we've run so far (1-based)
-      if attempt_no >= attempts
+      policy = retry_policy
+      attempt_no = executions.to_i
+      if attempt_no >= policy.attempts
         instrument_error(error)
         raise
       end
 
-      wait_seconds = backoff_seconds(attempt_no + 1, base: base, max: max, jitter_fraction: jitter)
+      wait_seconds = policy.next_delay(attempt_no + 1, error)
       instrument(
         'search_engine.dispatcher.job_error',
         error_payload(error).merge(queue: queue_name, job_id: job_id, retry_after_s: wait_seconds)
@@ -124,28 +124,9 @@ module SearchEngine
       SearchEngine::Instrumentation.instrument(event, payload) {}
     end
 
-    def retry_settings
+    def retry_policy
       cfg = SearchEngine.config.indexer
-      attempts = cfg&.retries && cfg.retries[:attempts].to_i.positive? ? cfg.retries[:attempts].to_i : 3
-      base = cfg&.retries && cfg.retries[:base].to_f.positive? ? cfg.retries[:base].to_f : 0.5
-      max = cfg&.retries && cfg.retries[:max].to_f.positive? ? cfg.retries[:max].to_f : 5.0
-      jitter = cfg&.retries && cfg.retries[:jitter_fraction].to_f >= 0 ? cfg.retries[:jitter_fraction].to_f : 0.2
-      [attempts, base, max, jitter]
-    end
-
-    def backoff_seconds(attempt, base:, max:, jitter_fraction:)
-      exp = [base * (2 ** (attempt - 1)), max].min
-      jitter = exp * jitter_fraction
-      delta = rand(-jitter..jitter)
-      sleep_time = exp + delta
-      sleep_time.positive? ? sleep_time : 0.0
-    end
-
-    def transient_status?(code)
-      return true if code == 429
-      return true if code >= 500 && code <= 599
-
-      false
+      SearchEngine::Indexer::RetryPolicy.from_config(cfg&.retries)
     end
 
     def monotonic_ms

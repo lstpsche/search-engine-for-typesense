@@ -72,7 +72,6 @@ module SearchEngine
       # @param error [Exception]
       # @return [Float]
       def next_delay(attempt, _error)
-        # Exponential backoff with bounded jitter
         exp = [@base * (2 ** (attempt - 1)), @max].min
         jitter = exp * @jitter_fraction
         delta = random_in_range(-jitter..jitter)
@@ -80,13 +79,17 @@ module SearchEngine
         sleep_time.positive? ? sleep_time : 0.0
       end
 
+      # Whether an HTTP status code represents a transient/retryable error.
+      # @param code [Integer]
+      # @return [Boolean]
+      def self.transient_status?(code)
+        code == 429 || (code >= 500 && code <= 599)
+      end
+
       private
 
       def transient_status?(code)
-        return true if code == 429
-        return true if code >= 500 && code <= 599
-
-        false
+        self.class.transient_status?(code)
       end
 
       def random_in_range(range)

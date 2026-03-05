@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require 'set'
+
 module SearchEngine
   class Relation
     # Compile immutable relation state and options into Typesense body params.
@@ -184,8 +186,9 @@ module SearchEngine
         applied = Array(@state[:joins])
         return {} if applied.empty?
 
+        seen = Set.new
         assocs = []
-        applied.each { |a| assocs << a unless assocs.include?(a) }
+        applied.each { |a| assocs << a if seen.add?(a) }
 
         nested_map = @state[:select_nested] || {}
         nested_order = Array(@state[:select_nested_order])
@@ -219,6 +222,7 @@ module SearchEngine
         list = Array(nodes).flatten.compact
         return [] if list.empty?
 
+        seen_set = Set.new
         seen = []
         walker = lambda do |node|
           return unless node.is_a?(SearchEngine::AST::Node)
@@ -229,7 +233,7 @@ module SearchEngine
               m = field.match(/^\$(\w+)\./)
               if m
                 name = m[1].to_sym
-                seen << name unless seen.include?(name)
+                seen << name if seen_set.add?(name)
               end
             end
           end
@@ -248,6 +252,7 @@ module SearchEngine
         list = Array(orders).flatten.compact
         return [] if list.empty?
 
+        seen_set = Set.new
         seen = []
         list.each do |entry|
           field, _dir = entry.to_s.split(':', 2)
@@ -257,7 +262,7 @@ module SearchEngine
           next unless m
 
           name = m[1].to_sym
-          seen << name unless seen.include?(name)
+          seen << name if seen_set.add?(name)
         end
         seen
       end

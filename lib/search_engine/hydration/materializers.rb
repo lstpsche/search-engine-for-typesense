@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require 'set'
+
 module SearchEngine
   module Hydration
     # Centralized executors for materialization: to_a/each/count/ids/pluck/pick.
@@ -715,7 +717,10 @@ module SearchEngine
       end
 
       def coerce_pluck_field_names(fields)
-        Array(fields).flatten.compact.map(&:to_s).map(&:strip).reject(&:empty?)
+        Array(fields).flatten.filter_map do |f|
+          s = f.to_s.strip
+          s unless s.empty?
+        end
       end
       module_function :coerce_pluck_field_names
 
@@ -755,8 +760,9 @@ module SearchEngine
         if exclude_base.include?(field)
           "InvalidSelection: field :#{field} not in effective selection. Remove exclude(:#{field})."
         else
+          seen = Set.new(include_base)
           suggestion_fields = include_base.dup
-          requested.each { |f| suggestion_fields << f unless suggestion_fields.include?(f) }
+          requested.each { |f| suggestion_fields << f if seen.add?(f) }
           symbols = suggestion_fields.map { |t| ":#{t}" }.join(',')
           "InvalidSelection: field :#{field} not in effective selection. Use `reselect(#{symbols})`."
         end

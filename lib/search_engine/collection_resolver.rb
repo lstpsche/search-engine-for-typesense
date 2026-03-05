@@ -14,13 +14,16 @@ module SearchEngine
     class << self
       # Build a map of logical names => model classes by merging registry with
       # a scan of the SearchEngine namespace for subclasses of Base.
+      # Cached and invalidated automatically when Registry.mapping changes
+      # (copy-on-write replacement produces a new object identity).
       # @return [Hash{String=>Class}]
       def models_map
-        map = {}
         reg = SearchEngine::Registry.mapping
+        return @__models_map_cache if @__models_map_cache && @__models_map_reg_id == reg.object_id
+
+        map = {}
         reg.each { |k, v| map[k.to_s] = v } if reg && !reg.empty?
 
-        # Walk the SearchEngine namespace to find Base descendants
         begin
           SearchEngine.constants.each do |c|
             const = SearchEngine.const_get(c)
@@ -39,6 +42,8 @@ module SearchEngine
           # best-effort; namespace may not be fully loaded
         end
 
+        @__models_map_cache = map
+        @__models_map_reg_id = reg.object_id
         map
       end
 

@@ -24,15 +24,10 @@ module SearchEngine
         count = 0
         buffer.clear
         size = docs.size
+        now_i = defined?(Time.zone) && Time.zone ? Time.zone.now.to_i : Time.now.to_i
         docs.each_with_index do |raw, idx|
           doc = ensure_hash_document(raw)
           ensure_id!(doc)
-          # Force system timestamp field prior to serialization to Typesense
-          now_i = if defined?(Time) && defined?(Time.zone) && Time.zone
-                    Time.zone.now.to_i
-                  else
-                    Time.now.to_i
-                  end
           doc[:doc_updated_at] = now_i if doc.is_a?(Hash)
           buffer << JSON.generate(doc)
           buffer << "\n" if idx < (size - 1)

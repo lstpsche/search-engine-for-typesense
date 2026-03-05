@@ -345,27 +345,19 @@ module SearchEngine
         start_ms = monotonic_ms
         docs = []
         stats = init_stats
+        now_i = defined?(Time.zone) && Time.zone ? Time.zone.now.to_i : Time.now.to_i
 
         rows.each do |row|
           hash = normalize_document(@map_proc.call(row))
-          # Ignore any provided id from map; always inject computed document id
           hash.delete(:id)
           hash.delete('id')
           begin
             computed_id = @klass.compute_document_id(row)
           rescue NoMethodError
-            # Fallback for older compiled mappers if needed; derive from record.id
             rid = row.respond_to?(:id) ? row.id : nil
             computed_id = rid.is_a?(String) ? rid : rid.to_s
           end
           hash[:id] = computed_id
-          # Force system timestamp field on every document; developers cannot override.
-          now_i = if defined?(Time) && defined?(Time.zone) && Time.zone
-                    Time.zone.now.to_i
-                  else
-                    Time.now.to_i
-                  end
-          # Overwrite any provided value
           hash[:doc_updated_at] = now_i
 
           normalize_optional_blank_strings!(hash)
