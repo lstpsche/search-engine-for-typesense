@@ -57,6 +57,8 @@ module SearchEngine
         resp.nil? ? 0 : 1
       end
 
+      alias_method :destroy, :delete
+
       private
 
       # Determine the effective document id for deletion, preferring hydrated

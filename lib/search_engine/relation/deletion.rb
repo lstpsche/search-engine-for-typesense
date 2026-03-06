@@ -32,6 +32,8 @@ module SearchEngine
           timeout_ms: timeout_ms
         )
       end
+
+      alias_method :destroy_all, :delete_all
     end
   end
 end
