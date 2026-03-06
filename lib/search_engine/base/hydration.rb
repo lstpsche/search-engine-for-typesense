@@ -264,6 +264,12 @@ module SearchEngine
       end
       # rubocop:enable Metrics/PerceivedComplexity
 
+      # Return a symbol-keyed Hash representation of this record.
+      # Delegates to {#attributes} for consistency.
+      #
+      # @return [Hash{Symbol=>Object}]
+      alias_method :to_h, :attributes
+
       # Return the Typesense document id if available.
       #
       # @return [Object, nil]
