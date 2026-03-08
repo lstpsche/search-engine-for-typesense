@@ -29,13 +29,16 @@ module SearchEngine
             const = SearchEngine.const_get(c)
             next unless const.is_a?(Class)
             next unless const.ancestors.include?(SearchEngine::Base)
+            next if const == SearchEngine::Base
 
-            logical = if const.respond_to?(:collection)
+            logical = if const.respond_to?(:collection) && const.collection
                         const.collection.to_s
                       else
                         demod = const.name.split('::').last
                         demod.respond_to?(:underscore) ? demod.underscore.pluralize : "#{demod.downcase}s"
                       end
+            next if logical.nil? || logical.to_s.strip.empty?
+
             map[logical] ||= const
           end
         rescue StandardError
