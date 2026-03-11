@@ -320,32 +320,51 @@ module SearchEngine
             __se_index_partitions_parallel!(parts, into, max_p)
           else
             summary = SearchEngine::Indexer.rebuild_partition!(self, partition: nil, into: into)
-            summary.status
+            __se_build_index_result([summary])
           end
         end
+
+        # Aggregate an array of Indexer::Summary structs into a single result hash.
+        # @param summaries [Array<SearchEngine::Indexer::Summary>]
+        # @return [Hash] { status:, docs_total:, success_total:, failed_total:, sample_error: }
+        def __se_build_index_result(summaries)
+          docs = 0
+          success = 0
+          failed = 0
+          sample_error = nil
+
+          Array(summaries).each do |s|
+            docs += s.docs_total.to_i
+            success += s.success_total.to_i
+            failed += s.failed_total.to_i
+            sample_error ||= __se_extract_sample_error(s)
+          end
+
+          status = if failed.positive? && success.zero?
+                     :failed
+                   elsif failed.positive?
+                     :partial
+                   else
+                     :ok
+                   end
+
+          { status: status, docs_total: docs, success_total: success, failed_total: failed, sample_error: sample_error }
+        end
+
+        private :__se_build_index_result
       end
 
       class_methods do
         # Sequential processing of partition list
         def __se_index_partitions_seq!(parts, into)
-          agg = :ok
+          summaries = []
           parts.each do |part|
             summary = SearchEngine::Indexer.rebuild_partition!(self, partition: part, into: into)
+            summaries << summary
             puts(SearchEngine::Logging::PartitionProgress.line(part, summary))
-            # Log batches individually if there are multiple batches
             __se_log_batches_from_summary(summary.batches) if summary.batches_total.to_i > 1
-            begin
-              st = summary.status
-              if st == :failed
-                agg = :failed
-              elsif st == :partial && agg == :ok
-                agg = :partial
-              end
-            rescue StandardError
-              agg = :failed
-            end
           end
-          agg
+          __se_build_index_result(summaries)
         end
       end
 
@@ -356,42 +375,37 @@ module SearchEngine
           pool = Concurrent::FixedThreadPool.new(max_p)
           ctx = SearchEngine::Instrumentation.context
           mtx = Mutex.new
-          agg = :ok
+          summaries = []
+          partition_errors = []
           begin
             parts.each do |part|
               pool.post do
                 SearchEngine::Instrumentation.with_context(ctx) do
                   summary = SearchEngine::Indexer.rebuild_partition!(self, partition: part, into: into)
                   mtx.synchronize do
+                    summaries << summary
                     puts(SearchEngine::Logging::PartitionProgress.line(part, summary))
-                    # Log batches individually if there are multiple batches
                     __se_log_batches_from_summary(summary.batches) if summary.batches_total.to_i > 1
-                    begin
-                      st = summary.status
-                      if st == :failed
-                        agg = :failed
-                      elsif st == :partial && agg == :ok
-                        agg = :partial
-                      end
-                    rescue StandardError
-                      agg = :failed
-                    end
                   end
                 end
               rescue StandardError => error
                 mtx.synchronize do
                   warn("  partition=#{part.inspect} → error=#{error.class}: #{error.message.to_s[0, 200]}")
-                  agg = :failed
+                  partition_errors << "#{error.class}: #{error.message.to_s[0, 200]}"
                 end
               end
             end
           ensure
             pool.shutdown
-            # Wait up to 1 hour, then force-kill and wait a bit more to ensure cleanup
             pool.wait_for_termination(3600) || pool.kill
             pool.wait_for_termination(60)
           end
-          agg
+          result = __se_build_index_result(summaries)
+          if partition_errors.any?
+            result[:status] = :failed
+            result[:sample_error] ||= partition_errors.first
+          end
+          result
         end
       end
 

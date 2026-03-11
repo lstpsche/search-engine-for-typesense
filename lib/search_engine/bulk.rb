@@ -107,48 +107,58 @@ module SearchEngine
           cascade_count: cascade_order.size
         }
 
+        collection_results = []
         failed_collections_total = 0
 
         SearchEngine::Instrumentation.with_context(bulk: true, bulk_suppress_cascade: true, bulk_mode: mode.to_sym) do
           SearchEngine::Instrumentation.instrument('search_engine.bulk.run', payload.merge(stats)) do |ctx|
-            # Stage 1 — process referenced-first inputs (that are not referrers of other inputs)
-            stage1_list.each do |name|
-              klass = safe_collection_class(name)
-              unless klass
-                failed_collections_total += 1
-                next
-              end
+            run_stage!(mode, stage1_list, :input, collection_results)
+            run_stage!(mode, cascade_order, :cascade, collection_results)
 
-              case mode.to_sym
-              when :index
-                klass.index_collection
-              else
-                klass.reindex_collection!
-              end
-            end
-
-            # Stage 2 — process collected referencers once
-            cascade_order.each do |name|
-              klass = safe_collection_class(name)
-              unless klass
-                failed_collections_total += 1
-                next
-              end
-
-              case mode.to_sym
-              when :index
-                klass.index_collection(pre: :ensure, force_rebuild: true)
-              else
-                klass.reindex_collection!
-              end
-            end
-
+            failed_collections_total = collection_results.count { |r| r[:status] != :ok }
             ctx[:failed_collections_total] = failed_collections_total
           end
         end
 
         payload[:failed_collections_total] = failed_collections_total
+        payload[:collection_results] = collection_results
         payload.merge(stats)
+      end
+
+      def run_stage!(mode, names, stage, collection_results)
+        names.each do |name|
+          klass = safe_collection_class(name)
+          unless klass
+            collection_results << unresolved_result(name, stage)
+            next
+          end
+
+          result = run_single_collection(mode, klass, stage)
+          collection_results << normalize_collection_result(result, name, stage)
+        end
+      end
+
+      def run_single_collection(mode, klass, stage)
+        case mode.to_sym
+        when :index
+          stage == :cascade ? klass.index_collection(pre: :ensure, force_rebuild: true) : klass.index_collection
+        else
+          klass.reindex_collection!
+        end
+      end
+
+      def unresolved_result(name, stage)
+        { collection: name, stage: stage, status: :failed,
+          docs_total: 0, success_total: 0, failed_total: 0,
+          sample_error: 'Unresolved collection class' }
+      end
+
+      def normalize_collection_result(result, name, stage)
+        if result.is_a?(Hash)
+          result.merge(stage: stage)
+        else
+          { collection: name, stage: stage, status: :ok }
+        end
       end
 
       # Normalize inputs to logical collection names.

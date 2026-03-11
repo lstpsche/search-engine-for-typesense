@@ -13,19 +13,20 @@ module SearchEngine
           # @param client [SearchEngine::Client, nil]
           # @param pre [Symbol, nil] :ensure (ensure presence) or :index (ensure + fix drift)
           # @param force_rebuild [Boolean] when true, force schema rebuild (blue/green)
-          # @return [void]
+          # @return [Hash, nil] result hash with :status, :docs_total, :success_total, :failed_total, :sample_error
           def index_collection(partition: nil, client: nil, pre: nil, force_rebuild: false)
             logical = respond_to?(:collection) ? collection.to_s : name.to_s
             puts
             puts(%(>>>>>> Indexing Collection "#{logical}"))
             client_obj = client || SearchEngine.client
 
-            if partition.nil?
-              __se_index_full(client: client_obj, pre: pre, force_rebuild: force_rebuild)
-            else
-              __se_index_partial(partition: partition, client: client_obj, pre: pre)
-            end
-            nil
+            result = if partition.nil?
+                       __se_index_full(client: client_obj, pre: pre, force_rebuild: force_rebuild)
+                     else
+                       __se_index_partial(partition: partition, client: client_obj, pre: pre)
+                     end
+
+            result.is_a?(Hash) ? result.merge(collection: logical) : { collection: logical, status: :ok }
           end
 
           def reindex_collection!(pre: nil)
@@ -66,8 +67,9 @@ module SearchEngine
               indexed_inside_apply,
               force_rebuild
             )
-            __se_full_indexation(applied, indexed_inside_apply)
+            result = __se_full_indexation(applied, indexed_inside_apply)
             __se_full_retention(applied, logical, client)
+            result
           end
 
           def __se_full_apply_if_missing(client, missing)
@@ -116,21 +118,19 @@ module SearchEngine
           end
 
           def __se_full_indexation(applied, indexed_inside_apply)
-            cascade_ok = false
+            result = nil
             if applied && indexed_inside_apply
               puts('Step 5: Indexing — skip (performed during schema apply)')
-              begin
-                cascade_ok = indexed_inside_apply.to_sym == :ok
-              rescue StandardError
-                cascade_ok = false
-              end
+              result = indexed_inside_apply if indexed_inside_apply.is_a?(Hash)
             else
               puts('Step 5: Indexing — processing')
-              idx_status = __se_index_partitions!(into: nil)
+              result = __se_index_partitions!(into: nil)
               puts('Step 5: Indexing — done')
-              cascade_ok = (idx_status == :ok)
             end
+
+            cascade_ok = result.is_a?(Hash) ? result[:status] == :ok : false
             __se_cascade_after_indexation!(context: :full) if cascade_ok
+            result
           end
 
           def __se_full_retention(applied, logical, client)
@@ -152,32 +152,33 @@ module SearchEngine
             puts("Step 1: Presence — processing → #{missing ? 'missing' : 'present'}")
             if missing
               puts('Partial: collection is not present. Quit early.')
-              return
+              return { status: :failed, docs_total: 0, success_total: 0, failed_total: 0,
+                       sample_error: 'Collection not present' }
             end
 
             puts('Step 2: Check Schema Status — processing')
             drift = __se_schema_drift?(diff)
             if drift
               puts('Partial: schema is not up-to-date. Exit early (run full indexing).')
-              return
+              return { status: :failed, docs_total: 0, success_total: 0, failed_total: 0,
+                       sample_error: 'Schema drift detected' }
             end
             puts('Step 2: Check Schema Status — in_sync')
 
             __se_preflight_dependencies!(mode: pre, client: client) if pre
 
             puts('Step 3: Partial Indexing — processing')
-            all_ok = true
+            summaries = []
             partitions.each do |p|
               summary = SearchEngine::Indexer.rebuild_partition!(self, partition: p, into: nil)
+              summaries << summary
               puts(SearchEngine::Logging::PartitionProgress.line(p, summary))
-              begin
-                all_ok &&= (summary.status == :ok)
-              rescue StandardError
-                all_ok &&= false
-              end
             end
             puts('Step 3: Partial Indexing — done')
-            __se_cascade_after_indexation!(context: :full) if all_ok
+
+            result = __se_build_index_result(summaries)
+            __se_cascade_after_indexation!(context: :full) if result[:status] == :ok
+            result
           end
 
           # rubocop:disable Metrics/PerceivedComplexity, Metrics/AbcSize
