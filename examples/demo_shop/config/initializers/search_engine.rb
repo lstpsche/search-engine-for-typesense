@@ -21,6 +21,9 @@ SearchEngine.configure do |c|
   c.cache_ttl_s      = 60
   c.logger           = Rails.logger if defined?(Rails)
 
+  # Auto-embedding: Typesense generates vectors server-side using this model
+  c.embedding.model = 'ts/all-MiniLM-L12-v2'
+
   # DX/observability: enable compact subscriber in development
   c.observability.enabled = true
   c.logging.mode = :compact
