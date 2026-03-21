@@ -37,6 +37,9 @@ module SearchEngine
         include_str, exclude_str = compile_selection_fields!(params)
         instrument_selection_compile(include_str, exclude_str)
 
+        # Vector query (semantic / hybrid / ANN)
+        apply_vector_query!(params)
+
         # Highlighting
         apply_highlighting!(params)
 
@@ -488,6 +491,114 @@ module SearchEngine
       rescue StandardError
         # swallow observability errors
       end
+
+      # ------------------------------------------------------------------
+      # Vector query compilation
+      # ------------------------------------------------------------------
+
+      VECTOR_SEARCH_DOC_URL =
+        'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/vector-search'
+
+      VECTOR_DISTANCE_SENTINEL = '_vector_distance'
+
+      # Scalar params emitted in deterministic order inside the vector_query string.
+      VECTOR_QUERY_SCALAR_KEYS = %i[k id alpha distance_threshold ef flat_search_cutoff].freeze
+
+      def apply_vector_query!(params)
+        vq = @state[:vector_query]
+
+        if vq.nil?
+          validate_no_orphan_vector_distance_sort!(params)
+          return
+        end
+
+        field = vq[:field].to_s
+
+        params[:vector_query] = build_vector_query_string(vq)
+
+        auto_include_embedding_in_query_by!(params, vq, field)
+        auto_exclude_embedding_from_response!(params, field)
+        resolve_vector_distance_sort!(params, field)
+      end
+
+      # Build the Typesense `vector_query` value string.
+      #
+      # Format: `"field:([vector_or_empty], k:N, alpha:0.5, ...)"`.
+      #
+      # @param vq [Hash] normalized vector query state from DSL
+      # @return [String]
+      def build_vector_query_string(vq)
+        field = vq[:field].to_s
+        vector_part = vq[:query] ? "[#{vq[:query].join(',')}]" : '[]'
+
+        parts = []
+        VECTOR_QUERY_SCALAR_KEYS.each do |key|
+          parts << "#{key}:#{vq[key]}" if vq.key?(key)
+        end
+        parts << "queries:[#{vq[:queries].join(', ')}]" if vq[:queries]
+        parts << "query_weights:[#{vq[:weights].join(', ')}]" if vq[:weights]
+
+        inner = [vector_part, *parts].join(', ')
+        "#{field}:(#{inner})"
+      end
+
+      # Hybrid mode: auto-append the embedding field to `query_by` so that
+      # Typesense performs rank-fusion between keyword and vector results.
+      # Hybrid = text query present AND no explicit embedding vector supplied.
+      def auto_include_embedding_in_query_by!(params, vq, field)
+        return unless hybrid_vector_mode?(params, vq)
+
+        current = params[:query_by].to_s
+        fields = current.split(',').map(&:strip)
+        return if fields.include?(field)
+
+        params[:query_by] = current.empty? ? field : "#{current},#{field}"
+      end
+
+      # Auto-exclude the embedding field from the response to avoid sending
+      # large float arrays over the wire. Skipped when the user explicitly
+      # included the field via `.select(:embedding)`.
+      def auto_exclude_embedding_from_response!(params, field)
+        return if explicitly_selected_field?(field)
+
+        current = params[:exclude_fields].to_s
+        existing = current.split(',').map(&:strip)
+        return if existing.include?(field)
+
+        params[:exclude_fields] = current.empty? ? field : "#{current},#{field}"
+      end
+
+      # Replace the `_vector_distance` sentinel produced by order normalization
+      # with the real Typesense sort token that references the embedding field.
+      def resolve_vector_distance_sort!(params, vq_field)
+        sort = params[:sort_by]
+        return unless sort&.include?(VECTOR_DISTANCE_SENTINEL)
+
+        params[:sort_by] = sort.gsub(/#{VECTOR_DISTANCE_SENTINEL}:(asc|desc)/) do
+          "_vector_query(#{vq_field}:([])):#{Regexp.last_match(1)}"
+        end
+      end
+
+      def hybrid_vector_mode?(params, vq)
+        params[:q].to_s != '*' && !vq.key?(:query)
+      end
+
+      def explicitly_selected_field?(field_name)
+        Array(@state[:select]).map(&:to_s).include?(field_name.to_s)
+      end
+
+      def validate_no_orphan_vector_distance_sort!(params)
+        sort = params[:sort_by]
+        return unless sort&.include?(VECTOR_DISTANCE_SENTINEL)
+
+        raise SearchEngine::Errors::InvalidVectorQuery.new(
+          'InvalidVectorQuery: order(:vector_distance) requires .vector_search to be applied',
+          hint: 'Chain .vector_search(:field) before or after .order(vector_distance: :asc)',
+          doc: VECTOR_SEARCH_DOC_URL
+        )
+      end
+
+      # ------------------------------------------------------------------
 
       def apply_highlighting!(params)
         return unless (h = @state[:highlight])
