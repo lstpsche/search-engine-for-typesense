@@ -12,9 +12,11 @@ module SearchEngine
 
     # Whitelisted search parameter keys to include in payload excerpts.
     PARAM_WHITELIST = %i[
-      q query_by include_fields exclude_fields per_page page infix filter_by group_by group_limit group_missing_values
+      q query_by include_fields exclude_fields per_page page infix filter_by sort_by
+      group_by group_limit group_missing_values
       facet_by max_facet_values facet_query
       num_typos drop_tokens_threshold prioritize_exact_match query_by_weights
+      vector_query
     ].freeze
 
     # Maximum length for `q` values before truncation.
@@ -58,6 +60,8 @@ module SearchEngine
           result[:q] = truncate_q(val)
         when :filter_by
           result[:filter_by] = redact_filter_by(val)
+        when :vector_query
+          result[:vector_query] = redact_vector_query(val)
         else
           result[key] = redact_simple_value(val)
         end
@@ -104,6 +108,20 @@ module SearchEngine
       masked = filter.gsub(/([!:><=]{1,2})\s*([^\s)&|]+)/, '\1***')
       masked = masked.gsub(/"[^"]*"|'[^']*'/, '***')
       masked.gsub(/\b\d+(?:\.\d+)?\b/, '***')
+    end
+
+    # Internal: Redact raw float arrays in a vector_query string while
+    # preserving the structural tokens (field name, k, alpha, etc.).
+    # Replaces `[0.1,0.2,...]` with `[<N dims>]`.
+    # @param vq [String]
+    # @return [String]
+    def self.redact_vector_query(vq)
+      return vq unless vq.is_a?(String)
+
+      vq.gsub(/\[(-?\d+(?:\.\d+)?(?:\s*,\s*-?\d+(?:\.\d+)?){2,})\]/) do
+        dims = Regexp.last_match(1).split(',').size
+        "[<#{dims} dims>]"
+      end
     end
 
     # Build a filtered URL/common options hash for payloads.
@@ -157,6 +175,6 @@ module SearchEngine
     end
 
     private_class_method :redact_params_hash, :redact_simple_value, :truncate_q,
-                         :redact_string, :redact_filter_by
+                         :redact_string, :redact_filter_by, :redact_vector_query
   end
 end
