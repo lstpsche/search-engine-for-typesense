@@ -65,6 +65,7 @@ module SearchEngine
         add_pagination_line!(lines, params)
         append_hit_limits_line(lines, params)
         append_ranking_line(lines, params)
+        append_vector_line(lines, params)
         lines << overview_line(params)
         append_conflicts_line(lines, params)
         append_events_line(lines, params)
@@ -88,6 +89,7 @@ module SearchEngine
         events << 'search_engine.compile' if Array(@state[:ast]).any?
         events << 'search_engine.joins.compile' if Array(params[:_join] && params[:_join][:assocs]).any?
         events << 'search_engine.grouping.compile' if params.key?(:group_by)
+        events << 'search_engine.vector.compile' if @state[:vector_query]
         if preset_name
           events << 'search_engine.preset.apply'
           events << 'search_engine.preset.conflict' if Array(params[:_preset_conflicts]).any?
@@ -223,6 +225,22 @@ module SearchEngine
         end
         segs << "validator_max=#{hits[:max]}" if hits[:max]
         lines << "  hits: #{segs.join(' ')}" unless segs.empty?
+      end
+
+      def append_vector_line(lines, params)
+        vq = @state[:vector_query]
+        return unless vq
+
+        parts = ["field=#{vq[:field]}"]
+        parts << "mode=#{detect_vector_mode(vq, params)}"
+        parts << "k=#{vq[:k]}" if vq[:k]
+        parts << "alpha=#{vq[:alpha]}" if vq[:alpha]
+        parts << "distance_threshold=#{vq[:distance_threshold]}" if vq[:distance_threshold]
+        parts << "id=#{vq[:id]}" if vq[:id]
+        parts << "queries=#{vq[:queries].size}" if vq[:queries]
+        parts << "ef=#{vq[:ef]}" if vq[:ef]
+        parts << "flat_search_cutoff=#{vq[:flat_search_cutoff]}" if vq[:flat_search_cutoff]
+        lines << "  vector: #{parts.join(' ')}"
       end
     end
 

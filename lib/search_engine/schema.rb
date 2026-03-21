@@ -316,6 +316,11 @@ module SearchEngine
           (ref && !ref.to_s.strip.empty?) || async
         end
 
+        # Embedding fields require full rebuild: Typesense must run model
+        # inference on every existing document when an auto-embedding field
+        # is added, and external-embedding fields need backfill too.
+        return false if added_fields.any? { |f| f[:embed] || f[:num_dim] }
+
         # Check if there is anything to do
         return true if added_fields.empty? && diff_hash[:removed_fields].empty?
 
