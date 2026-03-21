@@ -848,18 +848,14 @@ module SearchEngine
 
       def format_added_fields(list)
         lines = ['+ Added fields:']
-        list.each do |f|
-          lines << "  - #{f[:name]}:#{f[:type]}"
-        end
+        list.each { |f| lines << "  - #{format_field_line(f)}" }
         lines
       end
       private :format_added_fields
 
       def format_removed_fields(list)
         lines = ['- Removed fields:']
-        list.each do |f|
-          lines << "  - #{f[:name]}:#{f[:type]}"
-        end
+        list.each { |f| lines << "  - #{format_field_line(f)}" }
         lines
       end
       private :format_removed_fields
@@ -867,14 +863,110 @@ module SearchEngine
       def format_changed_fields(map)
         lines = ['~ Changed fields:']
         map.keys.sort.each do |fname|
-          pairs = map[fname]
-          pairs.each do |attr, (cval, lval)|
-            lines << "  - #{fname}.#{attr}: #{cval} -> #{lval}"
+          map[fname].each do |attr, (cval, lval)|
+            if attr == 'embed'
+              lines.concat(format_embed_diff(fname, cval, lval))
+            else
+              lines << "  - #{fname}.#{attr}: #{format_diff_value(cval)} -> #{format_diff_value(lval)}"
+            end
           end
         end
         lines
       end
       private :format_changed_fields
+
+      # Build the display string for a single field entry.
+      # Appends a parenthetical embedding summary for float[] vector fields.
+      def format_field_line(field)
+        base = "#{field[:name]}:#{field[:type]}"
+        summary = format_vector_field_summary(field)
+        summary ? "#{base} #{summary}" : base
+      end
+      private :format_field_line
+
+      # @return [String, nil] parenthetical summary for a vector field, nil for non-vector
+      def format_vector_field_summary(field)
+        return nil unless field[:type].to_s == 'float[]'
+
+        parts = []
+        embed = field[:embed]
+        num_dim = field[:num_dim]
+
+        if embed
+          from = Array(embed[:from] || embed['from'])
+          mc = embed[:model_config] || embed['model_config'] || {}
+          model = mc[:model_name] || mc['model_name']
+          parts << "auto-embed from: #{from.join(', ')}"
+          parts << "model: #{model}" if model
+        elsif num_dim
+          parts << 'external'
+          parts << "num_dim: #{num_dim}"
+        else
+          return nil
+        end
+
+        hnsw = field[:hnsw_params]
+        if hnsw.is_a?(Hash) && !hnsw.empty?
+          hnsw_desc = hnsw.map { |k, v| "#{k}=#{v}" }.join(', ')
+          parts << "hnsw: #{hnsw_desc}"
+        end
+
+        "(#{parts.join('; ')})"
+      end
+      private :format_vector_field_summary
+
+      # Expand an embed hash diff into readable sub-lines.
+      # @return [Array<String>]
+      def format_embed_diff(fname, cval, lval)
+        lines = []
+        c_hash = cval.is_a?(Hash) ? cval : {}
+        l_hash = lval.is_a?(Hash) ? lval : {}
+
+        all_keys = (c_hash.keys | l_hash.keys).sort_by(&:to_s)
+        all_keys.each do |key|
+          cv = c_hash[key]
+          lv = l_hash[key]
+          next if values_equal?(cv, lv)
+
+          if cv.is_a?(Hash) && lv.is_a?(Hash)
+            expand_nested_diff(lines, "#{fname}.embed.#{key}", cv, lv)
+          else
+            lines << "  - #{fname}.embed.#{key}: #{format_diff_value(cv)} -> #{format_diff_value(lv)}"
+          end
+        end
+
+        lines << "  - #{fname}.embed: #{format_diff_value(cval)} -> #{format_diff_value(lval)}" if lines.empty?
+        lines
+      end
+      private :format_embed_diff
+
+      # Recursively expand nested hash diffs into dotted-path lines.
+      def expand_nested_diff(lines, prefix, c_hash, l_hash)
+        all_keys = (c_hash.keys | l_hash.keys).sort_by(&:to_s)
+        all_keys.each do |key|
+          cv = c_hash[key]
+          lv = l_hash[key]
+          next if values_equal?(cv, lv)
+
+          path = "#{prefix}.#{key}"
+          if cv.is_a?(Hash) && lv.is_a?(Hash)
+            expand_nested_diff(lines, path, cv, lv)
+          else
+            lines << "  - #{path}: #{format_diff_value(cv)} -> #{format_diff_value(lv)}"
+          end
+        end
+      end
+      private :expand_nested_diff
+
+      # Format a value for diff output, keeping it compact and readable.
+      def format_diff_value(val)
+        case val
+        when nil then '(none)'
+        when Array, Hash then val.inspect
+        else val.to_s
+        end
+      end
+      private :format_diff_value
 
       def format_stale_references(stale_refs)
         lines = ['~ Stale references:']
