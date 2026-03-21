@@ -581,7 +581,7 @@ module SearchEngine
       end
 
       def hybrid_vector_mode?(params, vq)
-        params[:q].to_s != '*' && !vq.key?(:query)
+        params[:q].to_s != '*' && !vq.key?(:query) && !vq.key?(:id) && !vq.key?(:queries)
       end
 
       def explicitly_selected_field?(field_name)
@@ -728,7 +728,9 @@ module SearchEngine
         payload = {
           collection: klass_name_for_inspect,
           field: field&.to_s,
+          group_by: field&.to_s,
           limit: limit,
+          group_limit: limit,
           missing_values: missing_values
         }.compact
         SearchEngine::Instrumentation.instrument('search_engine.grouping.compile', payload) {}

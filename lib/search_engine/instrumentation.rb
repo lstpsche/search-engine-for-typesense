@@ -39,7 +39,7 @@ module SearchEngine
       },
       'search_engine.grouping.compile' => {
         required: %i[field],
-        optional: %i[collection limit missing_values duration_ms]
+        optional: %i[collection group_by limit group_limit missing_values duration_ms]
       },
       'search_engine.joins.compile' => {
         required: %i[collection],
