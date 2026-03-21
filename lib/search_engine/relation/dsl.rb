@@ -2,6 +2,7 @@
 
 require 'search_engine/relation/dsl/filters'
 require 'search_engine/relation/dsl/selection'
+require 'search_engine/relation/dsl/vectors'
 
 module SearchEngine
   class Relation
@@ -10,6 +11,7 @@ module SearchEngine
     module DSL
       include SearchEngine::Relation::DSL::Filters
       include SearchEngine::Relation::DSL::Selection
+      include SearchEngine::Relation::DSL::Vectors
 
       # Append ordering expressions. Accepts Hash/String/Array/Symbol forms.
       #

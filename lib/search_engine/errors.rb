@@ -292,5 +292,18 @@ module SearchEngine
     #     details: { total_hits: 12_000, max: 10_000, collection: 'products' }
     #   )
     class HitLimitExceeded < Error; end
+
+    # Raised when vector search DSL receives invalid inputs.
+    #
+    # Typical causes: unknown embedding field, mutually exclusive query modes,
+    # invalid alpha range, or malformed vector arrays.
+    #
+    # @example
+    #   raise SearchEngine::Errors::InvalidVectorQuery.new(
+    #     'InvalidVectorQuery: query: and id: are mutually exclusive',
+    #     hint: 'Provide only one of query:, id:, or queries:',
+    #     doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/vector-search'
+    #   )
+    class InvalidVectorQuery < Error; end
   end
 end

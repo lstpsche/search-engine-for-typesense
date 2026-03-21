@@ -38,7 +38,8 @@ module SearchEngine
         use_synonyms: nil,
         use_stopwords: nil,
         ranking: nil,
-        hit_limits: {}.freeze
+        hit_limits: {}.freeze,
+        vector_query: nil
       }.freeze
 
       # Normalize the provided initial state Hash using the Relation's normalizers.
@@ -82,7 +83,8 @@ module SearchEngine
           facet_queries: :handle_state_facet_queries!,
           highlight: :handle_state_highlight!,
           ranking: :handle_state_ranking!,
-          hit_limits: :handle_state_hit_limits!
+          hit_limits: :handle_state_hit_limits!,
+          vector_query: :handle_state_vector_query!
         }
         h = handlers[key.to_sym]
         return unless h
@@ -173,6 +175,13 @@ module SearchEngine
 
       def handle_state_hit_limits!(normalized, value)
         normalized[:hit_limits] = normalize_hit_limits_input(value || {})
+      end
+
+      def handle_state_vector_query!(normalized, value)
+        return if value.nil?
+        raise ArgumentError, 'vector_query state must be a Hash' unless value.is_a?(Hash)
+
+        normalized[:vector_query] = value.dup
       end
 
       # Newly added handlers for remaining state keys
