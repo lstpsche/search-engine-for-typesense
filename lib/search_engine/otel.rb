@@ -142,7 +142,14 @@ module SearchEngine
            deleted_count searches_count fields_changed_count added_count removed_count in_sync].each do |k|
           assign_attr(span, "se.#{k}", p[k]) if p.key?(k)
         end
-        # New event attributes (redacted/summarized)
+        apply_feature_detail_attributes(span, p)
+        apply_vector_attributes(span, p)
+        %i[early_limit validate_max applied_strategy triggered total_hits].each do |k|
+          assign_attr(span, "se.#{k}", p[k]) if p.key?(k)
+        end
+      end
+
+      def apply_feature_detail_attributes(span, p)
         %i[fields_count queries_count max_facet_values sort_flags conflicts].each do |k|
           assign_attr(span, "se.#{k}", p[k]) if p.key?(k)
         end
@@ -161,10 +168,13 @@ module SearchEngine
         %i[sort_mode radius_bucket].each do |k|
           assign_attr(span, "se.#{k}", p[k]) if p.key?(k)
         end
+      end
+
+      def apply_vector_attributes(span, p)
+        assign_attr(span, 'se.vector.field', p[:field]) if p.key?(:field)
+        assign_attr(span, 'se.vector.mode', p[:mode]&.to_s) if p.key?(:mode)
+        assign_attr(span, 'se.vector.k', p[:k]) if p.key?(:k)
         %i[query_vector_present dims hybrid_weight ann_params_present].each do |k|
-          assign_attr(span, "se.#{k}", p[k]) if p.key?(k)
-        end
-        %i[early_limit validate_max applied_strategy triggered total_hits].each do |k|
           assign_attr(span, "se.#{k}", p[k]) if p.key?(k)
         end
       end

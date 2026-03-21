@@ -294,9 +294,12 @@ module SearchEngine
         parts << "[#{short}]"
         parts << "id=#{cid}"
         parts << "coll=#{collection}" if collection
+        parts << "mode=#{p[:mode] || SearchEngine::Logging::FormatHelpers::DASH}"
+        parts << "field=#{p[:field] || SearchEngine::Logging::FormatHelpers::DASH}"
+        parts << "k=#{p[:k] || SearchEngine::Logging::FormatHelpers::DASH}"
         parts << "qvec=#{SearchEngine::Logging::FormatHelpers.display_or_dash(p, :query_vector_present)}"
         parts << "dims=#{p[:dims] || SearchEngine::Logging::FormatHelpers::DASH}"
-        parts << "hybrid=#{p[:hybrid_weight] || SearchEngine::Logging::FormatHelpers::DASH}"
+        parts << "alpha=#{p[:hybrid_weight] || SearchEngine::Logging::FormatHelpers::DASH}"
         parts << "ann=#{SearchEngine::Logging::FormatHelpers.display_or_dash(p, :ann_params_present)}"
         parts << "dur=#{duration}ms"
         parts.join(' ')
@@ -336,7 +339,7 @@ module SearchEngine
           h['radius_bucket'] = p[:radius_bucket] if p.key?(:radius_bucket)
           h
         when 'search_engine.vector.compile'
-          keys = %i[query_vector_present dims hybrid_weight ann_params_present]
+          keys = %i[field mode k query_vector_present dims hybrid_weight ann_params_present]
           keys.each_with_object({}) { |k, h| h[k.to_s] = p[k] if p.key?(k) }
         when 'search_engine.hits.limit'
           keys = %i[early_limit validate_max applied_strategy triggered total_hits]
