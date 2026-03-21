@@ -130,8 +130,8 @@ module SearchEngine
         assign_attr(span, 'se.node_count', p[:node_count]) if p.key?(:node_count)
         assign_attr(span, 'se.join_count', p[:join_count]) if p.key?(:join_count)
         assign_attr(span, 'se.groups_count', p[:groups_count]) if p.key?(:groups_count)
-        assign_attr(span, 'se.group_by', p[:field] || p[:group_by]) if p.key?(:field) || p.key?(:group_by)
-        assign_attr(span, 'se.group_limit', p[:limit] || p[:group_limit]) if p.key?(:limit) || p.key?(:group_limit)
+        assign_attr(span, 'se.group_by', p[:group_by]) if p.key?(:group_by)
+        assign_attr(span, 'se.group_limit', p[:group_limit]) if p.key?(:group_limit)
         return unless p.key?(:missing_values) || p.key?(:group_missing_values)
 
         assign_attr(span, 'se.group_missing_values', p[:missing_values] || p[:group_missing_values])
@@ -171,6 +171,8 @@ module SearchEngine
       end
 
       def apply_vector_attributes(span, p)
+        return unless p.key?(:query_vector_present)
+
         assign_attr(span, 'se.vector.field', p[:field]) if p.key?(:field)
         assign_attr(span, 'se.vector.mode', p[:mode]&.to_s) if p.key?(:mode)
         assign_attr(span, 'se.vector.k', p[:k]) if p.key?(:k)

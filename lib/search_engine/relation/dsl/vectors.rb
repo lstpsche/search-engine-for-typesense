@@ -171,11 +171,21 @@ module SearchEngine
             )
           end
 
-          return unless queries.empty?
+          if queries.empty?
+            raise SearchEngine::Errors::InvalidVectorQuery.new(
+              'InvalidVectorQuery: queries: must be a non-empty Array',
+              doc: VECTOR_SEARCH_DOC_URL
+            )
+          end
+
+          blank_indices = queries.each_index.select { |i| queries[i].strip.empty? }
+          return if blank_indices.empty?
 
           raise SearchEngine::Errors::InvalidVectorQuery.new(
-            'InvalidVectorQuery: queries: must be a non-empty Array',
-            doc: VECTOR_SEARCH_DOC_URL
+            "InvalidVectorQuery: queries: contains blank entries at index #{blank_indices.join(', ')}",
+            hint: 'Each query string must contain non-whitespace text',
+            doc: VECTOR_SEARCH_DOC_URL,
+            details: { blank_indices: blank_indices }
           )
         end
 
