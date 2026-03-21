@@ -505,8 +505,7 @@ module SearchEngine
                     "order: direction must be :asc or :desc (got #{dir.inspect} for field #{k.inspect})"
             end
 
-            # Map DSL alias to Typesense special token for text relevance
-            token = (field == 'text_match' ? '_text_match' : field)
+            token = resolve_order_alias(field)
             "#{token}:#{direction}"
           end
         end
@@ -525,8 +524,7 @@ module SearchEngine
                   "order: direction must be :asc or :desc (got #{direction.inspect} for field #{name.inspect})"
           end
 
-          # Preserve alias for text relevance
-          field = (name == 'text_match' ? '_text_match' : name)
+          field = resolve_order_alias(name)
           "#{field}:#{direction}"
         end
       end
@@ -539,8 +537,17 @@ module SearchEngine
         field = value.to_s.strip
         raise ArgumentError, 'order: field name must be non-empty' if field.empty?
 
-        token = (field == 'text_match' ? '_text_match' : field)
+        token = resolve_order_alias(field)
         ["#{token}:asc"]
+      end
+
+      ORDER_ALIASES = { 'text_match' => '_text_match', 'vector_distance' => '_vector_distance' }.freeze
+
+      # Map DSL sort aliases to Typesense internal tokens.
+      # `_vector_distance` is a sentinel resolved by the compiler once the
+      # embedding field name is known.
+      def resolve_order_alias(field)
+        ORDER_ALIASES.fetch(field, field)
       end
 
       # Dedupe by field with last-wins semantics while preserving last positions.
