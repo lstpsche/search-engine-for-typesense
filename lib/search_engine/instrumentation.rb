@@ -116,7 +116,7 @@ module SearchEngine
       },
       'search_engine.vector.compile' => {
         required: %i[],
-        optional: %i[collection query_vector_present dims hybrid_weight ann_params_present duration_ms]
+        optional: %i[collection field mode k query_vector_present dims hybrid_weight ann_params_present duration_ms]
       },
       'search_engine.hits.limit' => {
         required: %i[],

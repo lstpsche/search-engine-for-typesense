@@ -519,6 +519,7 @@ module SearchEngine
         auto_include_embedding_in_query_by!(params, vq, field)
         auto_exclude_embedding_from_response!(params, field)
         resolve_vector_distance_sort!(params, field)
+        instrument_vector_compile(vq, params, field)
       end
 
       # Build the Typesense `vector_query` value string.
@@ -596,6 +597,41 @@ module SearchEngine
           hint: 'Chain .vector_search(:field) before or after .order(vector_distance: :asc)',
           doc: VECTOR_SEARCH_DOC_URL
         )
+      end
+
+      def instrument_vector_compile(vq, params, field)
+        mode = detect_vector_mode(vq, params)
+        payload = {
+          collection: klass_name_for_inspect,
+          field: field,
+          mode: mode,
+          query_vector_present: vq.key?(:query),
+          dims: vq[:query]&.size,
+          k: vq[:k],
+          hybrid_weight: vq[:alpha],
+          ann_params_present: vq.key?(:ef) || vq.key?(:flat_search_cutoff)
+        }
+        SearchEngine::Instrumentation.instrument('search_engine.vector.compile', payload) {}
+      rescue StandardError
+        nil
+      end
+
+      # Derive vector search mode from the query state.
+      # @param vq [Hash] normalized vector query state
+      # @param params [Hash] compiled params (needed for hybrid detection)
+      # @return [Symbol]
+      def detect_vector_mode(vq, params)
+        if vq.key?(:query)
+          :external
+        elsif vq.key?(:id)
+          :similar
+        elsif vq.key?(:queries)
+          :historical
+        elsif hybrid_vector_mode?(params, vq)
+          :hybrid
+        else
+          :semantic
+        end
       end
 
       # ------------------------------------------------------------------
