@@ -15,6 +15,9 @@ module SearchEngine
     attribute :category, :string, facet: true
     attribute :updated_at, :datetime, sort: true
 
+    # Auto-embedding from name + description; resolves to field "product_embedding"
+    embedding from: %i[name description]
+
     join :brands, collection: 'brands', local_key: :brand_id, foreign_key: :id
 
     query_by %i[name description brand_name category]
