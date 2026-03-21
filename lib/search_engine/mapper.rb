@@ -320,11 +320,15 @@ module SearchEngine
     class Compiled
       attr_reader :klass
 
-      def initialize(klass:, map_proc:, schema_fields:, types_by_field:, options: {})
+      def initialize(klass:, map_proc:, schema_fields:, types_by_field:,
+                     auto_embedding_fields: Set.new, external_embedding_dims: {},
+                     options: {})
         @klass = klass
         @map_proc = map_proc
         @schema_fields = schema_fields.freeze # Array of field names (String)
         @types_by_field = types_by_field.freeze # { "field" => "int64" }
+        @auto_embedding_fields = auto_embedding_fields.freeze # Set<String> — server-generated fields
+        @external_embedding_dims = external_embedding_dims.freeze # { "field" => num_dim }
         # Allow all schema fields; treat required as schema fields minus optional attributes
         @allowed_keys = @schema_fields.map(&:to_sym).to_set.freeze
         @required_keys = compute_required_keys
@@ -360,6 +364,7 @@ module SearchEngine
           hash[:id] = computed_id
           hash[:doc_updated_at] = now_i
 
+          strip_auto_embedding_fields!(hash)
           normalize_optional_blank_strings!(hash)
 
           # Populate hidden flags
@@ -455,6 +460,17 @@ module SearchEngine
           value = doc[base_name.to_s] if value.nil?
           flag_name = "#{base_name}_empty"
           doc[flag_name.to_sym] = value.nil? || (value.is_a?(Array) && value.empty?)
+        end
+      end
+
+      # Remove auto-embedding fields from the document payload.
+      # Typesense generates these server-side; including them would cause errors.
+      def strip_auto_embedding_fields!(doc)
+        return if @auto_embedding_fields.empty?
+
+        @auto_embedding_fields.each do |name|
+          doc.delete(name.to_sym)
+          doc.delete(name.to_s)
         end
       end
 
@@ -554,6 +570,10 @@ module SearchEngine
 
           required.delete(fname.to_sym)
         end
+
+        # Auto-embedding fields are generated server-side; never require them in documents
+        @auto_embedding_fields.each { |name| required.delete(name.to_sym) }
+
         required.freeze
       end
 
@@ -593,6 +613,8 @@ module SearchEngine
           return [true, nil, nil] if value.is_a?(Array) && value.all? { |v| v.is_a?(String) }
 
           [false, nil, invalid_type_message(field, 'Array<String>', value)]
+        when 'float[]'
+          validate_float_array(value, field)
         else
           # Unknown/opaque type: accept
           [true, nil, nil]
@@ -632,6 +654,20 @@ module SearchEngine
         else
           [false, nil, invalid_type_message(field, 'Boolean', value)]
         end
+      end
+
+      def validate_float_array(value, field)
+        unless value.is_a?(Array) && value.all? { |v| v.is_a?(Numeric) }
+          return [false, nil, invalid_type_message(field, 'Array<Float>', value)]
+        end
+
+        expected_dim = @external_embedding_dims[field]
+        if expected_dim && value.size != expected_dim
+          msg = "Dimension mismatch for field :#{field} (expected #{expected_dim}, got #{value.size})."
+          return [false, nil, msg]
+        end
+
+        [true, nil, nil]
       end
 
       def string_integer?(v)
@@ -749,6 +785,8 @@ module SearchEngine
           types_by_field[f[:name].to_s] = f[:type].to_s
         end
 
+        auto_embedding_fields, external_embedding_dims = partition_embedding_fields(klass)
+
         mapper_cfg = SearchEngine.config&.mapper
         coercions_cfg = mapper_cfg&.coercions || {}
         options = {
@@ -763,8 +801,30 @@ module SearchEngine
           map_proc: dsl[:map],
           schema_fields: fields,
           types_by_field: types_by_field,
+          auto_embedding_fields: auto_embedding_fields,
+          external_embedding_dims: external_embedding_dims,
           options: options
         )
+      end
+
+      # Partition embeddings_config into auto-embedding field names and
+      # external embedding field-name-to-dimension mapping.
+      # @return [Array(Set<String>, Hash{String=>Integer})]
+      def partition_embedding_fields(klass)
+        embeddings = klass.respond_to?(:embeddings_config) ? klass.embeddings_config : {}
+        auto_fields = Set.new
+        external_dims = {}
+
+        embeddings.each do |sym, meta|
+          name = (meta[:field_name] || sym).to_s
+          if meta[:external]
+            external_dims[name] = meta[:num_dim].to_i if meta[:num_dim]
+          else
+            auto_fields << name
+          end
+        end
+
+        [auto_fields, external_dims]
       end
 
       def mapper_dsl_for(klass)
