@@ -259,6 +259,12 @@ module SearchEngine
     #   raise SearchEngine::Errors::InvalidOverrideTag, 'InvalidOverrideTag: "" is invalid. Use non-blank strings that match the allowed pattern.'
     class InvalidOverrideTag < Error; end
 
+    # Raised when a required configuration value is missing or invalid.
+    #
+    # Typical cause: embedding model not set in either the per-field `model:`
+    # kwarg or the global `SearchEngine.config.embedding.model`.
+    class ConfigurationError < Error; end
+
     # Raised when an option value is invalid or unsupported for a public API.
     #
     # Used by DSL methods to fail fast with actionable hints.

@@ -17,6 +17,7 @@ module SearchEngine
     # - :boolean -> "bool"
     # - :time/:datetime -> "int64" (epoch seconds)
     # - :time_string/:datetime_string -> "string" (ISO8601 timestamps)
+    # - :vector -> "float[]" (embedding vectors)
     # - Array types (e.g. [:string]) -> "string[]" (when present)
     TYPE_MAPPING = {
       string: 'string',
@@ -27,10 +28,14 @@ module SearchEngine
       time: 'int64',
       datetime: 'int64',
       time_string: 'string',
-      datetime_string: 'string'
+      datetime_string: 'string',
+      vector: 'float[]'
     }.freeze
 
-    FIELD_COMPARE_KEYS = %i[type reference async_reference locale sort optional infix facet].freeze
+    FIELD_COMPARE_KEYS = %i[
+      type reference async_reference locale sort optional infix facet
+      embed num_dim hnsw_params
+    ].freeze
     PHYSICAL_SUFFIX_RE = /_\d{8}_\d{6}_\d{3}\z/
 
     class << self
@@ -535,7 +540,10 @@ module SearchEngine
             infix: opts[:infix],
             facet: opts[:facet],
             reference: references_by_local_key[attribute_name.to_sym],
-            async_reference: async_reference_by_local_key[attribute_name.to_sym]
+            async_reference: async_reference_by_local_key[attribute_name.to_sym],
+            embed: opts[:embed],
+            num_dim: opts[:num_dim],
+            hnsw_params: opts[:hnsw_params]
           }.compact
         }
       end
@@ -583,17 +591,7 @@ module SearchEngine
         normalized_fields = {}
         fields.each do |field|
           fname = (field[:name] || field['name']).to_s
-
-          ftype = (field[:type] || field['type']).to_s
-          fref = field[:reference] || field['reference']
-          entry = { name: fname, type: normalize_type(ftype) }
-          entry[:reference] = fref.to_s unless fref.nil? || fref.to_s.strip.empty?
-          # Preserve attribute-level flags from either compiled or live schemas.
-          %i[locale sort optional infix facet async_reference].each do |k|
-            val = field[k] || field[k.to_s]
-            entry[k] = val unless val.nil?
-          end
-          normalized_fields[fname] = entry
+          normalized_fields[fname] = normalize_field(field, fname)
         end
 
         {
@@ -605,6 +603,40 @@ module SearchEngine
           enable_nested_fields: schema[:enable_nested_fields] || schema['enable_nested_fields']
         }
       end
+
+      # Normalize a single field entry from either compiled or live schema.
+      # @param field [Hash] raw field hash (symbol or string keys)
+      # @param fname [String] normalized field name
+      # @return [Hash] normalized field entry with symbol keys
+      def normalize_field(field, fname)
+        ftype = (field[:type] || field['type']).to_s
+        fref = field[:reference] || field['reference']
+        entry = { name: fname, type: normalize_type(ftype) }
+        entry[:reference] = fref.to_s unless fref.nil? || fref.to_s.strip.empty?
+
+        %i[locale sort optional infix facet async_reference].each do |k|
+          val = field[k] || field[k.to_s]
+          entry[k] = val unless val.nil?
+        end
+
+        normalize_vector_keys!(entry, field)
+        entry
+      end
+      private :normalize_field
+
+      # Populate vector-specific keys (embed, num_dim, hnsw_params) on a
+      # normalized field entry when present in the source field hash.
+      def normalize_vector_keys!(entry, field)
+        raw_embed = field[:embed] || field['embed']
+        entry[:embed] = normalize_embed(raw_embed) if raw_embed
+
+        raw_num_dim = field[:num_dim] || field['num_dim']
+        entry[:num_dim] = raw_num_dim.to_i if raw_num_dim
+
+        raw_hnsw = field[:hnsw_params] || field['hnsw_params']
+        entry[:hnsw_params] = deep_symbolize_keys(raw_hnsw) if raw_hnsw
+      end
+      private :normalize_vector_keys!
 
       def detect_stale_references(schema, client:)
         fields = Array(schema[:fields] || schema['fields'])
@@ -666,6 +698,7 @@ module SearchEngine
       def normalize_type(type_string)
         s = type_string.to_s
         return 'string[]' if s.casecmp('string[]').zero?
+        return 'float[]' if s.casecmp('float[]').zero?
         return 'int64' if s.casecmp('int64').zero?
         return 'int32' if s.casecmp('int32').zero?
         return 'float' if s.casecmp('float').zero?
@@ -675,6 +708,36 @@ module SearchEngine
         # Fallback: return as-is
         s
       end
+
+      # Normalize an embed hash from either compiled (symbol keys) or
+      # live schema (string keys) into a canonical symbol-keyed form.
+      # @param raw [Hash] embed config from compiled or live schema
+      # @return [Hash] normalized embed hash
+      def normalize_embed(raw)
+        from_val = raw[:from] || raw['from']
+        mc_raw = raw[:model_config] || raw['model_config']
+
+        result = {}
+        result[:from] = Array(from_val).map(&:to_s).sort if from_val
+        result[:model_config] = deep_symbolize_keys(mc_raw) if mc_raw
+        result
+      end
+      private :normalize_embed
+
+      # Recursively symbolize keys in a Hash.
+      # @param obj [Hash, Object] value to normalize
+      # @return [Hash, Object]
+      def deep_symbolize_keys(obj)
+        case obj
+        when Hash
+          obj.each_with_object({}) { |(k, v), h| h[k.to_sym] = deep_symbolize_keys(v) }
+        when Array
+          obj.map { |v| deep_symbolize_keys(v) }
+        else
+          obj
+        end
+      end
+      private :deep_symbolize_keys
 
       def diff_fields(compiled_fields_by_name, live_fields_by_name)
         compiled_names = compiled_fields_by_name.keys
@@ -728,7 +791,9 @@ module SearchEngine
       end
 
       def values_equal?(a, b)
-        if a.is_a?(Array) && b.is_a?(Array)
+        if a.is_a?(Hash) && b.is_a?(Hash)
+          a == b
+        elsif a.is_a?(Array) && b.is_a?(Array)
           a == b
         else
           a.to_s == b.to_s

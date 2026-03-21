@@ -8,6 +8,8 @@ module SearchEngine
     module ModelDsl
       extend ActiveSupport::Concern
 
+      EMBEDDING_SUFFIX = '_embedding'
+
       class_methods do
         # Get or set the Typesense collection name for this model.
         #
@@ -283,6 +285,182 @@ module SearchEngine
       end
 
       class_methods do
+        # Declare a vector embedding field with automatic name resolution, model
+        # inference, and source-field validation.
+        #
+        # @param name [Symbol, String, nil] field name (auto-derived when omitted)
+        # @param from [Array<Symbol>, nil] source attribute names to embed from
+        # @param suffix [Boolean] append `_embedding` to the field name (default: true)
+        # @param model [String, nil] embedding model override (per-field)
+        # @param api_key [String, nil] API key for remote embedding providers
+        # @param num_dim [Integer, nil] vector dimensions for external embeddings
+        # @param hnsw [Hash, nil] HNSW index tuning parameters
+        # @param model_config [Hash, nil] extra model_config overrides
+        # @return [void]
+        def embedding(name = nil, from: nil, suffix: true, model: nil,
+                      api_key: nil, num_dim: nil, hnsw: nil, model_config: nil)
+          resolved_name = __se_resolve_embedding_name(name, from: from, suffix: suffix, num_dim: num_dim)
+          resolved_sym = resolved_name.to_sym
+
+          __se_check_embedding_duplicate!(resolved_sym)
+
+          external = from.nil? && num_dim
+          from_fields = external ? nil : __se_infer_embedding_from(resolved_name, from)
+
+          __se_validate_embedding_sources!(from_fields) if from_fields
+
+          vector_opts = {}
+
+          if external
+            vector_opts[:num_dim] = Integer(num_dim)
+          else
+            resolved_model = __se_resolve_embedding_model(model)
+            vector_opts[:embed] = __se_build_embed_hash(
+              from_fields, resolved_model,
+              api_key: api_key, model_config: model_config
+            )
+          end
+
+          vector_opts[:hnsw_params] = hnsw if hnsw
+
+          attribute(resolved_name, :vector)
+          @attribute_options ||= {}
+          @attribute_options[resolved_sym] = (@attribute_options[resolved_sym] || {}).merge(vector_opts)
+
+          __se_store_embedding_metadata!(
+            resolved_sym, from: from_fields,
+            model: external ? nil : resolved_model,
+            external: external ? true : false,
+            num_dim: num_dim
+          )
+        end
+
+        private
+
+        # Resolve the canonical field name for an embedding declaration.
+        # @return [String]
+        def __se_resolve_embedding_name(name, from:, suffix:, num_dim:)
+          if name.nil?
+            if from
+              "#{self.name.demodulize.underscore}#{EMBEDDING_SUFFIX}"
+            elsif num_dim
+              raise ArgumentError,
+                    'External embedding (num_dim: without from:) requires an explicit field name'
+            else
+              raise ArgumentError,
+                    'embedding requires at least one of: a field name, from: sources, or num_dim: for external vectors'
+            end
+          else
+            n = name.to_s
+            if suffix && !n.end_with?(EMBEDDING_SUFFIX)
+              "#{n}#{EMBEDDING_SUFFIX}"
+            else
+              n
+            end
+          end
+        end
+
+        # Infer `from:` source fields when not explicitly provided.
+        # @return [Array<Symbol>]
+        def __se_infer_embedding_from(resolved_name, from)
+          if from
+            Array(from).map(&:to_sym)
+          else
+            bare = resolved_name.to_s.delete_suffix(EMBEDDING_SUFFIX)
+            if bare.empty?
+              raise ArgumentError,
+                    "Cannot infer from: for embedding '#{resolved_name}'; provide from: explicitly"
+            end
+
+            [bare.to_sym]
+          end
+        end
+
+        # Validate that all source fields exist and are string-typed.
+        # @raise [ArgumentError]
+        def __se_validate_embedding_sources!(from_fields)
+          attrs = @attributes || {}
+          from_fields.each do |field|
+            unless attrs.key?(field)
+              raise ArgumentError,
+                    "embedding from: references undeclared attribute :#{field}. " \
+                    'Declare it with `attribute` before the `embedding` call.'
+            end
+
+            ts_type = __se_typesense_type_for(attrs[field])
+            next if %w[string string[]].include?(ts_type)
+
+            raise ArgumentError,
+                  "embedding from: field :#{field} must be string-typed " \
+                  "(got :#{attrs[field]} -> \"#{ts_type}\"). " \
+                  'Typesense only auto-embeds text fields.'
+          end
+        end
+
+        # Resolve the embedding model with fallback to global config.
+        # @return [String]
+        # @raise [SearchEngine::Errors::ConfigurationError]
+        def __se_resolve_embedding_model(per_field_model)
+          return per_field_model if per_field_model && !per_field_model.to_s.strip.empty?
+
+          global = SearchEngine.config.embedding.model
+          return global if global && !global.to_s.strip.empty?
+
+          raise SearchEngine::Errors::ConfigurationError.new(
+            'No embedding model configured. Set `model:` on the embedding declaration ' \
+            'or set `SearchEngine.config.embedding.model` globally.',
+            hint: "Add `config.embedding.model = 'ts/all-MiniLM-L12-v2'` to your SearchEngine initializer.",
+            doc: 'https://typesense.org/docs/30.1/api/vector-search.html#option-b-auto-embedding-generation-within-typesense'
+          )
+        end
+
+        # Build the Typesense `embed` hash for auto-embedding fields.
+        # @return [Hash]
+        def __se_build_embed_hash(from_fields, model_name, api_key: nil, model_config: nil)
+          mc = { model_name: model_name }
+
+          global_mc = SearchEngine.config.embedding.model_config
+          mc.merge!(global_mc) if global_mc.is_a?(Hash)
+          mc.merge!(model_config) if model_config.is_a?(Hash)
+
+          resolved_api_key = api_key || SearchEngine.config.embedding.api_key
+          mc[:api_key] = resolved_api_key if resolved_api_key && !resolved_api_key.to_s.strip.empty?
+
+          { from: from_fields.map(&:to_s), model_config: mc }
+        end
+
+        # Raise on duplicate embedding field names.
+        def __se_check_embedding_duplicate!(resolved_sym)
+          return unless (@embeddings_config || {}).key?(resolved_sym)
+
+          raise ArgumentError, "Duplicate embedding field :#{resolved_sym} already declared"
+        end
+
+        # Store embedding metadata for downstream consumers (mapper, indexer, compiler).
+        def __se_store_embedding_metadata!(resolved_sym, from:, model:, external:, num_dim:)
+          @embeddings_config ||= {}
+          @embeddings_config[resolved_sym] = {
+            field_name: resolved_sym.to_s,
+            from: from,
+            model: model,
+            external: external,
+            num_dim: num_dim
+          }.compact
+        end
+
+        # Minimal type resolution for validation (mirrors Schema.typesense_type_for).
+        def __se_typesense_type_for(type_descriptor)
+          if type_descriptor.is_a?(Array) && type_descriptor.size == 1
+            inner = type_descriptor.first
+            mapped = SearchEngine::Schema::TYPE_MAPPING[inner.to_s.downcase.to_sym] || inner.to_s
+            return "#{mapped}[]"
+          end
+
+          SearchEngine::Schema::TYPE_MAPPING[type_descriptor.to_s.downcase.to_sym] || type_descriptor.to_s
+        end
+      end
+
+      class_methods do
         # Validate whether an attribute name is a valid Ruby reader method name
         # (skip dotted names and other invalid identifiers).
         def valid_attribute_reader_name?(name)
@@ -416,6 +594,14 @@ module SearchEngine
       end
 
       class_methods do
+        # Read-only view of declared embedding metadata for this class.
+        # @return [Hash{Symbol=>Hash}] frozen hash keyed by embedding field name
+        def embeddings_config
+          (@embeddings_config || {}).dup.freeze
+        end
+      end
+
+      class_methods do
         # Configure schema retention policy for this collection.
         # @param keep_last [Integer] how many previous physicals to keep after swap
         # @return [void]
@@ -443,6 +629,9 @@ module SearchEngine
 
           parent_retention = @schema_retention || {}
           subclass.instance_variable_set(:@schema_retention, parent_retention.dup)
+
+          parent_embeddings = @embeddings_config || {}
+          subclass.instance_variable_set(:@embeddings_config, parent_embeddings.dup)
 
           parent_joins = @joins_config || {}
           subclass.instance_variable_set(:@joins_config, parent_joins.dup.freeze)
