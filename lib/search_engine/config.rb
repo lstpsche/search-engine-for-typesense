@@ -321,6 +321,24 @@ module SearchEngine
       end
     end
 
+    # Lightweight nested configuration for global embedding defaults.
+    # Provides a default model, optional API key, and extra model_config
+    # used by the Schema DSL when compiling auto-embedding fields.
+    class EmbeddingConfig
+      # @return [String, nil] default embedding model name (e.g. "ts/all-MiniLM-L12-v2")
+      attr_accessor :model
+      # @return [String, nil] API key for remote embedding providers (e.g. OpenAI)
+      attr_accessor :api_key
+      # @return [Hash, nil] extra model_config passed to Typesense embed block
+      attr_accessor :model_config
+
+      def initialize
+        @model = nil
+        @api_key = nil
+        @model_config = nil
+      end
+    end
+
     # Create a new configuration with defaults, optionally hydrated from ENV.
     #
     # @param env [#[]] environment-like object (defaults to ::ENV)
@@ -360,6 +378,7 @@ module SearchEngine
       @selection = SelectionConfig.new
       @presets = PresetsConfig.new
       @curation = CurationConfig.new
+      @embedding = EmbeddingConfig.new
       @default_console_model = nil
       # Path may be relative to Rails.root or absolute. Set nil/false to disable.
       @search_engine_models = 'app/search_engine'
@@ -436,6 +455,12 @@ module SearchEngine
     # @return [SearchEngine::Config::CurationConfig]
     def curation
       @curation ||= CurationConfig.new
+    end
+
+    # Expose global embedding configuration.
+    # @return [SearchEngine::Config::EmbeddingConfig]
+    def embedding
+      @embedding ||= EmbeddingConfig.new
     end
 
     # Expose observability/logging configuration.
@@ -657,6 +682,7 @@ module SearchEngine
         selection: selection_hash_for_to_h,
         presets: presets_hash_for_to_h,
         curation: curation_hash_for_to_h,
+        embedding: embedding_hash_for_to_h,
         relation_print_materializes: relation_print_materializes ? true : false
       }
     end
@@ -666,6 +692,7 @@ module SearchEngine
     def to_h_redacted
       redacted = to_h.dup
       redacted[:api_key] = '[REDACTED]' unless string_blank?(api_key)
+      redacted[:embedding] = redacted[:embedding].merge(api_key: '[REDACTED]') unless string_blank?(embedding.api_key)
       redacted
     end
 
@@ -749,6 +776,14 @@ module SearchEngine
         max_pins: curation.max_pins,
         max_hidden: curation.max_hidden,
         id_regex: curation.id_regex.inspect
+      }
+    end
+
+    def embedding_hash_for_to_h
+      {
+        model: embedding.model,
+        api_key: embedding.api_key,
+        model_config: embedding.model_config
       }
     end
 
