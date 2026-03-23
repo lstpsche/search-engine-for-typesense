@@ -35,7 +35,7 @@ module SearchEngine
     }.freeze
 
     FIELD_COMPARE_KEYS = %i[
-      type reference async_reference locale sort optional infix facet
+      type reference async_reference locale sort optional index infix facet
       embed num_dim hnsw_params
     ].freeze
     PHYSICAL_SUFFIX_RE = /_\d{8}_\d{6}_\d{3}\z/
@@ -44,9 +44,14 @@ module SearchEngine
       # Build a Typesense-compatible schema hash from a model class DSL.
       #
       # The output includes only keys that are supported and declared via the DSL.
-      # Fields explicitly marked with `index: false` are intentionally omitted
-      # from the compiled schema (they can still be sent in documents and will
-      # be hydrated/displayed, but are not indexed in memory).
+      # Fields explicitly marked with `index: false` are generally omitted from
+      # the compiled schema (they can still be sent in documents and will be
+      # hydrated/displayed, but are not indexed in memory).
+      #
+      # **Exception:** fields with `index: false` that are referenced by an
+      # embedding's `from:` list are included with Typesense-native
+      # `"index": false` and `"optional": true` so the embedding model can
+      # read their values without keyword-indexing them.
       #
       # @param klass [Class] model class inheriting from {SearchEngine::Base}
       # @return [Hash] frozen schema hash with symbol keys
@@ -462,6 +467,7 @@ module SearchEngine
         attribute_options = klass.respond_to?(:attribute_options) ? (klass.attribute_options || {}) : {}
         references_by_local_key = build_references_by_local_key(klass, client: client)
         async_reference_by_local_key = build_async_reference_by_local_key(klass)
+        embed_source_fields = collect_embed_source_fields(attribute_options)
 
         fields_array = []
         needs_nested_fields = false
@@ -470,14 +476,16 @@ module SearchEngine
           validate_attribute_type!(attribute_name, type_descriptor)
 
           opts = attribute_options[attribute_name.to_sym] || {}
-          # Skip non-indexed attributes and any nested fields under a non-indexed base
+          # Skip non-indexed attributes and any nested fields under a non-indexed base,
+          # unless the field is referenced by an embedding's from: list.
           base_index_false = false
           if attribute_name.to_s.include?('.')
             base_sym = attribute_name.to_s.split('.', 2).first.to_sym
             base_opts = attribute_options[base_sym] || {}
             base_index_false = (base_opts[:index] == false)
           end
-          next if opts[:index] == false || base_index_false
+          effectively_unindexed = opts[:index] == false || base_index_false
+          next if effectively_unindexed && !embed_source_fields.include?(attribute_name.to_sym)
 
           ts_type = typesense_type_for(type_descriptor)
 
@@ -536,14 +544,34 @@ module SearchEngine
         %w[object object[]].include?(ts_type)
       end
 
+      # Collect field names referenced by any embedding's from: list.
+      # @param attribute_options [Hash] model attribute options
+      # @return [Set<Symbol>] field names used as embedding sources
+      def collect_embed_source_fields(attribute_options)
+        sources = Set.new
+        attribute_options.each_value do |opts|
+          next unless opts.is_a?(Hash)
+
+          embed = opts[:embed]
+          next unless embed.is_a?(Hash)
+
+          from = embed[:from] || embed['from']
+          Array(from).each { |f| sources << f.to_sym }
+        end
+        sources
+      end
+      private :collect_embed_source_fields
+
       def build_field_entry(attribute_name, ts_type, references_by_local_key, async_reference_by_local_key, opts)
+        unindexed = opts[:index] == false
         {
           name: attribute_name.to_s,
           type: ts_type,
           **{
+            index: unindexed ? false : nil,
             locale: opts[:locale],
             sort: opts[:sort],
-            optional: opts[:optional],
+            optional: unindexed ? true : opts[:optional],
             infix: opts[:infix],
             facet: opts[:facet],
             reference: references_by_local_key[attribute_name.to_sym],
@@ -621,7 +649,7 @@ module SearchEngine
         entry = { name: fname, type: normalize_type(ftype) }
         entry[:reference] = fref.to_s unless fref.nil? || fref.to_s.strip.empty?
 
-        %i[locale sort optional infix facet async_reference].each do |k|
+        %i[locale sort optional index infix facet async_reference].each do |k|
           val = field[k] || field[k.to_s]
           entry[k] = val unless val.nil?
         end

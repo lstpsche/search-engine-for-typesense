@@ -96,7 +96,9 @@ module SearchEngine
         #
         # @param name [#to_sym]
         # @param type [Object] type descriptor (e.g., :string, :integer)
-        # @param index [Boolean, nil] when false, omit from compiled Typesense schema (still hydrated/displayed)
+        # @param index [Boolean, nil] when false, omit from compiled Typesense schema (still
+        #   hydrated/displayed). Fields referenced by an embedding's `from:` are kept in the
+        #   schema with Typesense-native `"index": false` instead of being omitted entirely.
         # @param locale [String, nil]
         # @param optional [Boolean, nil]
         # @param sort [Boolean, nil]

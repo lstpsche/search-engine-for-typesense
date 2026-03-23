@@ -566,7 +566,7 @@ module SearchEngine
         base_fields.reject! { |fname| fname.to_s.include?('.') }
         required = base_fields.to_set
         opts.each do |fname, o|
-          next unless o.is_a?(Hash) && o[:optional]
+          next unless o.is_a?(Hash) && (o[:optional] || o[:index] == false)
 
           required.delete(fname.to_sym)
         end
