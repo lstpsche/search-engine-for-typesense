@@ -496,8 +496,7 @@ module SearchEngine
       # Vector query compilation
       # ------------------------------------------------------------------
 
-      VECTOR_SEARCH_DOC_URL =
-        'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/vector-search'
+      VECTOR_SEARCH_DOC_URL = SearchEngine::Errors::InvalidVectorQuery::DOC_URL
 
       VECTOR_DISTANCE_SENTINEL = '_vector_distance'
 
@@ -727,9 +726,7 @@ module SearchEngine
       def instrument_grouping_compile(field, limit, missing_values)
         payload = {
           collection: klass_name_for_inspect,
-          field: field&.to_s,
           group_by: field&.to_s,
-          limit: limit,
           group_limit: limit,
           missing_values: missing_values
         }.compact

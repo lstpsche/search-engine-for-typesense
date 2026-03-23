@@ -113,12 +113,17 @@ module SearchEngine
     # Internal: Redact raw float arrays in a vector_query string while
     # preserving the structural tokens (field name, k, alpha, etc.).
     # Replaces `[0.1,0.2,...]` with `[<N dims>]`.
+    #
+    # Disable via +config.observability.redact_vectors = false+ to see
+    # raw vectors (useful for debugging).
+    #
     # @param vq [String]
     # @return [String]
     def self.redact_vector_query(vq)
       return vq unless vq.is_a?(String)
+      return vq if SearchEngine.config.observability.redact_vectors == false
 
-      vq.gsub(/\[(-?\d+(?:\.\d+)?(?:\s*,\s*-?\d+(?:\.\d+)?){2,})\]/) do
+      vq.gsub(/\[(-?\d+(?:\.\d+)?(?:\s*,\s*-?\d+(?:\.\d+?))*)\]/) do
         dims = Regexp.last_match(1).split(',').size
         "[<#{dims} dims>]"
       end
