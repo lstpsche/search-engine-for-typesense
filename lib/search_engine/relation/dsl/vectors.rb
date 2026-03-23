@@ -6,8 +6,7 @@ module SearchEngine
       # Vector search chainers and normalizers.
       # Mixed into Relation's DSL; preserves copy-on-write semantics.
       module Vectors
-        VECTOR_SEARCH_DOC_URL =
-          'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/vector-search'
+        VECTOR_SEARCH_DOC_URL = SearchEngine::Errors::InvalidVectorQuery::DOC_URL
 
         # Perform a vector (semantic / hybrid / ANN) search on an embedding field.
         #
@@ -19,7 +18,8 @@ module SearchEngine
         # @param query [Array<Numeric>, nil] explicit embedding vector
         # @param id [#to_s, nil] document ID for similarity search
         # @param distance_threshold [Float, nil] max cosine distance
-        # @param queries [Array<String>, nil] historical query strings (auto-embedded)
+        # @param queries [Array<String>, nil] historical query strings (auto-embedded).
+        #   Requires Typesense >= 27.0 for strings containing commas.
         # @param weights [Array<Numeric>, nil] per-query weights (must sum to ~1.0)
         # @param ef [Integer, nil] HNSW ef override
         # @param flat_search_cutoff [Integer, nil] brute-force threshold
@@ -217,13 +217,15 @@ module SearchEngine
           end
 
           sum = weights.sum.to_f
-          return if (sum - 1.0).abs <= 0.01
+          tolerance = SearchEngine.config.embedding.weights_sum_tolerance
+          return if (sum - 1.0).abs <= tolerance
 
           raise SearchEngine::Errors::InvalidVectorQuery.new(
             "InvalidVectorQuery: weights: must sum to ~1.0 (got #{sum.round(4)})",
-            hint: 'Adjust weights so they sum to 1.0 (tolerance: 0.01)',
+            hint: "Adjust weights so they sum to 1.0 (tolerance: #{tolerance}, " \
+                  'configurable via config.embedding.weights_sum_tolerance)',
             doc: VECTOR_SEARCH_DOC_URL,
-            details: { weights: weights, sum: sum.round(4) }
+            details: { weights: weights, sum: sum.round(4), tolerance: tolerance }
           )
         end
 

@@ -30,8 +30,8 @@ class GroupingInstrumentationTest < Minitest::Test
     payload = received.first.payload
 
     assert_equal 'GroupingInstrumentationTest::Product', payload[:collection]
-    assert_equal 'brand_id', payload[:field]
-    assert_equal 1, payload[:limit]
+    assert_equal 'brand_id', payload[:group_by]
+    assert_equal 1, payload[:group_limit]
     assert_equal true, payload[:missing_values]
     assert payload[:duration_ms].to_f >= 0.0 if payload.key?(:duration_ms)
   end

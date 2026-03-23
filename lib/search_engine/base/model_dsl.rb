@@ -417,11 +417,12 @@ module SearchEngine
         # Build the Typesense `embed` hash for auto-embedding fields.
         # @return [Hash]
         def __se_build_embed_hash(from_fields, model_name, api_key: nil, model_config: nil)
-          mc = { model_name: model_name }
+          mc = {}
 
           global_mc = SearchEngine.config.embedding.model_config
           mc.merge!(global_mc) if global_mc.is_a?(Hash)
           mc.merge!(model_config) if model_config.is_a?(Hash)
+          mc[:model_name] = model_name
 
           resolved_api_key = api_key || SearchEngine.config.embedding.api_key
           mc[:api_key] = resolved_api_key if resolved_api_key && !resolved_api_key.to_s.strip.empty?

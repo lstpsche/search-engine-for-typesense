@@ -251,6 +251,10 @@ module SearchEngine
       attr_accessor :include_error_messages
       # @return [Boolean] also emit legacy event aliases where applicable
       attr_accessor :emit_legacy_event_aliases
+      # @return [Boolean] when true (default), float arrays inside +vector_query+
+      #   strings are replaced with +[<N dims>]+ in logs and telemetry payloads.
+      #   Set to +false+ to see raw vectors for debugging.
+      attr_accessor :redact_vectors
 
       def initialize
         super()
@@ -260,6 +264,7 @@ module SearchEngine
         @max_message_length = 200
         @include_error_messages = false
         @emit_legacy_event_aliases = true
+        @redact_vectors = true
       end
     end
 
@@ -331,11 +336,17 @@ module SearchEngine
       attr_accessor :api_key
       # @return [Hash, nil] extra model_config passed to Typesense embed block
       attr_accessor :model_config
+      # @return [Float] tolerance for vector search weights sum validation.
+      #   Weights must sum to ~1.0 within this tolerance. With many small weights
+      #   floating-point drift can exceed the default. Adjust via
+      #   +config.embedding.weights_sum_tolerance = 0.05+.
+      attr_accessor :weights_sum_tolerance
 
       def initialize
         @model = nil
         @api_key = nil
         @model_config = nil
+        @weights_sum_tolerance = 0.01
       end
     end
 
@@ -753,7 +764,8 @@ module SearchEngine
         log_format: observability.log_format,
         max_message_length: observability.max_message_length,
         include_error_messages: observability.include_error_messages ? true : false,
-        emit_legacy_event_aliases: observability.emit_legacy_event_aliases ? true : false
+        emit_legacy_event_aliases: observability.emit_legacy_event_aliases ? true : false,
+        redact_vectors: observability.redact_vectors ? true : false
       }
     end
 
@@ -783,7 +795,8 @@ module SearchEngine
       {
         model: embedding.model,
         api_key: embedding.api_key,
-        model_config: embedding.model_config
+        model_config: embedding.model_config,
+        weights_sum_tolerance: embedding.weights_sum_tolerance
       }
     end
 

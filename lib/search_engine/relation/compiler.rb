@@ -496,13 +496,13 @@ module SearchEngine
       # Vector query compilation
       # ------------------------------------------------------------------
 
-      VECTOR_SEARCH_DOC_URL =
-        'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/vector-search'
+      VECTOR_SEARCH_DOC_URL = SearchEngine::Errors::InvalidVectorQuery::DOC_URL
 
       VECTOR_DISTANCE_SENTINEL = '_vector_distance'
 
       # Scalar params emitted in deterministic order inside the vector_query string.
-      VECTOR_QUERY_SCALAR_KEYS = %i[k id alpha distance_threshold ef flat_search_cutoff].freeze
+      # Note: `alpha` is omitted — it is only emitted in hybrid mode (see below).
+      VECTOR_QUERY_SCALAR_KEYS = %i[k id distance_threshold ef flat_search_cutoff].freeze
 
       def apply_vector_query!(params)
         vq = @state[:vector_query]
@@ -514,7 +514,7 @@ module SearchEngine
 
         field = vq[:field].to_s
 
-        params[:vector_query] = build_vector_query_string(vq)
+        params[:vector_query] = build_vector_query_string(vq, params)
 
         auto_include_embedding_in_query_by!(params, vq, field)
         auto_exclude_embedding_from_response!(params, field)
@@ -527,8 +527,9 @@ module SearchEngine
       # Format: `"field:([vector_or_empty], k:N, alpha:0.5, ...)"`.
       #
       # @param vq [Hash] normalized vector query state from DSL
+      # @param params [Hash] compiled search params (needed for hybrid detection)
       # @return [String]
-      def build_vector_query_string(vq)
+      def build_vector_query_string(vq, params)
         field = vq[:field].to_s
         vector_part = vq[:query] ? "[#{vq[:query].join(',')}]" : '[]'
 
@@ -536,6 +537,7 @@ module SearchEngine
         VECTOR_QUERY_SCALAR_KEYS.each do |key|
           parts << "#{key}:#{vq[key]}" if vq.key?(key)
         end
+        parts << "alpha:#{vq[:alpha]}" if vq.key?(:alpha) && hybrid_vector_mode?(params, vq)
         parts << "queries:[#{vq[:queries].join(', ')}]" if vq[:queries]
         parts << "query_weights:[#{vq[:weights].join(', ')}]" if vq[:weights]
 
@@ -727,9 +729,7 @@ module SearchEngine
       def instrument_grouping_compile(field, limit, missing_values)
         payload = {
           collection: klass_name_for_inspect,
-          field: field&.to_s,
           group_by: field&.to_s,
-          limit: limit,
           group_limit: limit,
           missing_values: missing_values
         }.compact

@@ -304,6 +304,8 @@ module SearchEngine
     #     hint: 'Provide only one of query:, id:, or queries:',
     #     doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/vector-search'
     #   )
-    class InvalidVectorQuery < Error; end
+    class InvalidVectorQuery < Error
+      DOC_URL = 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/vector-search'
+    end
   end
 end

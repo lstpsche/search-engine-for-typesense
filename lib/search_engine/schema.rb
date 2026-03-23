@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require 'active_support/core_ext/hash/keys'
+
 module SearchEngine
   # Schema utilities to compile model DSL into a Typesense-compatible schema
   # hash and to diff it against a live collection.
@@ -639,7 +641,7 @@ module SearchEngine
         entry[:num_dim] = raw_num_dim.to_i if raw_num_dim
 
         raw_hnsw = field[:hnsw_params] || field['hnsw_params']
-        entry[:hnsw_params] = deep_symbolize_keys(raw_hnsw) if raw_hnsw
+        entry[:hnsw_params] = raw_hnsw.deep_symbolize_keys if raw_hnsw
       end
       private :normalize_vector_keys!
 
@@ -723,26 +725,11 @@ module SearchEngine
         mc_raw = raw[:model_config] || raw['model_config']
 
         result = {}
-        result[:from] = Array(from_val).map(&:to_s).sort if from_val
-        result[:model_config] = deep_symbolize_keys(mc_raw) if mc_raw
+        result[:from] = Array(from_val).map(&:to_s) if from_val
+        result[:model_config] = mc_raw.deep_symbolize_keys if mc_raw
         result
       end
       private :normalize_embed
-
-      # Recursively symbolize keys in a Hash.
-      # @param obj [Hash, Object] value to normalize
-      # @return [Hash, Object]
-      def deep_symbolize_keys(obj)
-        case obj
-        when Hash
-          obj.each_with_object({}) { |(k, v), h| h[k.to_sym] = deep_symbolize_keys(v) }
-        when Array
-          obj.map { |v| deep_symbolize_keys(v) }
-        else
-          obj
-        end
-      end
-      private :deep_symbolize_keys
 
       def diff_fields(compiled_fields_by_name, live_fields_by_name)
         compiled_names = compiled_fields_by_name.keys

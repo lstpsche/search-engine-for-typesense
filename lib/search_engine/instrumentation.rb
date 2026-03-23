@@ -38,8 +38,8 @@ module SearchEngine
         optional: %i[duration_ms]
       },
       'search_engine.grouping.compile' => {
-        required: %i[field],
-        optional: %i[collection group_by limit group_limit missing_values duration_ms]
+        required: %i[group_by],
+        optional: %i[collection group_limit missing_values duration_ms]
       },
       'search_engine.joins.compile' => {
         required: %i[collection],
