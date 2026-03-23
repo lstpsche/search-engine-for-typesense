@@ -15,6 +15,7 @@
 # - CLI (Doctor): https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/cli
 # - DX helpers: https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/dx
 # - Configuration: https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/configuration
+# - Vector search: https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/vector-search
 SearchEngine.configure do |c|
   c.host = ENV.fetch('TYPESENSE_HOST', 'localhost')
   c.port = Integer(ENV.fetch('TYPESENSE_PORT', 8108))
@@ -82,6 +83,26 @@ SearchEngine.configure do |c|
   # Override the logger used by the engine (defaults to Rails.logger). Example:
   # c.logger = Rails.logger
 
+  # --- Embedding / Vector search -------------------------------------------
+  # See: https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/vector-search
+
+  # Default embedding model used by the `embedding` DSL macro when no
+  # per-field model: override is provided. Typesense ships built-in models
+  # (e.g. "ts/all-MiniLM-L12-v2"); remote providers like OpenAI are also
+  # supported — set api_key below or per-field.
+  # c.embedding.model = 'ts/all-MiniLM-L12-v2'
+
+  # API key for remote embedding providers (e.g. OpenAI). Keep in ENV.
+  # c.embedding.api_key = ENV['EMBEDDING_API_KEY']
+
+  # Extra model_config merged into every Typesense embed block.
+  # c.embedding.model_config = {}
+
+  # Tolerance for vector_search weights sum validation (weights must sum
+  # to ~1.0 within this tolerance). Raise when many small weights cause
+  # floating-point drift. Default: 0.01
+  # c.embedding.weights_sum_tolerance = 0.01
+
   # --- Presets -------------------------------------------------------------
   # See: https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/presets
 
@@ -124,6 +145,11 @@ SearchEngine.configure do |c|
   # c.observability.max_message_length = 200
   # c.observability.include_error_messages = false
   # c.observability.emit_legacy_event_aliases = true
+
+  # Redact raw float arrays inside vector_query strings in logs/telemetry.
+  # When true (default), vectors are replaced with [<N dims>].
+  # Set to false to see raw vectors for debugging.
+  # c.observability.redact_vectors = true
 
   # OpenTelemetry integration (only when the SDK is present). Defaults shown.
   # c.opentelemetry = { enabled: false, service_name: 'search_engine' }

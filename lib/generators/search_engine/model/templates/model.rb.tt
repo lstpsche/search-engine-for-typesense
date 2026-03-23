@@ -4,9 +4,18 @@
 # Docs:
 # - https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/quickstart
 # - https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/field-selection#guardrails--errors
+# - https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/vector-search
 class SearchEngine::<%= class_name %> < SearchEngine::Base
   collection "<%= @collection_name %>"
 <% Array(@attributes).each do |(name, type)| -%>
   attribute :<%= name %>, :<%= type %>
 <% end -%>
+
+  # --- Vector search (optional) ---
+  # Auto-embedding: Typesense generates vectors from the listed text fields.
+  # Requires config.embedding.model or a per-field model: override.
+  # embedding from: %i[name description]
+  #
+  # External embedding: bring your own vectors (num_dim required).
+  # embedding :my_vector, num_dim: 384, suffix: false
 end
