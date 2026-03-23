@@ -11,8 +11,10 @@ module SearchEngine
         # Perform a vector (semantic / hybrid / ANN) search on an embedding field.
         #
         # Last call wins — Typesense supports a single `vector_query` per search.
+        # When +field+ is omitted the sole embedding declared on the model is
+        # used automatically; raises when the model has zero or multiple embeddings.
         #
-        # @param field [Symbol, String] embedding field name
+        # @param field [Symbol, String, nil] embedding field name (auto-resolved when nil)
         # @param k [Integer, nil] number of nearest neighbors
         # @param alpha [Float, nil] hybrid blend weight (0.0 = keyword, 1.0 = vector)
         # @param query [Array<Numeric>, nil] explicit embedding vector
@@ -24,11 +26,12 @@ module SearchEngine
         # @param ef [Integer, nil] HNSW ef override
         # @param flat_search_cutoff [Integer, nil] brute-force threshold
         # @return [SearchEngine::Relation]
-        def vector_search(field, k: nil, alpha: nil, query: nil, id: nil,
+        def vector_search(field = nil, k: nil, alpha: nil, query: nil, id: nil,
                           distance_threshold: nil, queries: nil, weights: nil,
                           ef: nil, flat_search_cutoff: nil)
+          resolved = resolve_vector_field(field)
           normalized = normalize_vector_search(
-            field, k: k, alpha: alpha, query: query, id: id,
+            resolved, k: k, alpha: alpha, query: query, id: id,
             distance_threshold: distance_threshold, queries: queries,
             weights: weights, ef: ef, flat_search_cutoff: flat_search_cutoff
           )
@@ -38,13 +41,15 @@ module SearchEngine
         # Find documents similar to a given document ID.
         #
         # Sugar over `vector_search` with `id:`.
+        # When +field+ is omitted the sole embedding declared on the model is
+        # used automatically (same resolution as {#vector_search}).
         #
         # @param document_id [#to_s] ID of the reference document
-        # @param field [Symbol, String] embedding field name
+        # @param field [Symbol, String, nil] embedding field name (auto-resolved when nil)
         # @param k [Integer, nil] number of nearest neighbors
         # @param distance_threshold [Float, nil] max cosine distance
         # @return [SearchEngine::Relation]
-        def find_similar(document_id, field:, k: nil, distance_threshold: nil)
+        def find_similar(document_id, field: nil, k: nil, distance_threshold: nil)
           vector_search(field, id: document_id, k: k, distance_threshold: distance_threshold)
         end
 
@@ -295,6 +300,40 @@ module SearchEngine
             doc: VECTOR_SEARCH_DOC_URL,
             details: { name => iv }
           )
+        end
+
+        # -- Field resolution ---------------------------------------------------
+
+        # Auto-resolve the embedding field when none is given explicitly.
+        # Returns the field as-is when provided, or the sole embedding field
+        # declared on the model. Raises when resolution is ambiguous or impossible.
+        #
+        # @param field [Symbol, String, nil] explicit field or nil for auto-resolution
+        # @return [Symbol, String]
+        def resolve_vector_field(field)
+          return field unless field.nil?
+
+          embeddings = vector_embeddings_map
+          case embeddings.size
+          when 1
+            embeddings.each_key.first
+          when 0
+            raise SearchEngine::Errors::InvalidVectorQuery.new(
+              "InvalidVectorQuery: cannot auto-resolve embedding field \u2014 " \
+              "no embeddings declared on #{klass_name_for_inspect}",
+              hint: 'Declare one with `embedding` in your model DSL',
+              doc: VECTOR_SEARCH_DOC_URL
+            )
+          else
+            fields_list = embeddings.keys.map { |k| ":#{k}" }.join(', ')
+            raise SearchEngine::Errors::InvalidVectorQuery.new(
+              "InvalidVectorQuery: cannot auto-resolve embedding field \u2014 " \
+              "#{klass_name_for_inspect} has multiple embeddings (#{fields_list})",
+              hint: 'Pass the field explicitly: .vector_search(:field_name)',
+              doc: VECTOR_SEARCH_DOC_URL,
+              details: { available_embeddings: embeddings.keys }
+            )
+          end
         end
 
         # -- Helpers ------------------------------------------------------------
