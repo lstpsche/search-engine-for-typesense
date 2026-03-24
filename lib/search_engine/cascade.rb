@@ -145,7 +145,7 @@ into: nil
       # when no partitions are configured.
       # @param ref_klass [Class]
       # @return [void]
-      # rubocop:disable Metrics/PerceivedComplexity
+      # rubocop:disable Metrics/PerceivedComplexity, Metrics/AbcSize
       def __se_full_reindex_for_referrer(ref_klass, client:, alias_cache:)
         logical = ref_klass.respond_to?(:collection) ? ref_klass.collection.to_s : ref_klass.name.to_s
         physical = resolve_physical_collection_name(logical, client: client, cache: alias_cache)
@@ -184,12 +184,13 @@ into: nil
 
           if parts.empty?
             coll_display = physical && physical != logical ? "#{logical} (physical: #{physical})" : logical
-            puts(%(  Referencer "#{coll_display}" — partitions=0 → skip))
+            puts(SearchEngine::Logging::Color.dim(%(  Referencer "#{coll_display}" — partitions=0 → skip)))
             return false
           end
 
           coll_display = physical && physical != logical ? "#{logical} (physical: #{physical})" : logical
-          puts(%(  Referencer "#{coll_display}" — partitions=#{parts.size} parallel=#{compiled.max_parallel}))
+          parts_str = SearchEngine::Logging::Color.bold("partitions=#{parts.size}")
+          puts(%(  Referencer "#{coll_display}" — #{parts_str} parallel=#{compiled.max_parallel}))
           mp = compiled.max_parallel.to_i
           if mp > 1 && parts.size > 1
             require 'concurrent-ruby'
@@ -211,13 +212,13 @@ into: nil
 
         else
           coll_display = physical && physical != logical ? "#{logical} (physical: #{physical})" : logical
-          puts(%(  Referencer "#{coll_display}" — single))
+          puts(%(  Referencer "#{coll_display}" — #{SearchEngine::Logging::Color.bold('single')}))
           SearchEngine::Indexer.rebuild_partition!(ref_klass, partition: nil, into: nil)
           executed = true
         end
         executed
       end
-      # rubocop:enable Metrics/PerceivedComplexity
+      # rubocop:enable Metrics/PerceivedComplexity, Metrics/AbcSize
 
       # Resolve logical alias to physical name with optional per-run memoization.
       # @param logical [String]
@@ -333,27 +334,31 @@ into: nil
       def reindex_referencer_with_fresh_schema!(ref_klass, logical, physical, client:, force_rebuild: false)
         coll_display = physical && physical != logical ? "#{logical} (physical: #{physical})" : logical
         action = force_rebuild ? 'force_rebuild index_collection' : 'index_collection'
-        puts(%(  Referencer "#{coll_display}" — schema rebuild required, running #{action}))
+        status_word = SearchEngine::Logging::Color.apply("schema rebuild required, running #{action}", :yellow)
+        puts(%(  Referencer "#{coll_display}" — #{status_word}))
 
         SearchEngine::Instrumentation.with_context(bulk_suppress_cascade: true) do
           ref_klass.index_collection(client: client, pre: :ensure, force_rebuild: force_rebuild)
         end
         true
       rescue StandardError => error
-        puts(%(  Referencer "#{logical}" — schema rebuild failed: #{error.message}))
+        err_line = %(  Referencer "#{logical}" — schema rebuild failed: #{error.message})
+        puts(SearchEngine::Logging::Color.apply(err_line, :red))
         false
       end
 
       def reindex_referencer_with_drop!(ref_klass, logical, physical)
         coll_display = physical && physical != logical ? "#{logical} (physical: #{physical})" : logical
-        puts(%(  Referencer "#{coll_display}" — force reindex (drop+index)))
+        status_word = SearchEngine::Logging::Color.apply('force reindex (drop+index)', :yellow)
+        puts(%(  Referencer "#{coll_display}" — #{status_word}))
 
         SearchEngine::Instrumentation.with_context(bulk_suppress_cascade: true) do
           ref_klass.reindex_collection!
         end
         true
       rescue StandardError => error
-        puts(%(  Referencer "#{logical}" — force reindex failed: #{error.message}))
+        err_line = %(  Referencer "#{logical}" — force reindex failed: #{error.message})
+        puts(SearchEngine::Logging::Color.apply(err_line, :red))
         false
       end
 

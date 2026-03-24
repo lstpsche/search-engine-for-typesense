@@ -28,13 +28,18 @@ module SearchEngine
           def update_collection!
             client = SearchEngine.client
 
-            puts 'Update Collection — analyzing diff for in-place update...'
+            status_word = SearchEngine::Logging::Color.bold('analyzing diff for in-place update...')
+            puts "Update Collection — #{status_word}"
             updated = SearchEngine::Schema.update!(self, client: client)
 
             if updated
-              puts 'Update Collection — schema updated in-place (PATCH)'
+              status_word = SearchEngine::Logging::Color.apply('schema updated in-place (PATCH)', :green)
+              puts "Update Collection — #{status_word}"
             else
-              puts 'Update Collection — in-place update not possible (no changes or incompatible)'
+              msg = SearchEngine::Logging::Color.dim(
+                'Update Collection — in-place update not possible (no changes or incompatible)'
+              )
+              puts(msg)
             end
             updated
           end
@@ -53,17 +58,19 @@ module SearchEngine
                        end
 
             if physical.nil?
-              puts('Drop Collection — skip (not present)')
+              puts(SearchEngine::Logging::Color.dim('Drop Collection — skip (not present)'))
               return
             end
 
             puts
-            puts(%(>>>>>> Dropping Collection "#{logical}"))
-            puts("Drop Collection — processing (logical=#{logical} physical=#{physical})")
+            header = SearchEngine::Logging::Color.header(%(>>>>>> Dropping Collection "#{logical}"))
+            puts(header)
+            status_word = SearchEngine::Logging::Color.bold('processing')
+            puts("Drop Collection — #{status_word} (logical=#{logical} physical=#{physical})")
             # Use an extended timeout to accommodate large collection drops
             client.delete_collection(physical, timeout_ms: 60_000)
-            puts('Drop Collection — done')
-            puts(%(>>>>>> Dropped Collection "#{logical}"))
+            puts("Drop Collection — #{SearchEngine::Logging::Color.apply('done', :green)}")
+            puts(SearchEngine::Logging::Color.header(%(>>>>>> Dropped Collection "#{logical}")))
             nil
           end
 
@@ -80,16 +87,19 @@ module SearchEngine
                        end
 
             if physical
-              puts("Recreate Collection — dropping existing (logical=#{logical} physical=#{physical})")
+              status_word = SearchEngine::Logging::Color.apply('dropping existing', :yellow)
+              puts("Recreate Collection — #{status_word} (logical=#{logical} physical=#{physical})")
               client.delete_collection(physical)
             else
-              puts('Recreate Collection — no existing collection (skip drop)')
+              msg = SearchEngine::Logging::Color.dim('Recreate Collection — no existing collection (skip drop)')
+              puts(msg)
             end
 
             schema = SearchEngine::Schema.compile(self)
-            puts("Recreate Collection — creating collection with schema (logical=#{logical})")
+            status_word = SearchEngine::Logging::Color.bold('creating collection with schema')
+            puts("Recreate Collection — #{status_word} (logical=#{logical})")
             client.create_collection(schema)
-            puts('Recreate Collection — done')
+            puts("Recreate Collection — #{SearchEngine::Logging::Color.apply('done', :green)}")
             nil
           end
 

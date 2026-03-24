@@ -12,7 +12,7 @@ module SearchEngine
       module_function
 
       # @param str [String]
-      # @param color [Symbol] one of :green, :yellow, :red
+      # @param color [Symbol] one of :green, :yellow, :red, :cyan
       # @return [String]
       def apply(str, color)
         return str unless enabled?
@@ -21,6 +21,7 @@ module SearchEngine
                when :green then 32
                when :yellow then 33
                when :red then 31
+               when :cyan then 36
                else 0
                end
         return str if code.zero?
@@ -35,6 +36,22 @@ module SearchEngine
         return str unless enabled?
 
         "\e[1m#{str}\e[0m"
+      end
+
+      # Apply dim styling to de-emphasize text (skip/no-op states).
+      # @param str [String]
+      # @return [String]
+      def dim(str)
+        return str unless enabled?
+
+        "\e[2m#{str}\e[0m"
+      end
+
+      # Bold text for section headers (>>>>>> lines).
+      # @param str [String]
+      # @return [String]
+      def header(str)
+        bold(str)
       end
 
       # Map indexation status to a color.

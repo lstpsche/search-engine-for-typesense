@@ -553,10 +553,8 @@ module SearchEngine
           started = monotonic_ms
           callable.call
         rescue StandardError => error
-          puts "error: #{error.backtrace.join("\n")}"
-          puts '--------------------------------'
-          puts '--------------------------------'
-          puts '--------------------------------'
+          puts SearchEngine::Cli::Support.fmt_err("#{error.class}: #{error.message}")
+          puts SearchEngine::Cli::Support.fmt_err(error.backtrace.first(5).join("\n"))
           failure(callable.name, started, error, hint: 'Unexpected error', doc: nil)
         end
       end

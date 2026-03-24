@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'search_engine/logging/color'
+require 'search_engine/logging/batch_line'
 
 module SearchEngine
   class Indexer
@@ -141,7 +142,7 @@ module SearchEngine
           shared_state = initialize_shared_state
           producer_error = nil
 
-          puts('  Starting parallel batch processing...') if log_batches
+          puts(SearchEngine::Logging::Color.dim('  Starting parallel batch processing...')) if log_batches
           started_at = monotonic_ms
 
           # Producer thread: fetch batches lazily and push to queue
@@ -154,15 +155,17 @@ module SearchEngine
               next unless log_batches && (batch_count % 10).zero?
 
               elapsed = (monotonic_ms - started_at).round(1)
-              if total_batches_estimate
-                puts("  Processed #{batch_count}/#{total_batches_estimate} batches... (#{elapsed}ms)")
-              else
-                puts("  Processed #{batch_count} batches... (#{elapsed}ms)")
-              end
+              progress = if total_batches_estimate
+                           "  Processed #{batch_count}/#{total_batches_estimate} batches... (#{elapsed}ms)"
+                         else
+                           "  Processed #{batch_count} batches... (#{elapsed}ms)"
+                         end
+              puts(SearchEngine::Logging::Color.dim(progress))
             end
           rescue StandardError => error
             producer_error = error
-            warn("  Producer failed at batch #{batch_count}: #{error.class}: #{error.message.to_s[0, 200]}")
+            err_msg = "  Producer failed at batch #{batch_count}: #{error.class}: #{error.message.to_s[0, 200]}"
+            warn(SearchEngine::Logging::Color.apply(err_msg, :red))
           ensure
             # Signal completion to all workers
             max_parallel.times { batch_queue.push(sentinel) }
@@ -299,7 +302,8 @@ module SearchEngine
             failure_stat = failure_stats(thread_idx, docs_count, 0, error)
 
             shared_state[:mtx].synchronize do
-              warn("  batch_index=#{thread_idx} → error=#{error.class}: #{error.message.to_s[0, 200]}")
+              err_msg = "  batch_index=#{thread_idx} → error=#{error.class}: #{error.message.to_s[0, 200]}"
+              warn(SearchEngine::Logging::Color.apply(err_msg, :red))
               aggregate_stats([failure_stat], shared_state, batch_size, log_batches)
             end
           end
@@ -572,53 +576,7 @@ module SearchEngine
         end
 
         def log_batch(stats, batch_number)
-          batch_status = batch_status_from_stats(stats)
-          status_color = SearchEngine::Logging::Color.for_status(batch_status)
-
-          prefix = batch_number == 1 ? '  single → ' : '          '
-          line = +prefix
-          line << SearchEngine::Logging::Color.apply("status=#{batch_status}", status_color) << ' '
-          line << "docs=#{stats[:docs_count]}" << ' '
-          success_count = stats[:success_count].to_i
-          success_str = "success=#{success_count}"
-          line << (
-            success_count.positive? ? SearchEngine::Logging::Color.bold(success_str) : success_str
-          ) << ' '
-          failed_count = stats[:failure_count].to_i
-          failed_str = "failed=#{failed_count}"
-          line << (failed_count.positive? ? SearchEngine::Logging::Color.apply(failed_str, :red) : failed_str) << ' '
-          line << "batch=#{batch_number} "
-          line << "duration_ms=#{stats[:duration_ms]}"
-
-          # Extract sample error from batch stats
-          sample_err = extract_batch_sample_error(stats)
-          line << " sample_error=#{sample_err.inspect}" if sample_err
-
-          puts(line)
-        end
-
-        def extract_batch_sample_error(stats)
-          samples = stats[:errors_sample] || stats['errors_sample']
-          return nil unless samples.is_a?(Array) && samples.any?
-
-          samples.each do |msg|
-            s = msg.to_s
-            return s unless s.strip.empty?
-          end
-          nil
-        end
-
-        def batch_status_from_stats(stats)
-          success_count = stats[:success_count].to_i
-          failure_count = stats[:failure_count].to_i
-
-          if failure_count.positive? && success_count.positive?
-            :partial
-          elsif failure_count.positive?
-            :failed
-          else
-            :ok
-          end
+          puts(SearchEngine::Logging::BatchLine.format(stats, batch_number))
         end
       end
     end
