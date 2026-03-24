@@ -325,12 +325,17 @@ module SearchEngine
           parts.each_with_index do |part, idx|
             slot = renderer[idx]
             slot.start
-            on_batch = ->(info) { slot.progress(**info) }
-            summary = SearchEngine::Indexer.rebuild_partition!(
-              self, partition: part, into: into, on_batch: on_batch
-            )
-            slot.finish(summary)
-            summaries << summary
+            begin
+              on_batch = ->(info) { slot.progress(**info) }
+              summary = SearchEngine::Indexer.rebuild_partition!(
+                self, partition: part, into: into, on_batch: on_batch
+              )
+              slot.finish(summary)
+              summaries << summary
+            rescue StandardError => error
+              slot.finish_error(error)
+              raise
+            end
           end
 
           begin
