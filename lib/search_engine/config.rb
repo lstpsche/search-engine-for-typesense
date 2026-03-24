@@ -103,6 +103,8 @@ module SearchEngine
       attr_accessor :dispatch
       # @return [String] queue name for ActiveJob enqueues
       attr_accessor :queue_name
+      # @return [Boolean] whether to run model.count for progress bar estimates (default true)
+      attr_accessor :estimate_progress
 
       def initialize
         @batch_size = 2000
@@ -111,6 +113,7 @@ module SearchEngine
         @gzip = false
         @dispatch = active_job_available? ? :active_job : :inline
         @queue_name = 'search_index'
+        @estimate_progress = true
       end
 
       private
@@ -720,7 +723,8 @@ module SearchEngine
         retries: indexer.retries,
         gzip: indexer.gzip ? true : false,
         dispatch: indexer.dispatch,
-        queue_name: indexer.queue_name
+        queue_name: indexer.queue_name,
+        estimate_progress: indexer.estimate_progress
       }
     end
 

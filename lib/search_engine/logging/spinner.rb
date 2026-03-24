@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require 'search_engine/logging/cursor_guard'
+
 module SearchEngine
   module Logging
     # Animated braille spinner for long-running terminal operations.
@@ -7,7 +9,7 @@ module SearchEngine
     # Runs a background thread that cycles through braille spinner frames,
     # overwriting the current line at a fixed interval. Thread-safe text
     # updates via {#update}. Hides the cursor while spinning and guarantees
-    # restore via +at_exit+.
+    # restore via {CursorGuard}.
     #
     # Only useful on TTY -- callers should gate on {Color.enabled?}.
     #
@@ -30,7 +32,6 @@ module SearchEngine
         @thread = nil
         @running = false
         @text = nil
-        @restore_registered = false
       end
 
       # Begin spinning with the given text. Hides the cursor.
@@ -43,7 +44,7 @@ module SearchEngine
 
           @text = text
           @running = true
-          hide_cursor
+          CursorGuard.hide(@io)
           @thread = Thread.new { spin_loop }
         end
       end
@@ -60,7 +61,7 @@ module SearchEngine
         end
         @thread&.join
         @thread = nil
-        show_cursor
+        CursorGuard.show(@io)
       end
 
       # Change the text while spinning (thread-safe).
@@ -80,37 +81,25 @@ module SearchEngine
 
       def spin_loop
         frame_idx = 0
-        @mutex.synchronize do
-          while @running
-            render(FRAMES[frame_idx % FRAMES.size])
-            frame_idx += 1
+        loop do
+          text = @mutex.synchronize do
+            break unless @running
+
             @stop_signal.wait(@mutex, INTERVAL)
+            break unless @running
+
+            @text
           end
+          break if text.nil?
+
+          render(FRAMES[frame_idx % FRAMES.size], text)
+          frame_idx += 1
         end
       end
 
-      def render(frame)
-        @io.write("\r\e[K#{frame} #{@text}")
+      def render(frame, text)
+        @io.write("\r\e[K#{frame} #{text}")
         @io.flush
-      end
-
-      def hide_cursor
-        @io.write("\e[?25l")
-        @io.flush
-        register_cursor_restore
-      end
-
-      def show_cursor
-        @io.write("\e[?25h")
-        @io.flush
-      end
-
-      def register_cursor_restore
-        return if @restore_registered
-
-        io = @io
-        at_exit { io.write("\e[?25h") if io.respond_to?(:write) }
-        @restore_registered = true
       end
     end
   end

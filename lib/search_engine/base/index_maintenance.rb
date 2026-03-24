@@ -328,12 +328,12 @@ module SearchEngine
             )
             slot.finish(summary)
             summaries << summary
-          rescue StandardError => error
-            renderer[idx].finish_error(error)
           end
 
           renderer.stop
           __se_build_index_result(summaries)
+        ensure
+          renderer&.stop
         end
       end
 
@@ -381,20 +381,19 @@ module SearchEngine
               rescue StandardError => error
                 renderer[idx].finish_error(error)
                 mtx.synchronize do
-                  partition_errors << "#{error.class}: #{error.message.to_s[0, 200]}"
+                  cancelled.make_true
+                  partition_errors << error unless partition_errors.any?
                 end
               end
             end
           end
 
           renderer.stop
+          raise partition_errors.first if partition_errors.any?
 
-          result = __se_build_index_result(summaries)
-          if partition_errors.any?
-            result[:status] = :failed
-            result[:sample_error] ||= partition_errors.first
-          end
-          result
+          __se_build_index_result(summaries)
+        ensure
+          renderer&.stop
         end
       end
 
