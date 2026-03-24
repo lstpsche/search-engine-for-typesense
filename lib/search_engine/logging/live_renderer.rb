@@ -30,6 +30,7 @@ module SearchEngine
       FRAMES    = %w[⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏].freeze
       INTERVAL  = 0.1 # seconds per render tick
       BAR_WIDTH = 20
+      VIEWPORT_MARGIN = 3
 
       # @param labels [Array<String>] display label for each slot (partition key)
       # @param partitions [Array, nil] raw partition values for non-TTY output (defaults to labels)
@@ -48,6 +49,7 @@ module SearchEngine
         @slots = labels.each_with_index.map do |label, idx|
           Slot.new(label: label, partition: raw[idx], estimate: per_partition_estimate, on_done: nontty_cb)
         end
+        @viewport = resolve_viewport
       end
 
       # Start the background render thread. Hides the cursor on TTY.
@@ -107,7 +109,7 @@ module SearchEngine
             @stop_signal.wait(@mutex, INTERVAL)
             break unless @running
 
-            @slots.map { |slot| slot.render(frame_idx) }
+            compact? ? build_viewport_lines(frame_idx) : @slots.map { |slot| slot.render(frame_idx) }
           end
           break if lines.nil?
 
@@ -128,9 +130,79 @@ module SearchEngine
       def render_final_frame
         return if @slots.empty?
 
-        @io.write("\e[#{@slots.size}A") if @rendered_once
+        @io.write("\e[#{compact? ? @viewport : @slots.size}A") if @rendered_once
         @slots.each { |slot| @io.write("\r\e[K#{slot.render_final}\n") }
         @io.flush
+      end
+
+      def resolve_viewport
+        return @slots.size unless @tty
+
+        max = terminal_height - VIEWPORT_MARGIN
+        return @slots.size if max < 1 || @slots.size <= max
+
+        max
+      end
+
+      def terminal_height
+        require 'io/console'
+        IO.console&.winsize&.first || 24
+      rescue StandardError
+        24
+      end
+
+      def compact?
+        @viewport < @slots.size
+      end
+
+      # Build a fixed-size frame showing a summary header, active slots, and
+      # recent completions — capped to @viewport lines so cursor-up stays
+      # within terminal bounds.
+      def build_viewport_lines(frame_idx)
+        available = @viewport - 1
+        lines = [viewport_header]
+
+        active = []
+        done = []
+        @slots.each do |slot|
+          case slot.state
+          when :in_progress then active << slot
+          when :done, :error then done << slot
+          end
+        end
+
+        shown_active = active.first(available)
+        shown_active.each { |s| lines << s.render(frame_idx) }
+        available -= shown_active.size
+
+        if available.positive?
+          shown_done = done.last(available)
+          shown_done.each { |s| lines << s.render_final }
+          available -= shown_done.size
+        end
+
+        available.times { lines << '' }
+        lines
+      end
+
+      def viewport_header
+        done_count = 0
+        active_count = 0
+        error_count = 0
+        @slots.each do |s|
+          case s.state
+          when :done then done_count += 1
+          when :error then error_count += 1
+          when :in_progress then active_count += 1
+          end
+        end
+        pending_count = @slots.size - done_count - error_count - active_count
+
+        parts = +"    #{done_count}/#{@slots.size} done"
+        parts << " | #{active_count} active" if active_count.positive?
+        parts << " | #{pending_count} pending" if pending_count.positive?
+        parts << " | #{Color.apply("#{error_count} failed", :red)}" if error_count.positive?
+        parts
       end
 
       def flush_nontty_slot(slot)
