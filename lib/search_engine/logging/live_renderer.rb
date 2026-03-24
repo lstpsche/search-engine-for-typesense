@@ -401,10 +401,9 @@ module SearchEngine
             filled = [(ratio * BAR_WIDTH).round, BAR_WIDTH].min
             empty = BAR_WIDTH - filled
             bar = "\u2588" * filled + "\u2591" * empty
-            batch_info = @batches_done.positive? ? "#{@batches_done} batches  " : ''
-            "#{bar}  #{pct}%  #{batch_info}(#{@docs_total}/#{@docs_estimate} docs)"
+            "#{bar}  #{pct}%  (#{@docs_total}/#{@docs_estimate} docs)"
           elsif @batches_done.positive?
-            "#{@batches_done} batches  (#{@docs_total} docs)"
+            "(#{@docs_total} docs)"
           else
             ''
           end
