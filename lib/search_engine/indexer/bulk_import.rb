@@ -25,9 +25,11 @@ module SearchEngine
         # @param action [Symbol] :upsert (default), :create, or :update
         # @param log_batches [Boolean] whether to log each batch as it completes (default: true)
         # @param max_parallel [Integer] maximum parallel threads for batch processing (default: 1)
+        # @param on_batch [Proc, nil] called after each batch with progress counters
         # @return [SearchEngine::Indexer::Summary]
         # @raise [SearchEngine::Errors::InvalidParams]
-        def call(klass:, into:, enum:, batch_size:, action: DEFAULT_ACTION, log_batches: true, max_parallel: 1)
+        def call(klass:, into:, enum:, batch_size:, action: DEFAULT_ACTION, log_batches: true, max_parallel: 1,
+                 on_batch: nil)
           validate_args!(klass, into, enum, action)
           mp = max_parallel.to_i
           mp = 1 unless mp.positive?
@@ -35,12 +37,12 @@ module SearchEngine
           if mp > 1
             call_parallel(
               klass: klass, into: into, enum: enum, batch_size: batch_size, action: action,
-              log_batches: log_batches, max_parallel: mp
+              log_batches: log_batches, max_parallel: mp, on_batch: on_batch
             )
           else
             call_sequential(
               klass: klass, into: into, enum: enum, batch_size: batch_size, action: action,
-              log_batches: log_batches
+              log_batches: log_batches, on_batch: on_batch
             )
           end
         end
@@ -56,7 +58,7 @@ module SearchEngine
         # @param action [Symbol] :upsert, :create, or :update
         # @param log_batches [Boolean] whether to log each batch as it completes
         # @return [SearchEngine::Indexer::Summary]
-        def call_sequential(klass:, into:, enum:, batch_size:, action:, log_batches:)
+        def call_sequential(klass:, into:, enum:, batch_size:, action:, log_batches:, on_batch: nil)
           docs_enum = normalize_enum(enum)
           retry_policy = RetryPolicy.from_config(SearchEngine.config.indexer&.retries)
           client = SearchEngine.client
@@ -92,6 +94,10 @@ module SearchEngine
               batches << stats
               validate_soft_batch_size!(batch_size, stats[:docs_count])
               log_batch(stats, batches_total) if log_batches
+              on_batch&.call(
+                batches_done: batches_total, docs_total: docs_total,
+                success_total: success_total, failed_total: failed_total
+              )
             end
           end
 
@@ -126,7 +132,7 @@ module SearchEngine
         # @param log_batches [Boolean] whether to log each batch as it completes
         # @param max_parallel [Integer] maximum number of parallel threads
         # @return [SearchEngine::Indexer::Summary]
-        def call_parallel(klass:, into:, enum:, batch_size:, action:, log_batches:, max_parallel:)
+        def call_parallel(klass:, into:, enum:, batch_size:, action:, log_batches:, max_parallel:, on_batch: nil)
           require 'concurrent-ruby'
 
           docs_enum = normalize_enum(enum)
@@ -138,6 +144,7 @@ module SearchEngine
           retry_policy = RetryPolicy.from_config(SearchEngine.config.indexer&.retries)
           pool = Concurrent::FixedThreadPool.new(max_parallel)
           shared_state = initialize_shared_state
+          shared_state[:on_batch] = on_batch
           producer_error = nil
 
           puts(SearchEngine::Logging::Color.dim('  Starting parallel batch processing...')) if log_batches
@@ -322,23 +329,27 @@ module SearchEngine
             )
 
             shared_state[:mtx].synchronize do
-              aggregate_stats(stats_list, shared_state, batch_size, log_batches)
+              aggregate_stats(
+                stats_list, shared_state, batch_size, log_batches,
+                on_batch: shared_state[:on_batch]
+              )
             end
           rescue StandardError => error
-            # Calculate document count for error stats (before any potential encoding errors)
             docs_count = begin
               BatchPlanner.to_array(raw_batch).size
             rescue StandardError
               0
             end
 
-            # Create failure stats similar to import_batch_with_handling_internal error path
             failure_stat = failure_stats(thread_idx, docs_count, 0, error)
 
             shared_state[:mtx].synchronize do
               err_msg = "  batch_index=#{thread_idx} → error=#{error.class}: #{error.message.to_s[0, 200]}"
               warn(SearchEngine::Logging::Color.apply(err_msg, :red))
-              aggregate_stats([failure_stat], shared_state, batch_size, log_batches)
+              aggregate_stats(
+                [failure_stat], shared_state, batch_size, log_batches,
+                on_batch: shared_state[:on_batch]
+              )
             end
           end
         end
@@ -353,7 +364,7 @@ module SearchEngine
         # @param batch_size [Integer, nil] soft guard for logging when exceeded
         # @param log_batches [Boolean] whether to log each batch as it completes
         # @return [void]
-        def aggregate_stats(stats_list, shared_state, batch_size, log_batches)
+        def aggregate_stats(stats_list, shared_state, batch_size, log_batches, on_batch: nil)
           stats_list.each do |stats|
             shared_state[:docs_total] += stats[:docs_count].to_i
             shared_state[:success_total] += stats[:success_count].to_i
@@ -363,6 +374,10 @@ module SearchEngine
             shared_state[:batches] << stats
             validate_soft_batch_size!(batch_size, stats[:docs_count])
             log_batch(stats, shared_state[:batches_total]) if log_batches
+            on_batch&.call(
+              batches_done: shared_state[:batches_total], docs_total: shared_state[:docs_total],
+              success_total: shared_state[:success_total], failed_total: shared_state[:failed_total]
+            )
           end
         end
 
@@ -444,6 +459,8 @@ module SearchEngine
             nil
           end
         end
+
+        public :estimate_total_batches
 
         def mapper_dsl_for_klass(klass)
           return nil unless klass.instance_variable_defined?(:@__mapper_dsl__)
