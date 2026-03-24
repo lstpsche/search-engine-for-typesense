@@ -1,13 +1,14 @@
 # frozen_string_literal: true
 
 require 'search_engine/logging/color'
+require 'search_engine/logging/spinner'
 
 module SearchEngine
   module Logging
     # Manages a single terminal line that can be overwritten in-place.
     #
-    # On TTY: writes without trailing newline, overwrites via +\r\e[K+ on
-    # subsequent calls, finalizes with a newline.
+    # On TTY: starts an animated {Spinner} when {#update} is called,
+    # cycling braille frames until a finalization method is called.
     # On non-TTY: buffers the pending text and only emits it when
     # {#yield_line!} is called; atomic operations (no sub-output) produce
     # exactly one output line.
@@ -41,6 +42,8 @@ module SearchEngine
         @active = false
         @yielded = false
         @buffered = nil
+        @spinner = nil
+        @last_detail = nil
         @started_at = now
       end
 
@@ -49,9 +52,10 @@ module SearchEngine
       # @param detail [String, nil] optional status text
       # @return [void]
       def update(detail = nil)
+        @last_detail = detail
         if @tty && !@yielded
-          @io.write("\r\e[K#{format_line(PENDING, @label, detail)}")
-          @io.flush
+          body = step_text(@label, detail)
+          @spinner ? @spinner.update(body) : start_spinner!(body)
           @active = true
         else
           @buffered = format_line(PENDING, @label, detail) unless @yielded
@@ -96,8 +100,9 @@ module SearchEngine
       def yield_line!
         return if @yielded
 
+        stop_spinner!
         if @tty && @active
-          @io.write("\n")
+          @io.write("\r\e[K#{format_line(PENDING, @label, @last_detail)}\n")
           @active = false
         elsif @buffered
           @io.puts(@buffered)
@@ -109,6 +114,7 @@ module SearchEngine
       private
 
       def write_final(text)
+        stop_spinner!
         @buffered = nil
         if @tty && @active && !@yielded
           @io.write("\r\e[K#{text}\n")
@@ -119,9 +125,26 @@ module SearchEngine
         @yielded = true
       end
 
-      def format_line(symbol, label, detail, elapsed: nil)
-        parts = +"#{symbol} #{label}"
+      def start_spinner!(text)
+        @spinner = Spinner.new(io: @io)
+        @spinner.start(text)
+      end
+
+      def stop_spinner!
+        return unless @spinner
+
+        @spinner.stop
+        @spinner = nil
+      end
+
+      def step_text(label, detail)
+        parts = +label.to_s
         parts << " \u2014 #{detail}" if detail
+        parts
+      end
+
+      def format_line(symbol, label, detail, elapsed: nil)
+        parts = +"#{symbol} #{step_text(label, detail)}"
         parts << " (#{elapsed}s)" if elapsed && elapsed >= 0.1
         parts
       end

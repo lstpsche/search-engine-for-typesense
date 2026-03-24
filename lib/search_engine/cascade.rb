@@ -145,7 +145,7 @@ into: nil
       # when no partitions are configured.
       # @param ref_klass [Class]
       # @return [void]
-      # rubocop:disable Metrics/PerceivedComplexity, Metrics/AbcSize
+      # rubocop:disable Metrics/AbcSize
       def __se_full_reindex_for_referrer(ref_klass, client:, alias_cache:)
         logical = ref_klass.respond_to?(:collection) ? ref_klass.collection.to_s : ref_klass.name.to_s
         physical = resolve_physical_collection_name(logical, client: client, cache: alias_cache)
@@ -197,13 +197,9 @@ into: nil
             pool = Concurrent::FixedThreadPool.new(mp)
             ctx = SearchEngine::Instrumentation.context
             mtx = Mutex.new
-            begin
+            on_interrupt = -> { warn("\n  Interrupted — stopping parallel cascade workers…") }
+            SearchEngine::InterruptiblePool.run(pool, on_interrupt: on_interrupt) do
               post_partitions_to_pool!(pool, ctx, parts, ref_klass, mtx)
-            ensure
-              pool.shutdown
-              # Wait up to 1 hour, then force-kill and wait a bit more to ensure cleanup
-              pool.wait_for_termination(3600) || pool.kill
-              pool.wait_for_termination(60)
             end
             executed = true
           else
@@ -218,7 +214,7 @@ into: nil
         end
         executed
       end
-      # rubocop:enable Metrics/PerceivedComplexity, Metrics/AbcSize
+      # rubocop:enable Metrics/AbcSize
 
       # Resolve logical alias to physical name with optional per-run memoization.
       # @param logical [String]

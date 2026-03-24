@@ -129,13 +129,11 @@ module SearchEngine
         def call_parallel(klass:, into:, enum:, batch_size:, action:, log_batches:, max_parallel:)
           require 'concurrent-ruby'
 
-          # Use producer-consumer pattern with bounded queue to avoid full materialization
-          # Queue capacity = max_parallel * 2 to keep workers busy while producer fetches
           docs_enum = normalize_enum(enum)
           total_batches_estimate = estimate_total_batches(klass)
           queue_capacity = max_parallel * 2
           batch_queue = SizedQueue.new(queue_capacity)
-          sentinel = Object.new # Unique object to signal completion
+          sentinel = Object.new
 
           retry_policy = RetryPolicy.from_config(SearchEngine.config.indexer&.retries)
           pool = Concurrent::FixedThreadPool.new(max_parallel)
@@ -145,54 +143,32 @@ module SearchEngine
           puts(SearchEngine::Logging::Color.dim('  Starting parallel batch processing...')) if log_batches
           started_at = monotonic_ms
 
-          # Producer thread: fetch batches lazily and push to queue
-          producer_thread = Thread.new do
-            batch_count = 0
-            docs_enum.each do |batch|
-              batch_queue.push(batch)
-              batch_count += 1
-              # Log progress every 10 batches
-              next unless log_batches && (batch_count % 10).zero?
+          producer_thread = start_producer_thread(
+            docs_enum, batch_queue, sentinel, max_parallel, shared_state[:cancelled],
+            log_batches: log_batches, started_at: started_at, total_estimate: total_batches_estimate
+          ) { |err| producer_error = err }
 
-              elapsed = (monotonic_ms - started_at).round(1)
-              progress = if total_batches_estimate
-                           "  Processed #{batch_count}/#{total_batches_estimate} batches... (#{elapsed}ms)"
-                         else
-                           "  Processed #{batch_count} batches... (#{elapsed}ms)"
-                         end
-              puts(SearchEngine::Logging::Color.dim(progress))
-            end
-          rescue StandardError => error
-            producer_error = error
-            err_msg = "  Producer failed at batch #{batch_count}: #{error.class}: #{error.message.to_s[0, 200]}"
-            warn(SearchEngine::Logging::Color.apply(err_msg, :red))
-          ensure
-            # Signal completion to all workers
-            max_parallel.times { batch_queue.push(sentinel) }
-          end
-
-          # Worker threads: consume batches from queue
-          begin
+          SearchEngine::InterruptiblePool.run(
+            pool,
+            on_interrupt: -> { interrupt_parallel!(shared_state[:cancelled], batch_queue) }
+          ) do
             process_batches_from_queue(
-              batch_queue: batch_queue,
-              sentinel: sentinel,
-              into: into,
-              action: action,
-              retry_policy: retry_policy,
-              batch_size: batch_size,
-              log_batches: log_batches,
-              pool: pool,
-              shared_state: shared_state,
-              max_parallel: max_parallel
+              batch_queue: batch_queue, sentinel: sentinel, into: into, action: action,
+              retry_policy: retry_policy, batch_size: batch_size, log_batches: log_batches,
+              pool: pool, shared_state: shared_state, max_parallel: max_parallel
             )
-          ensure
-            shutdown_pool(pool)
-            producer_thread.join if producer_thread.alive?
           end
+          producer_thread.join if producer_thread.alive?
 
           raise producer_error if producer_error
 
           build_summary(klass, shared_state)
+        ensure
+          begin
+            producer_thread&.join(5) if producer_thread&.alive?
+          rescue StandardError
+            nil
+          end
         end
 
         # Initialize shared state hash for parallel batch processing.
@@ -212,8 +188,62 @@ module SearchEngine
             batches_total: 0,
             idx_counter: -1,
             started_at: monotonic_ms,
-            mtx: Mutex.new
+            mtx: Mutex.new,
+            cancelled: Concurrent::AtomicBoolean.new(false)
           }
+        end
+
+        # Launch the producer thread that lazily fetches batches and pushes them to the queue.
+        #
+        # @param docs_enum [Enumerator] lazy batch enumerator
+        # @param batch_queue [SizedQueue] bounded queue for producer→worker communication
+        # @param sentinel [Object] unique object to signal completion
+        # @param max_parallel [Integer] number of workers (determines sentinel count)
+        # @param cancelled [Concurrent::AtomicBoolean] cooperative cancellation flag
+        # @param log_batches [Boolean]
+        # @param started_at [Float] monotonic start time for progress logging
+        # @param total_estimate [Integer, nil] estimated total batch count
+        # @yield [error] called with the error if the producer fails
+        # @return [Thread]
+        def start_producer_thread(docs_enum, batch_queue, sentinel, max_parallel, cancelled,
+                                  log_batches:, started_at:, total_estimate:)
+          Thread.new do
+            batch_count = 0
+            docs_enum.each do |batch|
+              break if cancelled.true?
+
+              batch_queue.push(batch)
+              batch_count += 1
+              next unless log_batches && (batch_count % 10).zero?
+
+              elapsed = (monotonic_ms - started_at).round(1)
+              progress = if total_estimate
+                           "  Processed #{batch_count}/#{total_estimate} batches... (#{elapsed}ms)"
+                         else
+                           "  Processed #{batch_count} batches... (#{elapsed}ms)"
+                         end
+              puts(SearchEngine::Logging::Color.dim(progress))
+            end
+          rescue StandardError => error
+            yield error if block_given?
+            err_msg = "  Producer failed at batch #{batch_count}: #{error.class}: #{error.message.to_s[0, 200]}"
+            warn(SearchEngine::Logging::Color.apply(err_msg, :red))
+          ensure
+            begin
+              max_parallel.times { batch_queue.push(sentinel) }
+            rescue ClosedQueueError
+              # Queue closed during interrupt — workers are being terminated
+            end
+          end
+        end
+
+        # @param cancelled [Concurrent::AtomicBoolean]
+        # @param batch_queue [SizedQueue]
+        # @return [void]
+        def interrupt_parallel!(cancelled, batch_queue)
+          warn("\n  Interrupted — stopping parallel workers…")
+          cancelled.make_true
+          batch_queue.close
         end
 
         # Process batches from a queue using worker threads.
@@ -234,11 +264,15 @@ module SearchEngine
         # @return [void]
         def process_batches_from_queue(batch_queue:, sentinel:, into:, action:, retry_policy:, batch_size:,
                                        log_batches:, pool:, shared_state:, max_parallel:)
+          cancelled = shared_state[:cancelled]
           max_parallel.times do
             pool.post do
               loop do
+                break if cancelled&.true?
+
                 batch = batch_queue.pop
-                break if batch.equal?(sentinel)
+                break if batch.nil? || batch.equal?(sentinel)
+                break if cancelled&.true?
 
                 process_single_batch_parallel(
                   raw_batch: batch,
@@ -330,20 +364,6 @@ module SearchEngine
             validate_soft_batch_size!(batch_size, stats[:docs_count])
             log_batch(stats, shared_state[:batches_total]) if log_batches
           end
-        end
-
-        # Shutdown the thread pool gracefully with timeout.
-        #
-        # Shuts down the pool, waits up to 1 hour for completion, then force-kills
-        # if necessary and waits an additional minute for cleanup.
-        #
-        # @param pool [Concurrent::FixedThreadPool] thread pool instance to shutdown
-        # @return [void]
-        def shutdown_pool(pool)
-          pool.shutdown
-          # Wait up to 1 hour, then force-kill and wait a bit more to ensure cleanup
-          pool.wait_for_termination(3600) || pool.kill
-          pool.wait_for_termination(60)
         end
 
         # Build a Summary object from aggregated shared state.
