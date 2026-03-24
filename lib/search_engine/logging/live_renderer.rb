@@ -395,8 +395,8 @@ module SearchEngine
         end
 
         def build_progress_part
-          if @docs_estimate&.positive? && @docs_total.positive?
-            ratio = @docs_total.to_f / @docs_estimate
+          if @docs_estimate&.positive?
+            ratio = @docs_total.positive? ? @docs_total.to_f / @docs_estimate : 0.0
             pct = [100, (ratio * 100).round].min
             filled = [(ratio * BAR_WIDTH).round, BAR_WIDTH].min
             empty = BAR_WIDTH - filled
