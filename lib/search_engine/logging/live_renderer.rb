@@ -32,9 +32,10 @@ module SearchEngine
       BAR_WIDTH = 20
 
       # @param labels [Array<String>] display label for each slot (partition key)
+      # @param partitions [Array, nil] raw partition values for non-TTY output (defaults to labels)
       # @param per_partition_estimate [Integer, nil] estimated batches per partition (for progress bars)
       # @param io [IO] output stream (defaults to $stdout)
-      def initialize(labels:, per_partition_estimate: nil, io: $stdout)
+      def initialize(labels:, partitions: nil, per_partition_estimate: nil, io: $stdout)
         @io = io
         @tty = Color.enabled?
         @mutex = Mutex.new
@@ -43,7 +44,10 @@ module SearchEngine
         @running = false
         @rendered_once = false
         nontty_cb = @tty ? nil : method(:flush_nontty_slot)
-        @slots = labels.map { |label| Slot.new(label: label, estimate: per_partition_estimate, on_done: nontty_cb) }
+        raw = partitions || labels
+        @slots = labels.each_with_index.map do |label, idx|
+          Slot.new(label: label, partition: raw[idx], estimate: per_partition_estimate, on_done: nontty_cb)
+        end
       end
 
       # Start the background render thread. Hides the cursor on TTY.
@@ -161,10 +165,12 @@ module SearchEngine
         attr_reader :label, :state
 
         # @param label [String] partition display label (e.g. partition key inspect)
+        # @param partition [Object, nil] raw partition value for non-TTY output (defaults to label)
         # @param estimate [Integer, nil] estimated total batches for progress bar
         # @param on_done [Proc, nil] callback invoked after finish/finish_error (non-TTY flush)
-        def initialize(label:, estimate: nil, on_done: nil)
+        def initialize(label:, partition: nil, estimate: nil, on_done: nil)
           @label = label
+          @partition = partition.nil? ? label : partition
           @estimate = estimate
           @on_done = on_done
           @state = :pending
@@ -310,11 +316,11 @@ module SearchEngine
         def build_progress_part
           if @estimate&.positive? && @batches_done.positive?
             ratio = @batches_done.to_f / @estimate
-            pct = (ratio * 100).round
+            pct = [100, (ratio * 100).round].min
             filled = [(ratio * BAR_WIDTH).round, BAR_WIDTH].min
             empty = BAR_WIDTH - filled
             bar = "\u2588" * filled + "\u2591" * empty
-            "#{bar}  #{pct}%  (#{@docs_total} docs)"
+            "#{bar}  #{pct}%  #{@batches_done}/#{@estimate} batches  (#{@docs_total} docs)"
           elsif @batches_done.positive?
             "#{@batches_done} batches, #{@docs_total} docs"
           else
@@ -347,7 +353,7 @@ module SearchEngine
 
         def partition_progress_line
           require 'search_engine/logging/partition_progress'
-          PartitionProgress.line(@label, @summary)
+          PartitionProgress.line(@partition, @summary)
         end
 
         def now

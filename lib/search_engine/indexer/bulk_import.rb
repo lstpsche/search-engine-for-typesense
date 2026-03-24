@@ -1,6 +1,5 @@
 # frozen_string_literal: true
 
-require 'timeout'
 require 'search_engine/logging/color'
 require 'search_engine/logging/batch_line'
 
@@ -455,8 +454,8 @@ module SearchEngine
           return nil unless batch_size.positive?
 
           begin
-            total_records = Timeout.timeout(10) { model.count }
-            return nil unless total_records.positive?
+            total_records = count_with_timeout(model, 10)
+            return nil unless total_records&.positive?
 
             (total_records.to_f / batch_size).ceil
           rescue StandardError
@@ -465,6 +464,33 @@ module SearchEngine
         end
 
         public :estimate_total_batches
+
+        # Thread-based soft timeout for model.count, avoiding Timeout.timeout
+        # which can corrupt ActiveRecord connection state.
+        #
+        # @param model [Class] ActiveRecord model
+        # @param timeout_seconds [Numeric] max wait time
+        # @return [Integer, nil] record count or nil on timeout/error
+        def count_with_timeout(model, timeout_seconds)
+          return nil unless defined?(ActiveRecord::Base)
+
+          result = nil
+          thread = Thread.new do
+            ActiveRecord::Base.connection_pool.with_connection do
+              result = model.count
+            end
+          end
+
+          if thread.join(timeout_seconds)
+            result
+          else
+            thread.kill
+            thread.join(2)
+            nil
+          end
+        rescue StandardError
+          nil
+        end
 
         def mapper_dsl_for_klass(klass)
           return nil unless klass.instance_variable_defined?(:@__mapper_dsl__)
