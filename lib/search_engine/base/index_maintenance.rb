@@ -277,6 +277,9 @@ module SearchEngine
             summary = SearchEngine::Indexer.rebuild_partition!(self, partition: nil, into: into)
             __se_build_index_result([summary])
           end
+        rescue StandardError => error
+          { status: :failed, docs_total: 0, success_total: 0, failed_total: 0,
+            sample_error: "#{error.class}: #{error.message.to_s[0, 200]}" }
         end
 
         # Aggregate an array of Indexer::Summary structs into a single result hash.
@@ -314,7 +317,7 @@ module SearchEngine
         def __se_index_partitions_seq!(parts, into)
           estimate = __se_per_partition_estimate(parts.size)
           renderer = SearchEngine::Logging::LiveRenderer.new(
-            labels: parts.map(&:inspect), per_partition_estimate: estimate
+            labels: parts.map(&:inspect), partitions: parts, per_partition_estimate: estimate
           )
           renderer.start
 
@@ -344,7 +347,7 @@ module SearchEngine
 
           estimate = __se_per_partition_estimate(parts.size)
           renderer = SearchEngine::Logging::LiveRenderer.new(
-            labels: parts.map(&:inspect), per_partition_estimate: estimate
+            labels: parts.map(&:inspect), partitions: parts, per_partition_estimate: estimate
           )
           renderer.start
 
