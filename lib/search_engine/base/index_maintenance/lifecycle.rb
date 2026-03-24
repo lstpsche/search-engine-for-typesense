@@ -133,20 +133,35 @@ module SearchEngine
             result = nil
             step = SearchEngine::Logging::StepLine.new('Indexing')
             if applied && indexed_inside_apply
-              step.skip('performed during schema apply')
               result = indexed_inside_apply if indexed_inside_apply.is_a?(Hash)
+              if __se_result_status(result) == :ok
+                step.skip('performed during schema apply')
+              else
+                __se_finish_indexation_step(step, result)
+              end
             else
               step.update('indexing')
               step.yield_line!
               result = __se_index_partitions!(into: nil)
-              step.finish('done')
+              __se_finish_indexation_step(step, result)
             end
 
-            cascade_ok = result.is_a?(Hash) ? result[:status] == :ok : false
-            __se_cascade_after_indexation!(context: :full) if cascade_ok
+            __se_cascade_after_indexation!(context: :full) if __se_result_status(result) == :ok
             result
           ensure
             step&.close
+          end
+
+          def __se_result_status(result)
+            result.is_a?(Hash) ? result[:status] : :ok
+          end
+
+          def __se_finish_indexation_step(step, result)
+            case __se_result_status(result)
+            when :ok      then step.finish('done')
+            when :partial then step.finish_warn('partial')
+            else               step.finish_warn('failed')
+            end
           end
 
           def __se_full_retention(applied, logical, client)

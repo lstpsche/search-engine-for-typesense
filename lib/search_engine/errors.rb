@@ -120,6 +120,13 @@ module SearchEngine
     # the underlying HTTP client used by the official Typesense gem.
     class Timeout < Error; end
 
+    # Raised when one or more partitions were not processed because the
+    # parallel pool's graceful-shutdown timeout was exceeded.
+    #
+    # The pool kills remaining queued/running tasks after the timeout,
+    # leaving those partitions unindexed.
+    class PartitionTimeout < Error; end
+
     # Raised for network-level connectivity issues prior to receiving a response.
     #
     # Examples: DNS resolution failures, refused TCP connections, TLS handshake

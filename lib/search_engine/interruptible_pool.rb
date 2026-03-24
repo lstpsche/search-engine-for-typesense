@@ -11,19 +11,28 @@ module SearchEngine
 
     # Execute a block that posts work to a thread pool, then wait for completion.
     #
-    # Normal path: graceful shutdown → long wait.
+    # Normal path: graceful shutdown → long wait → :ok.
+    # Timeout:     graceful wait expires → pool.kill → :timed_out.
     # Interrupt:   on_interrupt callback → pool.kill → short wait → re-raise.
     # Other error: ensure kill → short wait.
     #
     # @param pool [Concurrent::FixedThreadPool]
     # @param on_interrupt [Proc, nil] callback invoked before killing the pool
+    # @param timeout [Integer, nil] override for graceful-shutdown timeout (seconds);
+    #   defaults to {GRACEFUL_TIMEOUT} when nil
     # @yield block that posts work to the pool
-    # @return [void]
-    def self.run(pool, on_interrupt: nil)
+    # @return [Symbol] :ok on clean completion, :timed_out when the graceful timeout was exceeded
+    def self.run(pool, on_interrupt: nil, timeout: nil)
       yield
       pool.shutdown
-      pool.wait_for_termination(GRACEFUL_TIMEOUT) || pool.kill
-      pool.wait_for_termination(CLEANUP_TIMEOUT)
+      effective_timeout = timeout || GRACEFUL_TIMEOUT
+      completed = pool.wait_for_termination(effective_timeout)
+      unless completed
+        pool.kill
+        pool.wait_for_termination(CLEANUP_TIMEOUT)
+        return :timed_out
+      end
+      :ok
     rescue Interrupt
       on_interrupt&.call
       pool.kill

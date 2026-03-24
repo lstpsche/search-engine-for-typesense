@@ -373,7 +373,15 @@ module SearchEngine
             warn("\n  Interrupted \u2014 stopping parallel partition workers\u2026")
           end
 
-          SearchEngine::InterruptiblePool.run(pool, on_interrupt: on_interrupt) do
+          pool_timeout = begin
+            SearchEngine.config.indexer.pool_timeout
+          rescue StandardError
+            nil
+          end
+
+          pool_status = SearchEngine::InterruptiblePool.run(
+            pool, on_interrupt: on_interrupt, timeout: pool_timeout
+          ) do
             parts.each_with_index do |part, idx|
               break if cancelled.true?
 
@@ -399,6 +407,8 @@ module SearchEngine
               end
             end
           end
+
+          __se_flag_incomplete_slots!(renderer, parts, partition_errors, mtx, pool_timeout) if pool_status == :timed_out
 
           begin
             renderer.stop
@@ -442,7 +452,33 @@ module SearchEngine
           nil
         end
 
-        private :__se_per_partition_docs_estimates, :__se_heuristic_docs_estimate
+        # Flag renderer slots that are still pending/in-progress after the pool
+        # timed out. Marks each as errored and appends to partition_errors so the
+        # caller raises and reports failure.
+        #
+        # @param renderer [SearchEngine::Logging::LiveRenderer]
+        # @param parts [Array] partition keys
+        # @param partition_errors [Array<StandardError>]
+        # @param mtx [Mutex]
+        # @param pool_timeout [Integer, nil] resolved timeout (seconds) from caller
+        # @return [void]
+        def __se_flag_incomplete_slots!(renderer, parts, partition_errors, mtx, pool_timeout)
+          effective_timeout = pool_timeout || SearchEngine::InterruptiblePool::GRACEFUL_TIMEOUT
+
+          parts.each_index do |idx|
+            slot = renderer[idx]
+            next if %i[done error].include?(slot.state)
+
+            error = SearchEngine::Errors::PartitionTimeout.new(
+              "partition #{parts[idx].inspect} was not processed — " \
+              "parallel pool timed out after #{effective_timeout}s"
+            )
+            slot.finish_error(error)
+            mtx.synchronize { partition_errors << error }
+          end
+        end
+
+        private :__se_per_partition_docs_estimates, :__se_heuristic_docs_estimate, :__se_flag_incomplete_slots!
       end
 
       class_methods do

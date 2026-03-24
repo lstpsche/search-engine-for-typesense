@@ -105,6 +105,9 @@ module SearchEngine
       attr_accessor :queue_name
       # @return [Boolean] whether to run model.count for progress bar estimates (default true)
       attr_accessor :estimate_progress
+      # @return [Integer, nil] graceful-shutdown timeout (seconds) for the parallel
+      #   partition pool. When nil, falls back to InterruptiblePool::GRACEFUL_TIMEOUT (3600s).
+      attr_accessor :pool_timeout
 
       def initialize
         @batch_size = 2000
@@ -114,6 +117,7 @@ module SearchEngine
         @dispatch = active_job_available? ? :active_job : :inline
         @queue_name = 'search_index'
         @estimate_progress = true
+        @pool_timeout = nil
       end
 
       private
