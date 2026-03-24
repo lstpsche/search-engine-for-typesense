@@ -5,6 +5,7 @@ require 'search_engine/base/index_maintenance/cleanup'
 require 'search_engine/base/index_maintenance/lifecycle'
 require 'search_engine/base/index_maintenance/schema'
 require 'search_engine/logging/color'
+require 'search_engine/logging/batch_line'
 
 module SearchEngine
   class Base
@@ -41,7 +42,10 @@ module SearchEngine
 
           indent = '  ' * depth
           puts if depth.zero?
-          puts(%(#{indent}>>>>>> Preflight Dependencies (mode: #{mode}, collection: "#{current}")))
+          header = SearchEngine::Logging::Color.header(
+            %(#{indent}>>>>>> Preflight Dependencies (mode: #{mode}, collection: "#{current}"))
+          )
+          puts(header)
 
           deps.each do |cfg|
             dep_coll = (cfg[:collection] || cfg['collection']).to_s
@@ -50,7 +54,7 @@ module SearchEngine
             dep_klass = __se_resolve_dep_class(dep_coll)
 
             if dep_klass.nil?
-              puts(%(#{indent}  "#{dep_coll}" → skipped (unregistered)))
+              puts(SearchEngine::Logging::Color.dim(%(#{indent}  "#{dep_coll}" → skipped (unregistered))))
               visited.add(dep_coll)
               next
             end
@@ -72,7 +76,7 @@ module SearchEngine
             visited.add(dep_coll)
           end
 
-          puts(%(#{indent}>>>>>> Preflight Done (collection: "#{current}")))
+          puts(SearchEngine::Logging::Color.header(%(#{indent}>>>>>> Preflight Done (collection: "#{current}"))))
         end
 
         # @return [String] current collection logical name; empty string when unavailable
@@ -165,27 +169,29 @@ module SearchEngine
           case mode.to_s
           when 'ensure'
             if missing
-              puts(%(#{indent}"#{dep_coll}" → ensure (missing) → index_collection))
+              status_word = SearchEngine::Logging::Color.apply('ensure (missing)', :yellow)
+              puts(%(#{indent}"#{dep_coll}" → #{status_word} → index_collection))
               # Avoid nested preflight to prevent redundant recursion cycles
               SearchEngine::Instrumentation.with_context(bulk_suppress_cascade: true) do
                 dep_klass.index_collection(client: client)
               end
             else
-              puts(%(#{indent}"#{dep_coll}" → present (skip)))
+              puts(SearchEngine::Logging::Color.dim(%(#{indent}"#{dep_coll}" → present (skip))))
             end
           when 'index'
             if missing || drift
               reason = missing ? 'missing' : 'drift'
-              puts(%(#{indent}"#{dep_coll}" → index (#{reason}) → index_collection))
+              status_word = SearchEngine::Logging::Color.apply("index (#{reason})", :yellow)
+              puts(%(#{indent}"#{dep_coll}" → #{status_word} → index_collection))
               # Avoid nested preflight to prevent redundant recursion cycles
               SearchEngine::Instrumentation.with_context(bulk_suppress_cascade: true) do
                 dep_klass.index_collection(client: client)
               end
             else
-              puts(%(#{indent}"#{dep_coll}" → in_sync (skip)))
+              puts(SearchEngine::Logging::Color.dim(%(#{indent}"#{dep_coll}" → in_sync (skip))))
             end
           else
-            puts(%(#{indent}"#{dep_coll}" → skipped (unknown mode: #{mode})))
+            puts(SearchEngine::Logging::Color.dim(%(#{indent}"#{dep_coll}" → skipped (unknown mode: #{mode}))))
           end
         end
 
@@ -193,59 +199,8 @@ module SearchEngine
           return unless batches.is_a?(Array)
 
           batches.each_with_index do |batch_stats, idx|
-            batch_number = idx + 1
-            batch_status = __se_batch_status_from_stats(batch_stats)
-            status_color = SearchEngine::Logging::Color.for_status(batch_status)
-
-            prefix = batch_number == 1 ? '  single → ' : '          '
-            line = +prefix
-            line << SearchEngine::Logging::Color.apply("status=#{batch_status}", status_color) << ' '
-            docs_count = batch_stats[:docs_count] || batch_stats['docs_count'] || 0
-            line << "docs=#{docs_count}" << ' '
-            success_count = (batch_stats[:success_count] || batch_stats['success_count'] || 0).to_i
-            success_str = "success=#{success_count}"
-            line << (
-              success_count.positive? ? SearchEngine::Logging::Color.bold(success_str) : success_str
-            ) << ' '
-            failed_count = (batch_stats[:failure_count] || batch_stats['failure_count'] || 0).to_i
-            failed_str = "failed=#{failed_count}"
-            line << (
-              failed_count.positive? ? SearchEngine::Logging::Color.apply(failed_str, :red) : failed_str
-            ) << ' '
-            line << "batch=#{batch_number} "
-            duration_ms = batch_stats[:duration_ms] || batch_stats['duration_ms'] || 0.0
-            line << "duration_ms=#{duration_ms}"
-
-            # Extract sample error from batch stats
-            sample_err = __se_extract_batch_sample_error(batch_stats)
-            line << " sample_error=#{sample_err.inspect}" if sample_err
-
-            puts(line)
+            puts(SearchEngine::Logging::BatchLine.format(batch_stats, idx + 1, indifferent: true))
           end
-        end
-
-        def __se_batch_status_from_stats(stats)
-          success_count = (stats[:success_count] || stats['success_count'] || 0).to_i
-          failure_count = (stats[:failure_count] || stats['failure_count'] || 0).to_i
-
-          if failure_count.positive? && success_count.positive?
-            :partial
-          elsif failure_count.positive?
-            :failed
-          else
-            :ok
-          end
-        end
-
-        def __se_extract_batch_sample_error(stats)
-          samples = stats[:errors_sample] || stats['errors_sample']
-          return nil unless samples.is_a?(Array) && samples.any?
-
-          samples.each do |msg|
-            s = msg.to_s
-            return s unless s.strip.empty?
-          end
-          nil
         end
 
         private :__se_current_collection_name,
@@ -257,9 +212,7 @@ module SearchEngine
                 :__se_diff_for,
                 :__se_dependency_status,
                 :__se_handle_preflight_action,
-                :__se_log_batches_from_summary,
-                :__se_batch_status_from_stats,
-                :__se_extract_batch_sample_error
+                :__se_log_batches_from_summary
       end
 
       class_methods do
@@ -390,7 +343,8 @@ module SearchEngine
                 end
               rescue StandardError => error
                 mtx.synchronize do
-                  warn("  partition=#{part.inspect} → error=#{error.class}: #{error.message.to_s[0, 200]}")
+                  err_msg = "  partition=#{part.inspect} → error=#{error.class}: #{error.message.to_s[0, 200]}"
+                  warn(SearchEngine::Logging::Color.apply(err_msg, :red))
                   partition_errors << "#{error.class}: #{error.message.to_s[0, 200]}"
                 end
               end

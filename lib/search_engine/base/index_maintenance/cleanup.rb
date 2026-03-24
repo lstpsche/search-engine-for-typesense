@@ -45,13 +45,13 @@ module SearchEngine
           def cleanup(into: nil, partition: nil, clear_cache: false)
             logical = respond_to?(:collection) ? collection.to_s : name.to_s
             puts
-            puts(%(>>>>>> Cleanup Collection "#{logical}"))
+            puts(SearchEngine::Logging::Color.header(%(>>>>>> Cleanup Collection "#{logical}")))
 
             filters = SearchEngine::StaleRules.compile_filters(self, partition: partition)
             filters.compact!
             filters.reject! { |f| f.to_s.strip.empty? }
             if filters.empty?
-              puts('Cleanup — skip (no stale configuration)')
+              puts(SearchEngine::Logging::Color.dim('Cleanup — skip (no stale configuration)'))
               return 0
             end
 
@@ -65,25 +65,23 @@ module SearchEngine
               partition: partition
             )
 
-            puts("Cleanup — deleted=#{deleted}")
+            puts("Cleanup — #{SearchEngine::Logging::Color.apply("deleted=#{deleted}", :green)}")
             deleted
           rescue StandardError => error
-            warn(
-              "Cleanup — error=#{error.class}: #{error.message.to_s[0, 200]}"
-            )
+            err_msg = "Cleanup — error=#{error.class}: #{error.message.to_s[0, 200]}"
+            warn(SearchEngine::Logging::Color.apply(err_msg, :red))
             0
           ensure
             if clear_cache
               begin
-                puts('Cleanup — cache clear')
+                puts("Cleanup — #{SearchEngine::Logging::Color.bold('cache clear')}")
                 SearchEngine::Cache.clear
               rescue StandardError => error
-                warn(
-                  "Cleanup — cache clear error=#{error.class}: #{error.message.to_s[0, 200]}"
-                )
+                err_msg = "Cleanup — cache clear error=#{error.class}: #{error.message.to_s[0, 200]}"
+                warn(SearchEngine::Logging::Color.apply(err_msg, :red))
               end
             end
-            puts(%(>>>>>> Cleanup Done))
+            puts(SearchEngine::Logging::Color.header(%(>>>>>> Cleanup Done)))
           end
 
           private

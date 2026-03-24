@@ -17,7 +17,7 @@ module SearchEngine
           def index_collection(partition: nil, client: nil, pre: nil, force_rebuild: false)
             logical = respond_to?(:collection) ? collection.to_s : name.to_s
             puts
-            puts(%(>>>>>> Indexing Collection "#{logical}"))
+            puts(SearchEngine::Logging::Color.header(%(>>>>>> Indexing Collection "#{logical}")))
             client_obj = client || SearchEngine.client
 
             result = if partition.nil?
@@ -56,7 +56,12 @@ module SearchEngine
 
             diff = SearchEngine::Schema.diff(self, client: client)[:diff] || {}
             missing = __se_schema_missing?(diff)
-            puts("Step 1: Presence — processing → #{missing ? 'missing' : 'present'}")
+            presence = if missing
+                         SearchEngine::Logging::Color.apply('missing', :yellow)
+                       else
+                         SearchEngine::Logging::Color.apply('present', :green)
+                       end
+            puts("Step 1: Presence — #{SearchEngine::Logging::Color.bold('processing')} → #{presence}")
 
             applied, indexed_inside_apply = __se_full_apply_if_missing(client, missing)
             drift = __se_full_check_drift(diff, missing, force_rebuild)
@@ -76,43 +81,48 @@ module SearchEngine
             applied = false
             indexed_inside_apply = false
             if missing
-              puts('Step 2: Create+Apply Schema — processing')
+              puts("Step 2: Create+Apply Schema — #{SearchEngine::Logging::Color.bold('processing')}")
               SearchEngine::Schema.apply!(self, client: client) do |new_physical|
                 indexed_inside_apply = __se_index_partitions!(into: new_physical)
               end
               applied = true
-              puts('Step 2: Create+Apply Schema — done')
+              puts("Step 2: Create+Apply Schema — #{SearchEngine::Logging::Color.apply('done', :green)}")
             else
-              puts('Step 2: Create+Apply Schema — skip (collection present)')
+              puts(SearchEngine::Logging::Color.dim('Step 2: Create+Apply Schema — skip (collection present)'))
             end
             [applied, indexed_inside_apply]
           end
 
           def __se_full_check_drift(diff, missing, force_rebuild)
             unless missing
-              puts('Step 3: Check Schema Status — processing')
+              puts("Step 3: Check Schema Status — #{SearchEngine::Logging::Color.bold('processing')}")
               drift = __se_schema_drift?(diff)
               if force_rebuild && !drift
-                puts('Step 3: Check Schema Status — force_rebuild')
+                puts("Step 3: Check Schema Status — #{SearchEngine::Logging::Color.apply('force_rebuild', :yellow)}")
                 return true
               end
-              puts("Step 3: Check Schema Status — #{drift ? 'drift' : 'in_sync'}")
+              schema_status = if drift
+                                SearchEngine::Logging::Color.apply('drift', :yellow)
+                              else
+                                SearchEngine::Logging::Color.apply('in_sync', :green)
+                              end
+              puts("Step 3: Check Schema Status — #{schema_status}")
               return drift
             end
-            puts('Step 3: Check Schema Status — skip (just created)')
+            puts(SearchEngine::Logging::Color.dim('Step 3: Check Schema Status — skip (just created)'))
             false
           end
 
           def __se_full_apply_if_drift(client, drift, applied, indexed_inside_apply, force_rebuild)
             if drift
-              puts('Step 4: Apply New Schema — processing')
+              puts("Step 4: Apply New Schema — #{SearchEngine::Logging::Color.bold('processing')}")
               SearchEngine::Schema.apply!(self, client: client, force_rebuild: force_rebuild) do |new_physical|
                 indexed_inside_apply = __se_index_partitions!(into: new_physical)
               end
               applied = true
-              puts('Step 4: Apply New Schema — done')
+              puts("Step 4: Apply New Schema — #{SearchEngine::Logging::Color.apply('done', :green)}")
             else
-              puts('Step 4: Apply New Schema — skip')
+              puts(SearchEngine::Logging::Color.dim('Step 4: Apply New Schema — skip'))
             end
             [applied, indexed_inside_apply]
           end
@@ -120,12 +130,12 @@ module SearchEngine
           def __se_full_indexation(applied, indexed_inside_apply)
             result = nil
             if applied && indexed_inside_apply
-              puts('Step 5: Indexing — skip (performed during schema apply)')
+              puts(SearchEngine::Logging::Color.dim('Step 5: Indexing — skip (performed during schema apply)'))
               result = indexed_inside_apply if indexed_inside_apply.is_a?(Hash)
             else
-              puts('Step 5: Indexing — processing')
+              puts("Step 5: Indexing — #{SearchEngine::Logging::Color.bold('processing')}")
               result = __se_index_partitions!(into: nil)
-              puts('Step 5: Indexing — done')
+              puts("Step 5: Indexing — #{SearchEngine::Logging::Color.apply('done', :green)}")
             end
 
             cascade_ok = result.is_a?(Hash) ? result[:status] == :ok : false
@@ -135,11 +145,12 @@ module SearchEngine
 
           def __se_full_retention(applied, logical, client)
             if applied
-              puts('Step 6: Retention Cleanup — skip (handled by schema apply)')
+              puts(SearchEngine::Logging::Color.dim('Step 6: Retention Cleanup — skip (handled by schema apply)'))
             else
-              puts('Step 6: Retention Cleanup — processing')
+              puts("Step 6: Retention Cleanup — #{SearchEngine::Logging::Color.bold('processing')}")
               dropped = __se_retention_cleanup!(logical: logical, client: client)
-              puts("Step 6: Retention Cleanup — dropped=#{dropped.inspect}")
+              dropped_str = SearchEngine::Logging::Color.apply("dropped=#{dropped.inspect}", :green)
+              puts("Step 6: Retention Cleanup — #{dropped_str}")
             end
           end
 
@@ -149,32 +160,43 @@ module SearchEngine
             diff = diff_res[:diff] || {}
 
             missing = __se_schema_missing?(diff)
-            puts("Step 1: Presence — processing → #{missing ? 'missing' : 'present'}")
+            presence = if missing
+                         SearchEngine::Logging::Color.apply('missing', :yellow)
+                       else
+                         SearchEngine::Logging::Color.apply('present', :green)
+                       end
+            puts("Step 1: Presence — #{SearchEngine::Logging::Color.bold('processing')} → #{presence}")
             if missing
-              puts('Partial: collection is not present. Quit early.')
+              msg = SearchEngine::Logging::Color.apply(
+                'Step 1: Partial — collection is not present. Quit early.', :yellow
+              )
+              puts(msg)
               return { status: :failed, docs_total: 0, success_total: 0, failed_total: 0,
                        sample_error: 'Collection not present' }
             end
 
-            puts('Step 2: Check Schema Status — processing')
+            puts("Step 2: Check Schema Status — #{SearchEngine::Logging::Color.bold('processing')}")
             drift = __se_schema_drift?(diff)
             if drift
-              puts('Partial: schema is not up-to-date. Exit early (run full indexing).')
+              msg = SearchEngine::Logging::Color.apply(
+                'Step 2: Partial — schema is not up-to-date. Exit early (run full indexing).', :yellow
+              )
+              puts(msg)
               return { status: :failed, docs_total: 0, success_total: 0, failed_total: 0,
                        sample_error: 'Schema drift detected' }
             end
-            puts('Step 2: Check Schema Status — in_sync')
+            puts("Step 2: Check Schema Status — #{SearchEngine::Logging::Color.apply('in_sync', :green)}")
 
             __se_preflight_dependencies!(mode: pre, client: client) if pre
 
-            puts('Step 3: Partial Indexing — processing')
+            puts("Step 3: Partial Indexing — #{SearchEngine::Logging::Color.bold('processing')}")
             summaries = []
             partitions.each do |p|
               summary = SearchEngine::Indexer.rebuild_partition!(self, partition: p, into: nil)
               summaries << summary
               puts(SearchEngine::Logging::PartitionProgress.line(p, summary))
             end
-            puts('Step 3: Partial Indexing — done')
+            puts("Step 3: Partial Indexing — #{SearchEngine::Logging::Color.apply('done', :green)}")
 
             result = __se_build_index_result(summaries)
             __se_cascade_after_indexation!(context: :full) if result[:status] == :ok
@@ -185,34 +207,34 @@ module SearchEngine
           def __se_cascade_after_indexation!(context: :full)
             if SearchEngine::Instrumentation.context&.[](:bulk_suppress_cascade)
               puts
-              puts('>>>>>> Cascade Referencers — suppressed (bulk)')
+              puts(SearchEngine::Logging::Color.dim('>>>>>> Cascade Referencers — suppressed (bulk)'))
               return
             end
             puts
-            puts(%(>>>>>> Cascade Referencers))
+            puts(SearchEngine::Logging::Color.header(%(>>>>>> Cascade Referencers)))
             results = SearchEngine::Cascade.cascade_reindex!(source: self, ids: nil, context: context)
             outcomes = Array(results[:outcomes])
             if outcomes.empty?
-              puts('  none')
+              puts(SearchEngine::Logging::Color.dim('  none'))
             else
               outcomes.each do |o|
                 coll = o[:collection] || o['collection']
                 mode = (o[:mode] || o['mode']).to_s
                 case mode
                 when 'partial'
-                  puts(%(  Referencer "#{coll}" → partial reindex))
+                  puts(%(  Referencer "#{coll}" → #{SearchEngine::Logging::Color.apply('partial reindex', :green)}))
                 when 'full'
-                  puts(%(  Referencer "#{coll}" → full reindex))
+                  puts(%(  Referencer "#{coll}" → #{SearchEngine::Logging::Color.apply('full reindex', :green)}))
                 when 'skipped_unregistered'
-                  puts(%(  Referencer "#{coll}" → skipped (unregistered)))
+                  puts(SearchEngine::Logging::Color.dim(%(  Referencer "#{coll}" → skipped (unregistered))))
                 when 'skipped_cycle'
-                  puts(%(  Referencer "#{coll}" → skipped (cycle)))
+                  puts(SearchEngine::Logging::Color.dim(%(  Referencer "#{coll}" → skipped (cycle))))
                 else
                   puts(%(  Referencer "#{coll}" → #{mode}))
                 end
               end
             end
-            puts('>>>>>> Cascade Done')
+            puts(SearchEngine::Logging::Color.header('>>>>>> Cascade Done'))
           rescue StandardError => error
             base = "Cascade — error=#{error.class}: #{error.message.to_s[0, 200]}"
             if error.respond_to?(:status) || error.respond_to?(:body)
@@ -233,9 +255,12 @@ module SearchEngine
               rescue StandardError
                 nil
               end
-              warn([base, ("status=#{status}" if status), ("body=#{body_preview}" if body_preview)].compact.join(' '))
+              err_parts = [base]
+              err_parts << "status=#{status}" if status
+              err_parts << "body=#{body_preview}" if body_preview
+              warn(SearchEngine::Logging::Color.apply(err_parts.compact.join(' '), :red))
             else
-              warn(base)
+              warn(SearchEngine::Logging::Color.apply(base, :red))
             end
           end
           # rubocop:enable Metrics/PerceivedComplexity, Metrics/AbcSize
