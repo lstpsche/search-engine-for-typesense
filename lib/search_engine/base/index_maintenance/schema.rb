@@ -27,19 +27,14 @@ module SearchEngine
 
           def update_collection!
             client = SearchEngine.client
-
-            status_word = SearchEngine::Logging::Color.bold('analyzing diff for in-place update...')
-            puts "Update Collection — #{status_word}"
+            step = SearchEngine::Logging::StepLine.new('Update Collection')
+            step.update('analyzing diff')
             updated = SearchEngine::Schema.update!(self, client: client)
 
             if updated
-              status_word = SearchEngine::Logging::Color.apply('schema updated in-place (PATCH)', :green)
-              puts "Update Collection — #{status_word}"
+              step.finish('updated in-place (PATCH)')
             else
-              msg = SearchEngine::Logging::Color.dim(
-                'Update Collection — in-place update not possible (no changes or incompatible)'
-              )
-              puts(msg)
+              step.skip('no changes or incompatible')
             end
             updated
           end
@@ -48,7 +43,6 @@ module SearchEngine
             client = SearchEngine.client
             logical = respond_to?(:collection) ? collection.to_s : name.to_s
 
-            # Resolve alias with a safer timeout for control-plane operations
             alias_target = client.resolve_alias(logical, timeout_ms: 10_000)
             physical = if alias_target && !alias_target.to_s.strip.empty?
                          alias_target.to_s
@@ -57,19 +51,17 @@ module SearchEngine
                          live ? logical : nil
                        end
 
+            step = SearchEngine::Logging::StepLine.new('Drop Collection')
             if physical.nil?
-              puts(SearchEngine::Logging::Color.dim('Drop Collection — skip (not present)'))
+              step.skip('not present')
               return
             end
 
             puts
-            header = SearchEngine::Logging::Color.header(%(>>>>>> Dropping Collection "#{logical}"))
-            puts(header)
-            status_word = SearchEngine::Logging::Color.bold('processing')
-            puts("Drop Collection — #{status_word} (logical=#{logical} physical=#{physical})")
-            # Use an extended timeout to accommodate large collection drops
+            puts(SearchEngine::Logging::Color.header(%(>>>>>> Dropping Collection "#{logical}")))
+            step.update("dropping (logical=#{logical} physical=#{physical})")
             client.delete_collection(physical, timeout_ms: 60_000)
-            puts("Drop Collection — #{SearchEngine::Logging::Color.apply('done', :green)}")
+            step.finish('done')
             puts(SearchEngine::Logging::Color.header(%(>>>>>> Dropped Collection "#{logical}")))
             nil
           end
@@ -86,20 +78,18 @@ module SearchEngine
                          live ? logical : nil
                        end
 
+            step = SearchEngine::Logging::StepLine.new('Recreate Collection')
             if physical
-              status_word = SearchEngine::Logging::Color.apply('dropping existing', :yellow)
-              puts("Recreate Collection — #{status_word} (logical=#{logical} physical=#{physical})")
+              step.update("dropping existing (logical=#{logical} physical=#{physical})")
               client.delete_collection(physical)
             else
-              msg = SearchEngine::Logging::Color.dim('Recreate Collection — no existing collection (skip drop)')
-              puts(msg)
+              step.update("creating (logical=#{logical})")
             end
 
             schema = SearchEngine::Schema.compile(self)
-            status_word = SearchEngine::Logging::Color.bold('creating collection with schema')
-            puts("Recreate Collection — #{status_word} (logical=#{logical})")
+            step.update("creating with schema (logical=#{logical})")
             client.create_collection(schema)
-            puts("Recreate Collection — #{SearchEngine::Logging::Color.apply('done', :green)}")
+            step.finish('done')
             nil
           end
 
