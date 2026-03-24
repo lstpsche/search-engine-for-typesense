@@ -72,7 +72,7 @@ module SearchEngine
           failed_total = 0
           failed_batches_total = 0
           batches_total = 0
-          # Capture start time before processing any batches to measure total wall-clock duration
+          source_batches_done = 0
           started_at = monotonic_ms
 
           docs_enum.each do |raw_batch|
@@ -95,11 +95,13 @@ module SearchEngine
               batches << stats
               validate_soft_batch_size!(batch_size, stats[:docs_count])
               log_batch(stats, batches_total) if log_batches
-              on_batch&.call(
-                batches_done: batches_total, docs_total: docs_total,
-                success_total: success_total, failed_total: failed_total
-              )
             end
+
+            source_batches_done += 1
+            on_batch&.call(
+              batches_done: source_batches_done, docs_total: docs_total,
+              success_total: success_total, failed_total: failed_total
+            )
           end
 
           # Calculate total duration as wall-clock time from start to finish (not sum of batch durations)
@@ -195,6 +197,7 @@ module SearchEngine
             failed_total: 0,
             failed_batches_total: 0,
             batches_total: 0,
+            source_batches_done: 0,
             idx_counter: -1,
             started_at: monotonic_ms,
             mtx: Mutex.new,
@@ -314,12 +317,11 @@ module SearchEngine
         # @return [void]
         def process_single_batch_parallel(raw_batch:, into:, action:, retry_policy:, batch_size:, log_batches:,
                                           shared_state:)
-          # Each thread gets its own resources
           thread_client = SearchEngine.client
           thread_buffer = +''
           thread_idx = shared_state[:mtx].synchronize { shared_state[:idx_counter] += 1 }
 
-          snapshots = begin
+          snapshot = begin
             stats_list = import_batch_with_handling(
               client: thread_client,
               collection: into,
@@ -332,6 +334,8 @@ module SearchEngine
 
             shared_state[:mtx].synchronize do
               aggregate_stats(stats_list, shared_state, batch_size, log_batches)
+              shared_state[:source_batches_done] += 1
+              progress_snapshot(shared_state)
             end
           rescue StandardError => error
             docs_count = begin
@@ -346,27 +350,26 @@ module SearchEngine
               err_msg = "  batch_index=#{thread_idx} → error=#{error.class}: #{error.message.to_s[0, 200]}"
               warn(SearchEngine::Logging::Color.apply(err_msg, :red))
               aggregate_stats([failure_stat], shared_state, batch_size, log_batches)
+              shared_state[:source_batches_done] += 1
+              progress_snapshot(shared_state)
             end
           end
 
-          on_batch = shared_state[:on_batch]
-          snapshots&.each { |snap| on_batch&.call(**snap) }
+          shared_state[:on_batch]&.call(**snapshot) if snapshot
         end
 
         # Aggregate batch statistics thread-safely into shared state.
         #
         # Must be called within a mutex synchronization block. Updates counters,
         # appends to batches array, validates batch size, and optionally logs.
-        # Returns counter snapshots (one per stats entry) for firing callbacks
-        # outside the lock.
         #
         # @param stats_list [Array<Hash>] array of stats hashes from batch processing
         # @param shared_state [Hash] shared state hash to update (must be mutex-protected)
         # @param batch_size [Integer, nil] soft guard for logging when exceeded
         # @param log_batches [Boolean] whether to log each batch as it completes
-        # @return [Array<Hash>] counter snapshots suitable for on_batch callbacks
+        # @return [void]
         def aggregate_stats(stats_list, shared_state, batch_size, log_batches)
-          stats_list.map do |stats|
+          stats_list.each do |stats|
             shared_state[:docs_total] += stats[:docs_count].to_i
             shared_state[:success_total] += stats[:success_count].to_i
             shared_state[:failed_total] += stats[:failure_count].to_i
@@ -375,11 +378,21 @@ module SearchEngine
             shared_state[:batches] << stats
             validate_soft_batch_size!(batch_size, stats[:docs_count])
             log_batch(stats, shared_state[:batches_total]) if log_batches
-            {
-              batches_done: shared_state[:batches_total], docs_total: shared_state[:docs_total],
-              success_total: shared_state[:success_total], failed_total: shared_state[:failed_total]
-            }
           end
+        end
+
+        # Build a progress snapshot from shared state for the on_batch callback.
+        # Must be called within a mutex synchronization block.
+        #
+        # @param shared_state [Hash] shared state hash (must be mutex-protected)
+        # @return [Hash] progress counters keyed by :batches_done, :docs_total, etc.
+        def progress_snapshot(shared_state)
+          {
+            batches_done: shared_state[:source_batches_done],
+            docs_total: shared_state[:docs_total],
+            success_total: shared_state[:success_total],
+            failed_total: shared_state[:failed_total]
+          }
         end
 
         # Build a Summary object from aggregated shared state.
@@ -426,14 +439,14 @@ module SearchEngine
           enum.is_a?(Enumerator) ? enum : enum.each
         end
 
-        # Estimate total batch count for progress logging.
+        # Estimate total source record count for the given model class.
         #
-        # Attempts to estimate batch count for ActiveRecord sources by counting records
-        # and dividing by batch_size. Returns nil for other source types or when estimation fails.
+        # Shared foundation for batch and doc estimates. Performs a model.count
+        # with a soft timeout to avoid blocking on slow tables.
         #
         # @param klass [Class] a {SearchEngine::Base} subclass
-        # @return [Integer, nil] estimated total batch count or nil if not estimable
-        def estimate_total_batches(klass)
+        # @return [Integer, nil] record count or nil if not estimable
+        def estimate_source_record_count(klass)
           return nil if SearchEngine.config.indexer.estimate_progress == false
           return nil unless klass.is_a?(Class)
 
@@ -447,22 +460,39 @@ module SearchEngine
           model = source_def.dig(:options, :model)
           return nil unless model.respond_to?(:count)
 
-          batch_size = source_def.dig(:options, :batch_size)
-          batch_size ||= SearchEngine.config.sources.active_record.batch_size
-          batch_size = batch_size.to_i
-          return nil unless batch_size.positive?
-
-          begin
-            total_records = count_with_timeout(model, 10)
-            return nil unless total_records&.positive?
-
-            (total_records.to_f / batch_size).ceil
-          rescue StandardError
-            nil
-          end
+          count_with_timeout(model, 10)
+        rescue StandardError
+          nil
         end
 
-        public :estimate_total_batches
+        # Estimate total batch count for progress logging.
+        #
+        # @param klass [Class] a {SearchEngine::Base} subclass
+        # @return [Integer, nil] estimated total batch count or nil if not estimable
+        def estimate_total_batches(klass)
+          total_records = estimate_source_record_count(klass)
+          return nil unless total_records&.positive?
+
+          batch_size = batch_size_for_klass(klass)
+          return nil unless batch_size&.positive?
+
+          (total_records.to_f / batch_size).ceil
+        rescue StandardError
+          nil
+        end
+
+        # Estimate total document count for doc-based progress tracking.
+        #
+        # @param klass [Class] a {SearchEngine::Base} subclass
+        # @return [Integer, nil] estimated total docs or nil if not estimable
+        def estimate_total_docs(klass)
+          count = estimate_source_record_count(klass)
+          count&.positive? ? count : nil
+        rescue StandardError
+          nil
+        end
+
+        public :estimate_total_batches, :estimate_total_docs
 
         # Thread-based soft timeout for model.count, avoiding Timeout.timeout
         # which can corrupt ActiveRecord connection state.
@@ -495,6 +525,14 @@ module SearchEngine
           return nil unless klass.instance_variable_defined?(:@__mapper_dsl__)
 
           klass.instance_variable_get(:@__mapper_dsl__)
+        end
+
+        def batch_size_for_klass(klass)
+          dsl = mapper_dsl_for_klass(klass)
+          source_def = dsl&.dig(:source)
+          batch_size = source_def&.dig(:options, :batch_size)
+          batch_size ||= SearchEngine.config.sources.active_record.batch_size
+          batch_size.to_i
         end
 
         # Import a single batch with error handling and recursive 413 splitting.

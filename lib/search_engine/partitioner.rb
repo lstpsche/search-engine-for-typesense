@@ -76,7 +76,49 @@ module SearchEngine
         end
       end
 
+      # Auto-detect doc count for a partition from the partition_fetch result.
+      # Counts the same scope that partition_fetch will enumerate — single source of truth.
+      #
+      # @param partition [Object] partition key
+      # @return [Integer, nil] doc count or nil when unavailable
+      def partition_doc_count(partition)
+        count = auto_count_from_fetch(partition)
+        count.is_a?(Integer) && count.positive? ? count : nil
+      rescue StandardError
+        nil
+      end
+
       private
+
+      # Call partition_fetch_proc and try to extract a countable relation.
+      # Calling the proc only builds a lazy AR object — no batch queries fire.
+      # The single COUNT query is the only DB cost.
+      def auto_count_from_fetch(partition)
+        return nil unless @partition_fetch_proc
+
+        result = @partition_fetch_proc.call(partition)
+        extract_count(result)
+      rescue StandardError
+        nil
+      end
+
+      def extract_count(result)
+        relation = countable_relation_from(result)
+        relation&.count
+      rescue StandardError
+        nil
+      end
+
+      def countable_relation_from(result)
+        if defined?(ActiveRecord::Batches::BatchEnumerator) &&
+           result.is_a?(ActiveRecord::Batches::BatchEnumerator)
+          return result.instance_variable_get(:@relation)
+        end
+
+        return result if defined?(ActiveRecord::Relation) && result.is_a?(ActiveRecord::Relation)
+
+        nil
+      end
 
       def validate_hook_arity!(proc_obj, name:)
         ar = proc_obj.arity

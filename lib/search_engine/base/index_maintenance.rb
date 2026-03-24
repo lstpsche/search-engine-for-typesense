@@ -270,9 +270,9 @@ module SearchEngine
           if compiled
             parts = Array(compiled.partitions)
             max_p = compiled.max_parallel.to_i
-            return __se_index_partitions_seq!(parts, into) if max_p <= 1 || parts.size <= 1
+            return __se_index_partitions_seq!(parts, into, compiled) if max_p <= 1 || parts.size <= 1
 
-            __se_index_partitions_parallel!(parts, into, max_p)
+            __se_index_partitions_parallel!(parts, into, max_p, compiled)
           else
             summary = SearchEngine::Indexer.rebuild_partition!(self, partition: nil, into: into)
             __se_build_index_result([summary])
@@ -314,10 +314,10 @@ module SearchEngine
 
       class_methods do
         # Sequential processing of partition list with live progress rendering.
-        def __se_index_partitions_seq!(parts, into)
-          estimate = __se_per_partition_estimate(parts.size)
+        def __se_index_partitions_seq!(parts, into, compiled)
+          docs_estimates = __se_per_partition_docs_estimates(parts, compiled)
           renderer = SearchEngine::Logging::LiveRenderer.new(
-            labels: parts.map(&:inspect), partitions: parts, per_partition_estimate: estimate
+            labels: parts.map(&:inspect), partitions: parts, per_partition_docs_estimates: docs_estimates
           )
           renderer.start
 
@@ -351,12 +351,12 @@ module SearchEngine
 
       class_methods do
         # Parallel processing via bounded thread pool with live progress rendering.
-        def __se_index_partitions_parallel!(parts, into, max_p)
+        def __se_index_partitions_parallel!(parts, into, max_p, compiled)
           require 'concurrent-ruby'
 
-          estimate = __se_per_partition_estimate(parts.size)
+          docs_estimates = __se_per_partition_docs_estimates(parts, compiled)
           renderer = SearchEngine::Logging::LiveRenderer.new(
-            labels: parts.map(&:inspect), partitions: parts, per_partition_estimate: estimate
+            labels: parts.map(&:inspect), partitions: parts, per_partition_docs_estimates: docs_estimates
           )
           renderer.start
 
@@ -414,11 +414,27 @@ module SearchEngine
       end
 
       class_methods do
-        # Heuristic per-partition batch estimate for progress bars.
+        # Build an array of per-partition doc estimates.
+        # Tries per-partition counting (auto-detected from AR fetch result),
+        # fills any nils with the equal-split heuristic fallback.
+        #
+        # @param parts [Array] partition keys
+        # @param compiled [SearchEngine::Partitioner::Compiled, nil]
+        # @return [Array<Integer, nil>]
+        def __se_per_partition_docs_estimates(parts, compiled)
+          estimates = parts.map { |part| compiled&.partition_doc_count(part) }
+
+          heuristic = __se_heuristic_docs_estimate(parts.size)
+          parts.each_index.map { |i| estimates[i] || heuristic }
+        rescue StandardError
+          Array.new(parts.size, nil)
+        end
+
+        # Equal-split heuristic: total_docs / partition_count.
         # @param partition_count [Integer]
         # @return [Integer, nil]
-        def __se_per_partition_estimate(partition_count)
-          total = SearchEngine::Indexer::BulkImport.estimate_total_batches(self)
+        def __se_heuristic_docs_estimate(partition_count)
+          total = SearchEngine::Indexer::BulkImport.estimate_total_docs(self)
           return nil unless total
 
           (total.to_f / partition_count).ceil
@@ -426,7 +442,7 @@ module SearchEngine
           nil
         end
 
-        private :__se_per_partition_estimate
+        private :__se_per_partition_docs_estimates, :__se_heuristic_docs_estimate
       end
 
       class_methods do

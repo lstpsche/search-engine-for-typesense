@@ -16,7 +16,7 @@ module SearchEngine
     # using {PartitionProgress.line}, preserving CI/pipe compatibility.
     #
     # @example
-    #   renderer = LiveRenderer.new(labels: parts.map(&:inspect), per_partition_estimate: 50)
+    #   renderer = LiveRenderer.new(labels: parts.map(&:inspect), per_partition_docs_estimate: 5000)
     #   renderer.start
     #   parts.each_with_index do |part, i|
     #     renderer[i].start
@@ -34,9 +34,12 @@ module SearchEngine
 
       # @param labels [Array<String>] display label for each slot (partition key)
       # @param partitions [Array, nil] raw partition values for non-TTY output (defaults to labels)
-      # @param per_partition_estimate [Integer, nil] estimated batches per partition (for progress bars)
+      # @param per_partition_docs_estimates [Array<Integer, nil>, nil] per-slot doc estimates (takes priority)
+      # @param per_partition_docs_estimate [Integer, nil] uniform doc estimate for all slots (fallback)
+      # @param per_partition_estimate [Integer, nil] deprecated batch-based estimate (last resort fallback)
       # @param io [IO] output stream (defaults to $stdout)
-      def initialize(labels:, partitions: nil, per_partition_estimate: nil, io: $stdout)
+      def initialize(labels:, partitions: nil, per_partition_docs_estimates: nil,
+                     per_partition_docs_estimate: nil, per_partition_estimate: nil, io: $stdout)
         @io = io
         @tty = Color.enabled?
         @mutex = Mutex.new
@@ -46,8 +49,13 @@ module SearchEngine
         @rendered_once = false
         nontty_cb = @tty ? nil : method(:flush_nontty_slot)
         raw = partitions || labels
+        per_slot = per_partition_docs_estimates || []
+        global_est = per_partition_docs_estimate || per_partition_estimate
         @slots = labels.each_with_index.map do |label, idx|
-          Slot.new(label: label, partition: raw[idx], estimate: per_partition_estimate, on_done: nontty_cb)
+          Slot.new(
+            label: label, partition: raw[idx], docs_estimate: per_slot[idx] || global_est,
+            on_done: nontty_cb
+          )
         end
         @viewport = resolve_viewport
       end
@@ -238,12 +246,12 @@ module SearchEngine
 
         # @param label [String] partition display label (e.g. partition key inspect)
         # @param partition [Object, nil] raw partition value for non-TTY output (defaults to label)
-        # @param estimate [Integer, nil] estimated total batches for progress bar
+        # @param docs_estimate [Integer, nil] estimated total docs for doc-based progress bar
         # @param on_done [Proc, nil] callback invoked after finish/finish_error (non-TTY flush)
-        def initialize(label:, partition: nil, estimate: nil, on_done: nil)
+        def initialize(label:, partition: nil, docs_estimate: nil, on_done: nil)
           @label = label
           @partition = partition.nil? ? label : partition
-          @estimate = estimate
+          @docs_estimate = docs_estimate
           @on_done = on_done
           @state = :pending
           @batches_done = 0
@@ -387,15 +395,16 @@ module SearchEngine
         end
 
         def build_progress_part
-          if @estimate&.positive? && @batches_done.positive?
-            ratio = @batches_done.to_f / @estimate
+          if @docs_estimate&.positive? && @docs_total.positive?
+            ratio = @docs_total.to_f / @docs_estimate
             pct = [100, (ratio * 100).round].min
             filled = [(ratio * BAR_WIDTH).round, BAR_WIDTH].min
             empty = BAR_WIDTH - filled
             bar = "\u2588" * filled + "\u2591" * empty
-            "#{bar}  #{pct}%  #{@batches_done}/#{@estimate} batches  (#{@docs_total} docs)"
+            batch_info = @batches_done.positive? ? "#{@batches_done} batches  " : ''
+            "#{bar}  #{pct}%  #{batch_info}(#{@docs_total}/#{@docs_estimate} docs)"
           elsif @batches_done.positive?
-            "#{@batches_done} batches, #{@docs_total} docs"
+            "#{@batches_done} batches  (#{@docs_total} docs)"
           else
             ''
           end
