@@ -319,7 +319,7 @@ module SearchEngine
           thread_buffer = +''
           thread_idx = shared_state[:mtx].synchronize { shared_state[:idx_counter] += 1 }
 
-          begin
+          snapshots = begin
             stats_list = import_batch_with_handling(
               client: thread_client,
               collection: into,
@@ -331,10 +331,7 @@ module SearchEngine
             )
 
             shared_state[:mtx].synchronize do
-              aggregate_stats(
-                stats_list, shared_state, batch_size, log_batches,
-                on_batch: shared_state[:on_batch]
-              )
+              aggregate_stats(stats_list, shared_state, batch_size, log_batches)
             end
           rescue StandardError => error
             docs_count = begin
@@ -348,26 +345,28 @@ module SearchEngine
             shared_state[:mtx].synchronize do
               err_msg = "  batch_index=#{thread_idx} → error=#{error.class}: #{error.message.to_s[0, 200]}"
               warn(SearchEngine::Logging::Color.apply(err_msg, :red))
-              aggregate_stats(
-                [failure_stat], shared_state, batch_size, log_batches,
-                on_batch: shared_state[:on_batch]
-              )
+              aggregate_stats([failure_stat], shared_state, batch_size, log_batches)
             end
           end
+
+          on_batch = shared_state[:on_batch]
+          snapshots&.each { |snap| on_batch&.call(**snap) }
         end
 
         # Aggregate batch statistics thread-safely into shared state.
         #
         # Must be called within a mutex synchronization block. Updates counters,
         # appends to batches array, validates batch size, and optionally logs.
+        # Returns counter snapshots (one per stats entry) for firing callbacks
+        # outside the lock.
         #
         # @param stats_list [Array<Hash>] array of stats hashes from batch processing
         # @param shared_state [Hash] shared state hash to update (must be mutex-protected)
         # @param batch_size [Integer, nil] soft guard for logging when exceeded
         # @param log_batches [Boolean] whether to log each batch as it completes
-        # @return [void]
-        def aggregate_stats(stats_list, shared_state, batch_size, log_batches, on_batch: nil)
-          stats_list.each do |stats|
+        # @return [Array<Hash>] counter snapshots suitable for on_batch callbacks
+        def aggregate_stats(stats_list, shared_state, batch_size, log_batches)
+          stats_list.map do |stats|
             shared_state[:docs_total] += stats[:docs_count].to_i
             shared_state[:success_total] += stats[:success_count].to_i
             shared_state[:failed_total] += stats[:failure_count].to_i
@@ -376,10 +375,10 @@ module SearchEngine
             shared_state[:batches] << stats
             validate_soft_batch_size!(batch_size, stats[:docs_count])
             log_batch(stats, shared_state[:batches_total]) if log_batches
-            on_batch&.call(
+            {
               batches_done: shared_state[:batches_total], docs_total: shared_state[:docs_total],
               success_total: shared_state[:success_total], failed_total: shared_state[:failed_total]
-            )
+            }
           end
         end
 
