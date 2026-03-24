@@ -80,10 +80,16 @@ module SearchEngine
       end
 
       # Whether an HTTP status code represents a transient/retryable error.
+      #
+      # Includes 404 to handle brief unavailability of freshly-created
+      # collections during blue/green schema applies (Typesense cluster
+      # propagation delay). A genuinely missing collection will still fail
+      # after exhausting the retry budget.
+      #
       # @param code [Integer]
       # @return [Boolean]
       def self.transient_status?(code)
-        code == 429 || (code >= 500 && code <= 599)
+        code == 404 || code == 429 || (code >= 500 && code <= 599)
       end
 
       private

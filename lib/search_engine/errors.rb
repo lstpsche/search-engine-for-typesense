@@ -127,6 +127,23 @@ module SearchEngine
     # leaving those partitions unindexed.
     class PartitionTimeout < Error; end
 
+    # Raised inside a {SearchEngine::Schema.apply!} block when indexation
+    # returns a non-ok status. Aborting the block prevents the alias swap,
+    # keeping the previous (fully-indexed) physical collection active.
+    #
+    # The partially-indexed new physical is left intact for inspection.
+    class IndexationAborted < Error
+      # @return [Hash] the indexation result hash (:status, :docs_total, etc.)
+      attr_reader :result
+
+      # @param result [Hash]
+      def initialize(result)
+        @result = result
+        msg = result.is_a?(Hash) ? (result[:sample_error] || 'indexation failed') : 'indexation failed'
+        super(msg)
+      end
+    end
+
     # Raised for network-level connectivity issues prior to receiving a response.
     #
     # Examples: DNS resolution failures, refused TCP connections, TLS handshake

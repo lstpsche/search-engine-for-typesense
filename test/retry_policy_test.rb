@@ -27,10 +27,15 @@ class RetryPolicyTest < Minitest::Test
   def test_not_retryable_on_client_api_error
     policy = build_policy
     error_400 = SearchEngine::Errors::Api.new('400', status: 400)
-    error_404 = SearchEngine::Errors::Api.new('404', status: 404)
 
     refute policy.retry?(1, error_400)
-    refute policy.retry?(1, error_404)
+  end
+
+  def test_retryable_on_404
+    policy = build_policy
+    error_404 = SearchEngine::Errors::Api.new('404', status: 404)
+
+    assert policy.retry?(1, error_404)
   end
 
   def test_attempts_cap

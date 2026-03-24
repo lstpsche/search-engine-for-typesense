@@ -79,12 +79,18 @@ module SearchEngine
             step = SearchEngine::Logging::StepLine.new('Schema')
             if missing
               step.update('creating')
-              SearchEngine::Schema.apply!(self, client: client) do |new_physical|
-                step.yield_line!
-                indexed_inside_apply = __se_index_partitions!(into: new_physical)
+              begin
+                SearchEngine::Schema.apply!(self, client: client) do |new_physical|
+                  step.yield_line!
+                  indexed_inside_apply = __se_index_partitions!(into: new_physical)
+                  __se_abort_apply_if_failed!(indexed_inside_apply)
+                end
+                applied = true
+                step.finish('created')
+              rescue SearchEngine::Errors::IndexationAborted
+                applied = true
+                step.finish_warn('created (indexing failed — alias not swapped)')
               end
-              applied = true
-              step.finish('created')
             else
               step.skip('collection present')
             end
@@ -115,12 +121,18 @@ module SearchEngine
             step = SearchEngine::Logging::StepLine.new('Schema Apply')
             if drift
               step.update('applying')
-              SearchEngine::Schema.apply!(self, client: client, force_rebuild: force_rebuild) do |new_physical|
-                step.yield_line!
-                indexed_inside_apply = __se_index_partitions!(into: new_physical)
+              begin
+                SearchEngine::Schema.apply!(self, client: client, force_rebuild: force_rebuild) do |new_physical|
+                  step.yield_line!
+                  indexed_inside_apply = __se_index_partitions!(into: new_physical)
+                  __se_abort_apply_if_failed!(indexed_inside_apply)
+                end
+                applied = true
+                step.finish('applied')
+              rescue SearchEngine::Errors::IndexationAborted
+                applied = true
+                step.finish_warn('applied (indexing failed — alias not swapped)')
               end
-              applied = true
-              step.finish('applied')
             else
               step.skip
             end
@@ -282,6 +294,15 @@ module SearchEngine
             end
           end
           # rubocop:enable Metrics/PerceivedComplexity, Metrics/AbcSize
+
+          # Raise {SearchEngine::Errors::IndexationAborted} when the result
+          # from {__se_index_partitions!} indicates a non-ok status. Called
+          # inside a {Schema.apply!} block to prevent the alias swap.
+          def __se_abort_apply_if_failed!(result)
+            return unless result.is_a?(Hash) && result[:status] != :ok
+
+            raise SearchEngine::Errors::IndexationAborted, result
+          end
 
           def __se_retention_cleanup!(*_)
             SearchEngine::Schema.prune_history!(self)
