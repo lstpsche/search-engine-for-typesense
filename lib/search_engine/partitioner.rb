@@ -104,7 +104,11 @@ module SearchEngine
 
       def extract_count(result)
         relation = countable_relation_from(result)
-        relation&.count
+        return nil unless relation
+
+        # Strip custom SELECT to ensure a clean COUNT(*) — aliased columns
+        # (e.g. "col AS alias") cause PG::SyntaxError inside COUNT().
+        relation.unscope(:select).count
       rescue StandardError
         nil
       end
