@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'search_engine/logging/color'
+require 'search_engine/logging/cursor_guard'
 
 module SearchEngine
   module Logging
@@ -41,7 +42,6 @@ module SearchEngine
         @thread = nil
         @running = false
         @rendered_once = false
-        @restore_registered = false
         nontty_cb = @tty ? nil : method(:flush_nontty_slot)
         @slots = labels.map { |label| Slot.new(label: label, estimate: per_partition_estimate, on_done: nontty_cb) }
       end
@@ -56,7 +56,7 @@ module SearchEngine
           return if @running
 
           @running = true
-          hide_cursor
+          CursorGuard.hide(@io)
           @thread = Thread.new { render_loop }
         end
       end
@@ -75,7 +75,7 @@ module SearchEngine
           @thread&.join
           @thread = nil
           render_final_frame
-          show_cursor
+          CursorGuard.show(@io)
         else
           flush_pending_nontty
         end
@@ -96,23 +96,34 @@ module SearchEngine
 
       def render_loop
         frame_idx = 0
-        @mutex.synchronize do
-          while @running
-            render_all(frame_idx)
-            frame_idx += 1
+        loop do
+          lines = @mutex.synchronize do
+            break unless @running
+
             @stop_signal.wait(@mutex, INTERVAL)
+            break unless @running
+
+            @slots.map { |slot| slot.render(frame_idx) }
           end
+          break if lines.nil?
+
+          write_lines(lines)
+          frame_idx += 1
         end
       end
 
-      def render_all(frame_idx)
-        @io.write("\e[#{@slots.size}A") if @rendered_once
-        @slots.each { |slot| @io.write("\r\e[K#{slot.render(frame_idx)}\n") }
+      def write_lines(lines)
+        return if lines.empty?
+
+        @io.write("\e[#{lines.size}A") if @rendered_once
+        lines.each { |line| @io.write("\r\e[K#{line}\n") }
         @io.flush
         @rendered_once = true
       end
 
       def render_final_frame
+        return if @slots.empty?
+
         @io.write("\e[#{@slots.size}A") if @rendered_once
         @slots.each { |slot| @io.write("\r\e[K#{slot.render_final}\n") }
         @io.flush
@@ -134,25 +145,6 @@ module SearchEngine
           @io.puts(slot.nontty_line)
           slot.mark_flushed!
         end
-      end
-
-      def hide_cursor
-        @io.write("\e[?25l")
-        @io.flush
-        register_cursor_restore
-      end
-
-      def show_cursor
-        @io.write("\e[?25h")
-        @io.flush
-      end
-
-      def register_cursor_restore
-        return if @restore_registered
-
-        io = @io
-        at_exit { io.write("\e[?25h") if io.respond_to?(:write) }
-        @restore_registered = true
       end
 
       # Represents one partition line managed by {LiveRenderer}.
@@ -317,8 +309,9 @@ module SearchEngine
 
         def build_progress_part
           if @estimate&.positive? && @batches_done.positive?
-            pct = [(@batches_done.to_f / @estimate * 100).round, 100].min
-            filled = (pct.to_f / 100 * BAR_WIDTH).round
+            ratio = @batches_done.to_f / @estimate
+            pct = (ratio * 100).round
+            filled = [(ratio * BAR_WIDTH).round, BAR_WIDTH].min
             empty = BAR_WIDTH - filled
             bar = "\u2588" * filled + "\u2591" * empty
             "#{bar}  #{pct}%  (#{@docs_total} docs)"

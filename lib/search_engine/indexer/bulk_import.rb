@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require 'timeout'
 require 'search_engine/logging/color'
 require 'search_engine/logging/batch_line'
 
@@ -57,6 +58,7 @@ module SearchEngine
         # @param batch_size [Integer, nil] soft guard for logging when exceeded
         # @param action [Symbol] :upsert, :create, or :update
         # @param log_batches [Boolean] whether to log each batch as it completes
+        # @param on_batch [Proc, nil] called after each batch with progress counters
         # @return [SearchEngine::Indexer::Summary]
         def call_sequential(klass:, into:, enum:, batch_size:, action:, log_batches:, on_batch: nil)
           docs_enum = normalize_enum(enum)
@@ -131,6 +133,7 @@ module SearchEngine
         # @param action [Symbol] :upsert, :create, or :update
         # @param log_batches [Boolean] whether to log each batch as it completes
         # @param max_parallel [Integer] maximum number of parallel threads
+        # @param on_batch [Proc, nil] called after each batch with progress counters
         # @return [SearchEngine::Indexer::Summary]
         def call_parallel(klass:, into:, enum:, batch_size:, action:, log_batches:, max_parallel:, on_batch: nil)
           require 'concurrent-ruby'
@@ -433,6 +436,7 @@ module SearchEngine
         # @param klass [Class] a {SearchEngine::Base} subclass
         # @return [Integer, nil] estimated total batch count or nil if not estimable
         def estimate_total_batches(klass)
+          return nil if SearchEngine.config.indexer.estimate_progress == false
           return nil unless klass.is_a?(Class)
 
           dsl = mapper_dsl_for_klass(klass)
@@ -451,7 +455,7 @@ module SearchEngine
           return nil unless batch_size.positive?
 
           begin
-            total_records = model.count
+            total_records = Timeout.timeout(10) { model.count }
             return nil unless total_records.positive?
 
             (total_records.to_f / batch_size).ceil
