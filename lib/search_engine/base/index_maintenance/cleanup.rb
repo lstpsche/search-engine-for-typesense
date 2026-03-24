@@ -50,13 +50,14 @@ module SearchEngine
             filters = SearchEngine::StaleRules.compile_filters(self, partition: partition)
             filters.compact!
             filters.reject! { |f| f.to_s.strip.empty? }
+            step = SearchEngine::Logging::StepLine.new('Cleanup')
             if filters.empty?
-              puts(SearchEngine::Logging::Color.dim('Cleanup — skip (no stale configuration)'))
+              step.skip('no stale configuration')
               return 0
             end
 
             merged_filter = SearchEngine::StaleRules.merge_filters(filters)
-            puts("Cleanup — filter=#{merged_filter.inspect}")
+            step.update("filter=#{merged_filter.inspect}")
 
             deleted = SearchEngine::Deletion.delete_by(
               klass: self,
@@ -65,7 +66,7 @@ module SearchEngine
               partition: partition
             )
 
-            puts("Cleanup — #{SearchEngine::Logging::Color.apply("deleted=#{deleted}", :green)}")
+            step.finish("deleted=#{deleted}")
             deleted
           rescue StandardError => error
             err_msg = "Cleanup — error=#{error.class}: #{error.message.to_s[0, 200]}"

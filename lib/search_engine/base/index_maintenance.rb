@@ -6,6 +6,7 @@ require 'search_engine/base/index_maintenance/lifecycle'
 require 'search_engine/base/index_maintenance/schema'
 require 'search_engine/logging/color'
 require 'search_engine/logging/batch_line'
+require 'search_engine/logging/step_line'
 
 module SearchEngine
   class Base
