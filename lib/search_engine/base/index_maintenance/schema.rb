@@ -37,6 +37,8 @@ module SearchEngine
               step.skip('no changes or incompatible')
             end
             updated
+          ensure
+            step&.close
           end
 
           def drop_collection!
@@ -64,6 +66,8 @@ module SearchEngine
             step.finish('done')
             puts(SearchEngine::Logging::Color.header(%(>>>>>> Dropped Collection "#{logical}")))
             nil
+          ensure
+            step&.close
           end
 
           def recreate_collection!
@@ -91,6 +95,8 @@ module SearchEngine
             client.create_collection(schema)
             step.finish('done')
             nil
+          ensure
+            step&.close
           end
 
           def __se_retention_cleanup!(_logical:, _client:)

@@ -73,6 +73,7 @@ module SearchEngine
             warn(SearchEngine::Logging::Color.apply(err_msg, :red))
             0
           ensure
+            step&.close
             if clear_cache
               begin
                 puts("Cleanup — #{SearchEngine::Logging::Color.bold('cache clear')}")

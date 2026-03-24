@@ -259,6 +259,7 @@ module SearchEngine
         def nontty_line
           @mutex.synchronize do
             return partition_progress_line if @summary
+            return "  partition=#{@label} \u2014 error: #{@error_message}" if @state == :error && @error_message
 
             "  partition=#{@label} \u2014 #{@state}"
           end
