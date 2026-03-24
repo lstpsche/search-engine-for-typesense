@@ -90,6 +90,15 @@ module SearchEngine
         write_final(text)
       end
 
+      # Release resources without producing output.
+      # Idempotent; safe to call after {#finish}, {#skip}, or on an unused instance.
+      #
+      # @return [void]
+      # @since M9
+      def close
+        stop_spinner!
+      end
+
       # Terminate the current line before sub-output starts.
       #
       # On TTY, appends a newline so the pending text stays visible above

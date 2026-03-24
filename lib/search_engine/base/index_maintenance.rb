@@ -333,7 +333,11 @@ module SearchEngine
             summaries << summary
           end
 
-          renderer.stop
+          begin
+            renderer.stop
+          rescue StandardError
+            nil
+          end
           __se_build_index_result(summaries)
         ensure
           renderer&.stop
@@ -391,7 +395,11 @@ module SearchEngine
             end
           end
 
-          renderer.stop
+          begin
+            renderer.stop
+          rescue StandardError
+            nil
+          end
           raise partition_errors.first if partition_errors.any?
 
           __se_build_index_result(summaries)

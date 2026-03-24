@@ -89,6 +89,8 @@ module SearchEngine
               step.skip('collection present')
             end
             [applied, indexed_inside_apply]
+          ensure
+            step&.close
           end
 
           def __se_full_check_drift(diff, missing, force_rebuild)
@@ -105,6 +107,8 @@ module SearchEngine
             end
             step.skip('just created')
             false
+          ensure
+            step&.close
           end
 
           def __se_full_apply_if_drift(client, drift, applied, indexed_inside_apply, force_rebuild)
@@ -121,6 +125,8 @@ module SearchEngine
               step.skip
             end
             [applied, indexed_inside_apply]
+          ensure
+            step&.close
           end
 
           def __se_full_indexation(applied, indexed_inside_apply)
@@ -139,6 +145,8 @@ module SearchEngine
             cascade_ok = result.is_a?(Hash) ? result[:status] == :ok : false
             __se_cascade_after_indexation!(context: :full) if cascade_ok
             result
+          ensure
+            step&.close
           end
 
           def __se_full_retention(applied, logical, client)
@@ -150,6 +158,8 @@ module SearchEngine
               dropped = __se_retention_cleanup!(logical: logical, client: client)
               step.finish("dropped=#{dropped.inspect}")
             end
+          ensure
+            step&.close
           end
 
           def __se_index_partial(partition:, client:, pre: nil)
@@ -192,6 +202,8 @@ module SearchEngine
             result = __se_build_index_result(summaries)
             __se_cascade_after_indexation!(context: :full) if result[:status] == :ok
             result
+          ensure
+            step&.close
           end
 
           # rubocop:disable Metrics/PerceivedComplexity, Metrics/AbcSize
