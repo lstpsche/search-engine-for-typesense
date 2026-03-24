@@ -40,10 +40,11 @@ module SearchEngine
     # @param klass [Class] a {SearchEngine::Base} subclass
     # @param partition [Object] opaque partition key as defined by the DSL/source
     # @param into [String, nil] target collection; defaults to resolver or the logical collection alias
+    # @param on_batch [Proc, nil] called after each batch with progress counters
     # @return [Summary]
     # @raise [SearchEngine::Errors::InvalidParams]
     # @see `https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/indexer#partitioning`
-    def self.rebuild_partition!(klass, partition:, into: nil)
+    def self.rebuild_partition!(klass, partition:, into: nil, on_batch: nil)
       raise Errors::InvalidParams, 'klass must be a Class' unless klass.is_a?(Class)
       unless klass.ancestors.include?(SearchEngine::Base)
         raise Errors::InvalidParams, 'klass must inherit from SearchEngine::Base'
@@ -83,7 +84,8 @@ module SearchEngine
           batch_size: nil,
           action: :upsert,
           log_batches: partition.nil?,
-          max_parallel: max_parallel
+          max_parallel: max_parallel,
+          on_batch: on_batch
         )
 
         run_after_hook_if_present(after_hook, partition)
@@ -162,11 +164,13 @@ module SearchEngine
     # @param action [Symbol] :upsert (default), :create, or :update
     # @param log_batches [Boolean] whether to log each batch as it completes (default: true)
     # @param max_parallel [Integer] maximum parallel threads for batch processing (default: 1)
+    # @param on_batch [Proc, nil] called after each batch with progress counters
     # @return [Summary]
     # @raise [SearchEngine::Errors::InvalidParams]
     # @see `https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/indexer`
     # @see `https://typesense.org/docs/latest/api/documents.html#import-documents`
-    def self.import!(klass, into:, enum:, batch_size: nil, action: :upsert, log_batches: true, max_parallel: 1)
+    def self.import!(klass, into:, enum:, batch_size: nil, action: :upsert, log_batches: true,
+                     max_parallel: 1, on_batch: nil)
       SearchEngine::Indexer::BulkImport.call(
         klass: klass,
         into: into,
@@ -174,7 +178,8 @@ module SearchEngine
         batch_size: batch_size,
         action: action,
         log_batches: log_batches,
-        max_parallel: max_parallel
+        max_parallel: max_parallel,
+        on_batch: on_batch
       )
     end
 

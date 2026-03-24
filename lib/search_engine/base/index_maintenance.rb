@@ -7,6 +7,7 @@ require 'search_engine/base/index_maintenance/schema'
 require 'search_engine/logging/color'
 require 'search_engine/logging/batch_line'
 require 'search_engine/logging/step_line'
+require 'search_engine/logging/live_renderer'
 
 module SearchEngine
   class Base
@@ -309,59 +310,84 @@ module SearchEngine
       end
 
       class_methods do
-        # Sequential processing of partition list
+        # Sequential processing of partition list with live progress rendering.
         def __se_index_partitions_seq!(parts, into)
+          estimate = __se_per_partition_estimate(parts.size)
+          renderer = SearchEngine::Logging::LiveRenderer.new(
+            labels: parts.map(&:inspect), per_partition_estimate: estimate
+          )
+          renderer.start
+
           summaries = []
-          parts.each do |part|
-            summary = SearchEngine::Indexer.rebuild_partition!(self, partition: part, into: into)
+          parts.each_with_index do |part, idx|
+            slot = renderer[idx]
+            slot.start
+            on_batch = ->(info) { slot.progress(**info) }
+            summary = SearchEngine::Indexer.rebuild_partition!(
+              self, partition: part, into: into, on_batch: on_batch
+            )
+            slot.finish(summary)
             summaries << summary
-            puts(SearchEngine::Logging::PartitionProgress.line(part, summary))
-            __se_log_batches_from_summary(summary.batches) if summary.batches_total.to_i > 1
+          rescue StandardError => error
+            renderer[idx].finish_error(error)
           end
+
+          renderer.stop
           __se_build_index_result(summaries)
         end
       end
 
       class_methods do
-        # Parallel processing via bounded thread pool
+        # Parallel processing via bounded thread pool with live progress rendering.
         def __se_index_partitions_parallel!(parts, into, max_p)
           require 'concurrent-ruby'
+
+          estimate = __se_per_partition_estimate(parts.size)
+          renderer = SearchEngine::Logging::LiveRenderer.new(
+            labels: parts.map(&:inspect), per_partition_estimate: estimate
+          )
+          renderer.start
+
           pool = Concurrent::FixedThreadPool.new(max_p)
           cancelled = Concurrent::AtomicBoolean.new(false)
           ctx = SearchEngine::Instrumentation.context
-          mtx = Mutex.new
           summaries = []
           partition_errors = []
+          mtx = Mutex.new
 
           on_interrupt = lambda do
-            warn("\n  Interrupted — stopping parallel partition workers…")
             cancelled.make_true
+            renderer.stop
+            warn("\n  Interrupted \u2014 stopping parallel partition workers\u2026")
           end
 
           SearchEngine::InterruptiblePool.run(pool, on_interrupt: on_interrupt) do
-            parts.each do |part|
+            parts.each_with_index do |part, idx|
               break if cancelled.true?
 
               pool.post do
                 next if cancelled.true?
 
+                slot = renderer[idx]
+                slot.start
                 SearchEngine::Instrumentation.with_context(ctx) do
-                  summary = SearchEngine::Indexer.rebuild_partition!(self, partition: part, into: into)
-                  mtx.synchronize do
-                    summaries << summary
-                    puts(SearchEngine::Logging::PartitionProgress.line(part, summary))
-                    __se_log_batches_from_summary(summary.batches) if summary.batches_total.to_i > 1
-                  end
+                  on_batch = ->(info) { slot.progress(**info) }
+                  summary = SearchEngine::Indexer.rebuild_partition!(
+                    self, partition: part, into: into, on_batch: on_batch
+                  )
+                  slot.finish(summary)
+                  mtx.synchronize { summaries << summary }
                 end
               rescue StandardError => error
+                renderer[idx].finish_error(error)
                 mtx.synchronize do
-                  err_msg = "  partition=#{part.inspect} → error=#{error.class}: #{error.message.to_s[0, 200]}"
-                  warn(SearchEngine::Logging::Color.apply(err_msg, :red))
                   partition_errors << "#{error.class}: #{error.message.to_s[0, 200]}"
                 end
               end
             end
           end
+
+          renderer.stop
 
           result = __se_build_index_result(summaries)
           if partition_errors.any?
@@ -370,6 +396,22 @@ module SearchEngine
           end
           result
         end
+      end
+
+      class_methods do
+        # Heuristic per-partition batch estimate for progress bars.
+        # @param partition_count [Integer]
+        # @return [Integer, nil]
+        def __se_per_partition_estimate(partition_count)
+          total = SearchEngine::Indexer::BulkImport.estimate_total_batches(self)
+          return nil unless total
+
+          (total.to_f / partition_count).ceil
+        rescue StandardError
+          nil
+        end
+
+        private :__se_per_partition_estimate
       end
 
       class_methods do
