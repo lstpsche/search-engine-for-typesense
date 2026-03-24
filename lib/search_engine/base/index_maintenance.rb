@@ -327,13 +327,24 @@ module SearchEngine
         def __se_index_partitions_parallel!(parts, into, max_p)
           require 'concurrent-ruby'
           pool = Concurrent::FixedThreadPool.new(max_p)
+          cancelled = Concurrent::AtomicBoolean.new(false)
           ctx = SearchEngine::Instrumentation.context
           mtx = Mutex.new
           summaries = []
           partition_errors = []
-          begin
+
+          on_interrupt = lambda do
+            warn("\n  Interrupted — stopping parallel partition workers…")
+            cancelled.make_true
+          end
+
+          SearchEngine::InterruptiblePool.run(pool, on_interrupt: on_interrupt) do
             parts.each do |part|
+              break if cancelled.true?
+
               pool.post do
+                next if cancelled.true?
+
                 SearchEngine::Instrumentation.with_context(ctx) do
                   summary = SearchEngine::Indexer.rebuild_partition!(self, partition: part, into: into)
                   mtx.synchronize do
@@ -350,11 +361,8 @@ module SearchEngine
                 end
               end
             end
-          ensure
-            pool.shutdown
-            pool.wait_for_termination(3600) || pool.kill
-            pool.wait_for_termination(60)
           end
+
           result = __se_build_index_result(summaries)
           if partition_errors.any?
             result[:status] = :failed

@@ -1,0 +1,39 @@
+# frozen_string_literal: true
+
+module SearchEngine
+  # Wraps Concurrent::FixedThreadPool execution with proper Interrupt handling.
+  # Ensures pool threads are killed promptly on Ctrl+C instead of waiting
+  # up to the full graceful-shutdown timeout.
+  module InterruptiblePool
+    GRACEFUL_TIMEOUT = 3600
+    KILL_TIMEOUT = 10
+    CLEANUP_TIMEOUT = 60
+
+    # Execute a block that posts work to a thread pool, then wait for completion.
+    #
+    # Normal path: graceful shutdown → long wait.
+    # Interrupt:   on_interrupt callback → pool.kill → short wait → re-raise.
+    # Other error: ensure kill → short wait.
+    #
+    # @param pool [Concurrent::FixedThreadPool]
+    # @param on_interrupt [Proc, nil] callback invoked before killing the pool
+    # @yield block that posts work to the pool
+    # @return [void]
+    def self.run(pool, on_interrupt: nil)
+      yield
+      pool.shutdown
+      pool.wait_for_termination(GRACEFUL_TIMEOUT) || pool.kill
+      pool.wait_for_termination(CLEANUP_TIMEOUT)
+    rescue Interrupt
+      on_interrupt&.call
+      pool.kill
+      pool.wait_for_termination(KILL_TIMEOUT)
+      raise
+    ensure
+      unless pool.shutdown?
+        pool.kill
+        pool.wait_for_termination(KILL_TIMEOUT)
+      end
+    end
+  end
+end
