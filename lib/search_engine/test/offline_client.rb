@@ -56,6 +56,10 @@ module SearchEngine
         nil
       end
 
+      def delete_alias(alias_name)
+        {}
+      end
+
       def upsert_alias(alias_name, physical_name)
         {}
       end

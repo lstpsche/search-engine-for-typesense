@@ -58,6 +58,26 @@ module SearchEngine
         end
 
         # @param alias_name [String]
+        # @return [Hash] Typesense delete response, or { status: 404 } when alias not found
+        def delete_alias(alias_name)
+          a = alias_name.to_s
+          start = current_monotonic_ms
+          path = [Client::RequestBuilder::ALIASES_PREFIX, a].join
+
+          result = with_exception_mapping(:delete, path, {}, start) do
+            typesense.aliases[a].delete
+          end
+
+          symbolize_keys_deep(result)
+        rescue Errors::Api => error
+          return { status: 404 } if error.status.to_i == 404
+
+          raise
+        ensure
+          instrument(:delete, path, (start ? (current_monotonic_ms - start) : 0.0), {}, request_token: start)
+        end
+
+        # @param alias_name [String]
         # @param physical_name [String]
         # @return [Hash]
         def upsert_alias(alias_name, physical_name)

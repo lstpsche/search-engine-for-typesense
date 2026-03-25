@@ -274,13 +274,44 @@ module SearchEngine
 
             __se_index_partitions_parallel!(parts, into, max_p, compiled)
           else
-            summary = SearchEngine::Indexer.rebuild_partition!(self, partition: nil, into: into)
-            __se_build_index_result([summary])
+            __se_index_single_with_renderer!(into)
           end
         rescue StandardError => error
           { status: :failed, docs_total: 0, success_total: 0, failed_total: 0,
             sample_error: "#{error.class}: #{error.message.to_s[0, 200]}" }
         end
+
+        def __se_index_single_with_renderer!(into)
+          docs_estimate = __se_heuristic_docs_estimate(1)
+          renderer = SearchEngine::Logging::LiveRenderer.new(
+            labels: ['single'], partitions: [nil],
+            per_partition_docs_estimates: [docs_estimate]
+          )
+          renderer.start
+
+          summary = nil
+          slot = renderer[0]
+          slot.start
+          begin
+            on_batch = ->(info) { slot.progress(**info) }
+            summary = SearchEngine::Indexer.rebuild_partition!(self, partition: nil, into: into, on_batch: on_batch)
+            slot.finish(summary)
+          rescue StandardError => error
+            slot.finish_error(error)
+            raise
+          end
+
+          begin
+            renderer.stop
+          rescue StandardError
+            nil
+          end
+          __se_build_index_result([summary])
+        ensure
+          renderer&.stop
+        end
+
+        private :__se_index_single_with_renderer!
 
         # Aggregate an array of Indexer::Summary structs into a single result hash.
         # @param summaries [Array<SearchEngine::Indexer::Summary>]

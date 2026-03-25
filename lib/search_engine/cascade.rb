@@ -143,15 +143,24 @@ into: nil
       # Perform a full reindex for a referencer collection, honoring partitioning
       # directives when present. Falls back to a single non-partitioned rebuild
       # when no partitions are configured.
+      #
+      # Strategy:
+      # 1. Try safe blue/green rebuild via index_collection(force_rebuild: true).
+      # 2. If that fails, fall through to partition-based import into the existing
+      #    collection. This is non-destructive: the collection stays available
+      #    with its current schema while documents are refreshed.
+      #
+      # The previous destructive fallback (drop + recreate) was removed because
+      # it caused availability gaps — the collection disappears entirely while
+      # being rebuilt, and if the rebuild fails, it stays gone.
+      #
       # @param ref_klass [Class]
-      # @return [void]
-      # rubocop:disable Metrics/AbcSize
+      # @return [Boolean]
       def __se_full_reindex_for_referrer(ref_klass, client:, alias_cache:)
         logical = ref_klass.respond_to?(:collection) ? ref_klass.collection.to_s : ref_klass.name.to_s
         physical = resolve_physical_collection_name(logical, client: client, cache: alias_cache)
+        coll_display = physical && physical != logical ? "#{logical} (physical: #{physical})" : logical
 
-        # For cascade full reindex, force a schema rebuild (blue/green) to
-        # refresh reference targets before importing documents.
         forced = reindex_referencer_with_fresh_schema!(
           ref_klass,
           logical,
@@ -160,10 +169,6 @@ into: nil
           force_rebuild: true
         )
         return true if forced
-
-        # Fallback: force full destructive reindex when forced rebuild fails.
-        dropped = reindex_referencer_with_drop!(ref_klass, logical, physical)
-        return true if dropped
 
         begin
           compiled = SearchEngine::Partitioner.for(ref_klass)
@@ -183,12 +188,10 @@ into: nil
           parts = parts.reject { |p| p.nil? || p.to_s.strip.empty? }
 
           if parts.empty?
-            coll_display = physical && physical != logical ? "#{logical} (physical: #{physical})" : logical
             puts(SearchEngine::Logging::Color.dim(%(  Referencer "#{coll_display}" — partitions=0 → skip)))
             return false
           end
 
-          coll_display = physical && physical != logical ? "#{logical} (physical: #{physical})" : logical
           parts_str = SearchEngine::Logging::Color.bold("partitions=#{parts.size}")
           puts(%(  Referencer "#{coll_display}" — #{parts_str} parallel=#{compiled.max_parallel}))
           mp = compiled.max_parallel.to_i
@@ -207,14 +210,12 @@ into: nil
           end
 
         else
-          coll_display = physical && physical != logical ? "#{logical} (physical: #{physical})" : logical
           puts(%(  Referencer "#{coll_display}" — #{SearchEngine::Logging::Color.bold('single')}))
           SearchEngine::Indexer.rebuild_partition!(ref_klass, partition: nil, into: nil)
           executed = true
         end
         executed
       end
-      # rubocop:enable Metrics/AbcSize
 
       # Resolve logical alias to physical name with optional per-run memoization.
       # @param logical [String]
@@ -339,21 +340,6 @@ into: nil
         true
       rescue StandardError => error
         err_line = %(  Referencer "#{logical}" — schema rebuild failed: #{error.message})
-        puts(SearchEngine::Logging::Color.apply(err_line, :red))
-        false
-      end
-
-      def reindex_referencer_with_drop!(ref_klass, logical, physical)
-        coll_display = physical && physical != logical ? "#{logical} (physical: #{physical})" : logical
-        status_word = SearchEngine::Logging::Color.apply('force reindex (drop+index)', :yellow)
-        puts(%(  Referencer "#{coll_display}" — #{status_word}))
-
-        SearchEngine::Instrumentation.with_context(bulk_suppress_cascade: true) do
-          ref_klass.reindex_collection!
-        end
-        true
-      rescue StandardError => error
-        err_line = %(  Referencer "#{logical}" — force reindex failed: #{error.message})
         puts(SearchEngine::Logging::Color.apply(err_line, :red))
         false
       end

@@ -61,6 +61,14 @@ module SearchEngine
       services.fetch(:collections).retrieve_schema(collection_name, timeout_ms: timeout_ms)
     end
 
+    # Delete an alias by name. Returns { status: 404 } when alias not found.
+    # @param alias_name [String]
+    # @return [Hash]
+    # @see `https://typesense.org/docs/latest/api/aliases.html#delete-an-alias`
+    def delete_alias(alias_name)
+      services.fetch(:collections).delete_alias(alias_name)
+    end
+
     # Upsert an alias to point to the provided physical collection (atomic server-side swap).
     # @param alias_name [String]
     # @param physical_name [String]

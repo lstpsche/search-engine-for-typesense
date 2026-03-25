@@ -46,46 +46,76 @@ module SearchEngine
             logical = respond_to?(:collection) ? collection.to_s : name.to_s
 
             alias_target = client.resolve_alias(logical, timeout_ms: 10_000)
-            physical = if alias_target && !alias_target.to_s.strip.empty?
-                         alias_target.to_s
-                       else
-                         live = client.retrieve_collection_schema(logical, timeout_ms: 10_000)
-                         live ? logical : nil
-                       end
+            has_alias = alias_target && !alias_target.to_s.strip.empty?
+
+            physicals = __se_list_all_physicals(logical, client)
+            bare_schema = client.retrieve_collection_schema(logical, timeout_ms: 10_000)
 
             step = SearchEngine::Logging::StepLine.new('Drop Collection')
-            if physical.nil?
+            if !has_alias && physicals.empty? && bare_schema.nil?
               step.skip('not present')
               return
             end
 
             puts
             puts(SearchEngine::Logging::Color.header(%(>>>>>> Dropping Collection "#{logical}")))
-            step.update("dropping (logical=#{logical} physical=#{physical})")
-            client.delete_collection(physical, timeout_ms: 60_000)
-            step.finish('done')
+
+            physicals.each do |name|
+              step.update("dropping physical #{name}")
+              client.delete_collection(name, timeout_ms: 60_000)
+            end
+
+            if bare_schema && !physicals.include?(logical)
+              step.update("dropping bare collection #{logical}")
+              client.delete_collection(logical, timeout_ms: 60_000)
+            end
+
+            if has_alias
+              step.update("deleting alias #{logical}")
+              client.delete_alias(logical)
+            end
+
+            step.finish("done (physicals=#{physicals.size})")
             puts(SearchEngine::Logging::Color.header(%(>>>>>> Dropped Collection "#{logical}")))
             nil
           ensure
             step&.close
           end
 
+          # @return [Array<String>] physical collection names matching the logical pattern
+          def __se_list_all_physicals(logical, client)
+            meta_timeout = begin
+              t = SearchEngine.config.timeout_ms.to_i
+              [t, 10_000].max
+            rescue StandardError
+              10_000
+            end
+
+            all_collections = Array(client.list_collections(timeout_ms: meta_timeout))
+            names = all_collections.map { |c| (c[:name] || c['name']).to_s }
+            re = /\A#{Regexp.escape(logical)}_\d{8}_\d{6}_\d{3}\z/
+            names.select { |n| re.match?(n) }
+          rescue StandardError
+            []
+          end
+
+          private :__se_list_all_physicals
+
           def recreate_collection!
             client = SearchEngine.client
             logical = respond_to?(:collection) ? collection.to_s : name.to_s
 
             alias_target = client.resolve_alias(logical)
-            physical = if alias_target && !alias_target.to_s.strip.empty?
-                         alias_target.to_s
-                       else
-                         live = client.retrieve_collection_schema(logical)
-                         live ? logical : nil
-                       end
+            has_alias = alias_target && !alias_target.to_s.strip.empty?
+            physicals = __se_list_all_physicals(logical, client)
+            bare_schema = client.retrieve_collection_schema(logical)
 
             step = SearchEngine::Logging::StepLine.new('Recreate Collection')
-            if physical
-              step.update("dropping existing (logical=#{logical} physical=#{physical})")
-              client.delete_collection(physical)
+            if has_alias || physicals.any? || bare_schema
+              step.update("dropping existing (logical=#{logical})")
+              physicals.each { |name| client.delete_collection(name) }
+              client.delete_collection(logical) if bare_schema && !physicals.include?(logical)
+              client.delete_alias(logical) if has_alias
             else
               step.update("creating (logical=#{logical})")
             end

@@ -83,7 +83,7 @@ module SearchEngine
           enum: docs_enum,
           batch_size: nil,
           action: :upsert,
-          log_batches: partition.nil?,
+          log_batches: partition.nil? && on_batch.nil?,
           max_parallel: max_parallel,
           on_batch: on_batch
         )

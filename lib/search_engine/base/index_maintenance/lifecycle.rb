@@ -218,11 +218,29 @@ module SearchEngine
             step = SearchEngine::Logging::StepLine.new('Partial Indexing')
             step.update('indexing')
             step.yield_line!
+
+            renderer = SearchEngine::Logging::LiveRenderer.new(
+              labels: partitions.map(&:inspect), partitions: partitions
+            )
+            renderer.start
             summaries = []
-            partitions.each do |p|
-              summary = SearchEngine::Indexer.rebuild_partition!(self, partition: p, into: nil)
-              summaries << summary
-              puts(SearchEngine::Logging::PartitionProgress.line(p, summary))
+            partitions.each_with_index do |p, idx|
+              slot = renderer[idx]
+              slot.start
+              begin
+                on_batch = ->(info) { slot.progress(**info) }
+                summary = SearchEngine::Indexer.rebuild_partition!(self, partition: p, into: nil, on_batch: on_batch)
+                slot.finish(summary)
+                summaries << summary
+              rescue StandardError => error
+                slot.finish_error(error)
+                raise
+              end
+            end
+            begin
+              renderer.stop
+            rescue StandardError
+              nil
             end
             step.finish('done')
 
@@ -230,6 +248,7 @@ module SearchEngine
             __se_cascade_after_indexation!(context: :full) if result[:status] == :ok
             result
           ensure
+            renderer&.stop
             step&.close
           end
 
