@@ -131,7 +131,8 @@ module SearchEngine
     # returns a non-ok status. Aborting the block prevents the alias swap,
     # keeping the previous (fully-indexed) physical collection active.
     #
-    # The partially-indexed new physical is left intact for inspection.
+    # The partially-indexed new physical is automatically cleaned up by
+    # the +ensure+ block in {Schema.apply!}.
     class IndexationAborted < Error
       # @return [Hash] the indexation result hash (:status, :docs_total, etc.)
       attr_reader :result

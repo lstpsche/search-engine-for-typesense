@@ -156,9 +156,10 @@ module SearchEngine
       # The reindexing step can be provided via an optional block (yielded with the new
       # physical name). If no block is given, and the klass responds to
       # `reindex_all_to(physical_name)`, that method will be called. If neither is available,
-      # an ArgumentError is raised and no alias swap occurs. If reindexing fails, the
-      # newly created physical is left intact for inspection; retention cleanup only runs
-      # after a successful alias swap.
+      # an ArgumentError is raised and no alias swap occurs. If reindexing fails or
+      # is interrupted, the newly created physical collection is automatically deleted
+      # to prevent orphan accumulation. Retention cleanup only runs after a successful
+      # alias swap.
       #
       # @param klass [Class] model class inheriting from {SearchEngine::Base}
       # @param client [SearchEngine::Client] optional client wrapper (for tests)
@@ -168,8 +169,12 @@ module SearchEngine
       # @raise [SearchEngine::Errors::Api, ArgumentError]
       # @see `https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/schema#lifecycle`
       # @see `https://typesense.org/docs/latest/api/collections.html`
-      def apply!(klass, client: nil, force_rebuild: false)
+      def apply!(klass, client: nil, force_rebuild: false) # rubocop:disable Metrics/MethodLength
         client ||= SearchEngine.client
+        new_physical = nil
+        physical_created = false
+        apply_succeeded = false
+
         # Optimization: Try in-place update first if not forced to rebuild.
         # If update! returns true, the schema is synced (either no changes or successfully patched).
         if !force_rebuild && update!(klass, client: client)
@@ -178,6 +183,7 @@ module SearchEngine
           # Resolve current physical to return consistent result
           physical = client.resolve_alias(logical) || logical
 
+          apply_succeeded = true
           return update_result_payload(logical, physical)
         end
 
@@ -203,6 +209,7 @@ module SearchEngine
         end
 
         client.create_collection(create_schema)
+        physical_created = true
 
         if block_given?
           yield new_physical
@@ -216,6 +223,7 @@ module SearchEngine
         current_after_reindex = client.resolve_alias(logical)
         swapped = current_after_reindex != new_physical
         client.upsert_alias(logical, new_physical) if swapped
+        apply_succeeded = true
 
         # Retention cleanup
         _, dropped = enforce_retention!(logical, new_physical, client: client, keep_last: effective_keep_last(klass))
@@ -245,6 +253,8 @@ module SearchEngine
           dropped_physicals: dropped,
           action: :rebuild
         }
+      ensure
+        cleanup_interrupted_physical!(new_physical, client) if physical_created && !apply_succeeded
       end
 
       # Roll back the alias for the given klass to the previous retained physical collection.
@@ -389,6 +399,32 @@ module SearchEngine
       end
 
       private
+
+      # Best-effort cleanup of a physical collection left behind by an interrupted
+      # or failed {.apply!}. Rescues all errors so it never masks the original
+      # exception. If the delete itself fails, a warning directs users to
+      # {.prune_orphans!} as a fallback.
+      #
+      # @param physical_name [String, nil] the physical collection to remove
+      # @param client [SearchEngine::Client, nil]
+      # @return [void]
+      def cleanup_interrupted_physical!(physical_name, client)
+        return if physical_name.nil? || client.nil?
+
+        client.delete_collection(physical_name, timeout_ms: 60_000)
+
+        if defined?(ActiveSupport::Notifications)
+          SearchEngine::Instrumentation.instrument(
+            'search_engine.schema.cleanup_interrupted',
+            physical: physical_name, status: :ok
+          ) {}
+        end
+      rescue StandardError => error
+        warn(
+          'SearchEngine::Schema — failed to clean up interrupted physical ' \
+          "'#{physical_name}': #{error.message}. Run prune_orphans! to remove it."
+        )
+      end
 
       # Generate a new physical name using UTC timestamp + 3-digit sequence.
       # Example: "products_20250131_235959_001"

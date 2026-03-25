@@ -38,7 +38,7 @@ class SchemaLifecycleTest < Minitest::Test
       schema
     end
 
-    def delete_collection(name)
+    def delete_collection(name, timeout_ms: nil) # rubocop:disable Lint/UnusedMethodArgument -- matches real client signature
       @deleted << name
       @collections.reject! { |c| (c[:name] || c['name']) == name }
       { name: name, status: 200 }
@@ -135,18 +135,19 @@ class SchemaLifecycleTest < Minitest::Test
     assert_raises(ArgumentError) { SearchEngine::Schema.rollback(Product, client: client) }
   end
 
-  def test_reindex_failure_abort_before_swap
+  def test_reindex_failure_cleans_up_physical
     client = FakeClient.new(collections: [], alias_target: nil)
     assert_raises RuntimeError do
       SearchEngine::Schema.apply!(Product, client: client) { |_name| raise 'boom' }
     end
     assert_empty(client.upserts)
     refute_empty(client.created)
-    assert_empty(client.deleted)
+    assert_equal(client.created, client.deleted)
   end
 
-  def test_swap_failure_does_not_delete
+  def test_swap_failure_cleans_up_physical
     client = FakeClient.new(collections: [], alias_target: nil)
+    forced = 'products_lifecycle_20250101_000001_001'
 
     # Monkey-patch upsert to raise API error
     def client.upsert_alias(_logical, _physical)
@@ -154,13 +155,11 @@ class SchemaLifecycleTest < Minitest::Test
     end
 
     assert_raises(SearchEngine::Errors::Api) do
-      forced = 'products_lifecycle_20250101_000001_001'
       SearchEngine::Schema.stub(:generate_physical_name, forced) do
         SearchEngine::Schema.apply!(Product, client: client) { |_name| }
       end
     end
 
-    # ensure no retention delete was attempted after swap failure
-    assert_empty(client.deleted)
+    assert_equal([forced], client.deleted)
   end
 end
