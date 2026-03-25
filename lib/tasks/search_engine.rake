@@ -132,6 +132,45 @@ namespace :search_engine do
       warn("schema:rollback failed: #{error.message}")
       Kernel.exit(1)
     end
+
+    desc "Prune orphaned physicals. Usage: rails 'search_engine:schema:prune_orphans[coll]'"
+    task :prune_orphans, [:collection] => :environment do |_t, args|
+      logical = nil
+      if args[:collection] && !args[:collection].to_s.strip.empty?
+        begin
+          klass = SearchEngine::Cli.resolve_collection!(args[:collection])
+          logical = klass.respond_to?(:collection) ? klass.collection.to_s : klass.name.to_s
+        rescue ArgumentError => error
+          warn("Error: #{error.message}")
+          print_schema_usage
+          Kernel.exit(1)
+        end
+      end
+
+      payload = { task: 'schema:prune_orphans', collection: logical || '(all)' }
+      result = nil
+      SearchEngine::Cli.with_task_instrumentation('schema:prune_orphans', payload) do
+        result = SearchEngine::Schema.prune_orphans!(logical: logical)
+      end
+
+      if SearchEngine::Cli.json_output?
+        puts(JSON.generate({ status: 'ok' }.merge(result)))
+      else
+        puts("Scanned: #{result[:total_scanned]} collections")
+        puts("Kept (alias targets): #{result[:kept].size}")
+        if result[:dropped].empty?
+          puts('No orphaned physicals found.')
+        else
+          puts("Dropped #{result[:dropped].size} orphaned physical(s):")
+          result[:dropped].each { |name| puts("  - #{name}") }
+        end
+      end
+
+      Kernel.exit(0)
+    rescue StandardError => error
+      warn("schema:prune_orphans failed: #{error.message}")
+      Kernel.exit(1)
+    end
   end
 
   # ------------------------- Index tasks -------------------------

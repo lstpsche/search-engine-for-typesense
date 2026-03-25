@@ -60,6 +60,15 @@ module SearchEngine
         run!(mode: :reindex, targets: names, client: client)
       end
 
+      # Drop orphaned physical collections across all logical collections.
+      # Delegates to {SearchEngine::Schema.prune_orphans!}.
+      # @param client [SearchEngine::Client, nil]
+      # @param logical [String, nil] scope to a single logical collection
+      # @return [Hash] { dropped: Array<String>, kept: Array<String>, total_scanned: Integer }
+      def prune_orphans!(client: nil, logical: nil)
+        SearchEngine::Schema.prune_orphans!(client: client, logical: logical)
+      end
+
       private
 
       # @param mode [Symbol] :index | :reindex

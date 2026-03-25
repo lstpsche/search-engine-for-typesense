@@ -61,6 +61,13 @@ module SearchEngine
       services.fetch(:collections).retrieve_schema(collection_name, timeout_ms: timeout_ms)
     end
 
+    # List all aliases defined on the Typesense server.
+    # @return [Array<Hash>] list of aliases, each with :name and :collection_name
+    # @see `https://typesense.org/docs/latest/api/aliases.html#list-all-aliases`
+    def list_aliases
+      services.fetch(:collections).list_aliases
+    end
+
     # Delete an alias by name. Returns { status: 404 } when alias not found.
     # @param alias_name [String]
     # @return [Hash]

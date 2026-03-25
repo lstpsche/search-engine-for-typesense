@@ -129,6 +129,13 @@ module SearchEngine
             step&.close
           end
 
+          # Drop orphaned physical collections for this model's logical collection.
+          # @return [Hash] { dropped: Array<String>, kept: Array<String>, total_scanned: Integer }
+          def prune_orphans!
+            logical = respond_to?(:collection) ? collection.to_s : name.to_s
+            SearchEngine::Schema.prune_orphans!(logical: logical)
+          end
+
           def __se_retention_cleanup!(_logical:, _client:)
             SearchEngine::Schema.prune_history!(self)
           end

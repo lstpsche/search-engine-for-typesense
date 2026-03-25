@@ -56,6 +56,10 @@ module SearchEngine
         nil
       end
 
+      def list_aliases
+        []
+      end
+
       def delete_alias(alias_name)
         {}
       end

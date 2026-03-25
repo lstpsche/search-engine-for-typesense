@@ -57,6 +57,21 @@ module SearchEngine
           instrument(:get, path, (start ? (current_monotonic_ms - start) : 0.0), {}, request_token: start)
         end
 
+        # @return [Array<Hash>] list of aliases, each with :name and :collection_name
+        def list_aliases
+          start = current_monotonic_ms
+          path = '/aliases'
+
+          result = with_exception_mapping(:get, path, {}, start) do
+            typesense.aliases.retrieve
+          end
+
+          raw = symbolize_keys_deep(result)
+          Array(raw[:aliases])
+        ensure
+          instrument(:get, path, (start ? (current_monotonic_ms - start) : 0.0), {}, request_token: start)
+        end
+
         # @param alias_name [String]
         # @return [Hash] Typesense delete response, or { status: 404 } when alias not found
         def delete_alias(alias_name)

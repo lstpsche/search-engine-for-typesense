@@ -345,6 +345,49 @@ module SearchEngine
         true
       end
 
+      # Drop orphaned physical collections that no alias points to.
+      #
+      # A physical collection is orphaned when it matches the timestamped naming
+      # pattern (`logical_YYYYMMDD_HHMMSS_###`) but is not the target of any
+      # alias. These typically accumulate from failed blue/green deployments
+      # where the alias swap never occurred.
+      #
+      # @param client [SearchEngine::Client, nil]
+      # @param logical [String, nil] scope to a single logical collection name; when nil, scans all
+      # @return [Hash] { dropped: Array<String>, kept: Array<String>, total_scanned: Integer }
+      def prune_orphans!(client: nil, logical: nil)
+        require 'set'
+        client ||= SearchEngine.client
+
+        meta_timeout = begin
+          t = SearchEngine.config.timeout_ms.to_i
+          [t, 10_000].max
+        rescue StandardError
+          10_000
+        end
+
+        all_collections = Array(client.list_collections(timeout_ms: meta_timeout))
+        all_names = all_collections.map { |c| (c[:name] || c['name']).to_s }
+
+        alias_targets = client.list_aliases.each_with_object(Set.new) do |a, set|
+          target = (a[:collection_name] || a['collection_name']).to_s
+          set.add(target) unless target.empty?
+        end
+
+        physical_re = if logical
+                        /\A#{Regexp.escape(logical)}_\d{8}_\d{6}_\d{3}\z/
+                      else
+                        /\A.+_\d{8}_\d{6}_\d{3}\z/
+                      end
+
+        physicals = all_names.select { |n| physical_re.match?(n) }
+        kept, orphaned = physicals.partition { |n| alias_targets.include?(n) }
+
+        orphaned.each { |name| client.delete_collection(name, timeout_ms: 60_000) }
+
+        { dropped: orphaned, kept: kept, total_scanned: all_names.size }
+      end
+
       private
 
       # Generate a new physical name using UTC timestamp + 3-digit sequence.
