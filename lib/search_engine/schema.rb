@@ -1259,6 +1259,12 @@ module SearchEngine
         existing = client.retrieve_collection_schema(logical_name)
         return unless existing
 
+        # Typesense GET /collections/:name transparently resolves aliases.
+        # If the returned schema's name differs from the logical name, no bare
+        # collection exists — the alias was resolved to its physical target.
+        schema_name = (existing[:name] || existing['name']).to_s
+        return unless schema_name == logical_name
+
         client.delete_collection(logical_name, timeout_ms: 60_000)
         return unless defined?(ActiveSupport::Notifications)
 

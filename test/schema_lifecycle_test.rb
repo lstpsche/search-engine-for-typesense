@@ -12,11 +12,12 @@ class SchemaLifecycleTest < Minitest::Test
   # Simple fake client to simulate Typesense behavior
   class FakeClient
     attr_reader :created, :upserts, :deleted
-    attr_accessor :collections, :alias_target
+    attr_accessor :collections, :alias_target, :schemas
 
-    def initialize(collections: [], alias_target: nil)
+    def initialize(collections: [], alias_target: nil, schemas: {})
       @collections = collections.dup # Array of Hashes { name: '...' }
       @alias_target = alias_target
+      @schemas = schemas # Hash{ String => Hash } — keyed by name passed to retrieve
       @created = []
       @upserts = []
       @deleted = []
@@ -48,9 +49,8 @@ class SchemaLifecycleTest < Minitest::Test
       @collections
     end
 
-    # For completeness in diff paths (not used directly here)
-    def retrieve_collection_schema(_name)
-      nil
+    def retrieve_collection_schema(name)
+      @schemas[name.to_s]
     end
   end
 
@@ -161,5 +161,74 @@ class SchemaLifecycleTest < Minitest::Test
     end
 
     assert_equal([forced], client.deleted)
+  end
+
+  # --- cleanup_logical_collection_conflict! tests ---
+
+  def test_cleanup_skips_when_alias_resolves_transparently
+    physical = 'products_lifecycle_20250101_000001_001'
+    # retrieve_collection_schema returns physical name (alias was resolved, no bare collection)
+    client = FakeClient.new(
+      alias_target: physical,
+      schemas: { 'products_lifecycle' => { name: physical, fields: [] } }
+    )
+
+    SearchEngine::Schema.send(:cleanup_logical_collection_conflict!, 'products_lifecycle', client: client)
+    assert_empty(client.deleted, 'should NOT delete when alias resolves transparently')
+  end
+
+  def test_cleanup_deletes_bare_collection_that_shadows_alias
+    physical = 'products_lifecycle_20250101_000001_001'
+    # retrieve_collection_schema returns logical name (bare collection exists)
+    client = FakeClient.new(
+      collections: [{ name: 'products_lifecycle' }, { name: physical }],
+      alias_target: physical,
+      schemas: { 'products_lifecycle' => { name: 'products_lifecycle', fields: [] } }
+    )
+
+    SearchEngine::Schema.send(:cleanup_logical_collection_conflict!, 'products_lifecycle', client: client)
+    assert_includes(client.deleted, 'products_lifecycle', 'should delete bare collection shadowing alias')
+  end
+
+  def test_cleanup_skips_when_no_alias_exists
+    client = FakeClient.new(
+      alias_target: nil,
+      schemas: { 'products_lifecycle' => { name: 'products_lifecycle', fields: [] } }
+    )
+
+    SearchEngine::Schema.send(:cleanup_logical_collection_conflict!, 'products_lifecycle', client: client)
+    assert_empty(client.deleted, 'should NOT delete when no alias exists')
+  end
+
+  def test_cleanup_skips_when_alias_points_to_logical_name
+    # Edge case: alias target equals logical name
+    client = FakeClient.new(
+      alias_target: 'products_lifecycle',
+      schemas: { 'products_lifecycle' => { name: 'products_lifecycle', fields: [] } }
+    )
+
+    SearchEngine::Schema.send(:cleanup_logical_collection_conflict!, 'products_lifecycle', client: client)
+    assert_empty(client.deleted, 'should NOT delete when alias points to logical name itself')
+  end
+
+  def test_cleanup_skips_when_schema_not_found
+    physical = 'products_lifecycle_20250101_000001_001'
+    # retrieve_collection_schema returns nil (neither bare collection nor alias resolves)
+    client = FakeClient.new(alias_target: physical, schemas: {})
+
+    SearchEngine::Schema.send(:cleanup_logical_collection_conflict!, 'products_lifecycle', client: client)
+    assert_empty(client.deleted, 'should NOT delete when schema lookup returns nil')
+  end
+
+  def test_cleanup_handles_string_keys_in_schema_response
+    physical = 'products_lifecycle_20250101_000001_001'
+    # Schema returned with string keys (as from real Typesense API)
+    client = FakeClient.new(
+      alias_target: physical,
+      schemas: { 'products_lifecycle' => { 'name' => physical, 'fields' => [] } }
+    )
+
+    SearchEngine::Schema.send(:cleanup_logical_collection_conflict!, 'products_lifecycle', client: client)
+    assert_empty(client.deleted, 'should handle string keys and skip alias-resolved schema')
   end
 end
