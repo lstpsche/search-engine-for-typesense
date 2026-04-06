@@ -227,7 +227,9 @@ module SearchEngine
         # - nil predicates to hidden *_blank flags when `optional` is enabled (new behavior)
         # Delegates other inputs to the DSL parser.
         def build_ast_with_empty_array_rewrites(args, negated: false)
-          items = Array(args).flatten.compact
+          # Preserve input shape so template bind arrays stay intact:
+          # where('field IN ?', [1, 2]) => ['field IN ?', [1, 2]]
+          items = Array(args).compact
           return [] if items.empty?
 
           out_nodes = []
@@ -560,7 +562,9 @@ module SearchEngine
 
         # Normalize where arguments into an array of string fragments safe for Typesense.
         def normalize_where(args)
-          list = Array(args).flatten.compact
+          # Preserve input shape so template bind arrays stay intact:
+          # where('field IN ?', [1, 2]) => ['field IN ?', [1, 2]]
+          list = Array(args).compact
           return [] if list.empty?
 
           fragments = []

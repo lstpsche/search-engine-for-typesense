@@ -66,7 +66,9 @@ module SearchEngine
       # @param joins [Array<Symbol>, nil]
       # @return [Array<SearchEngine::AST::Node>]
       def parse_list(list, klass:, joins: nil)
-        items = Array(list).flatten.compact
+        # Preserve input shape so template bind arrays stay intact:
+        # parse_list(['brand_id IN ?', [1, 2]]) should keep [1, 2] as one bind arg.
+        items = Array(list).compact
         return [] if items.empty?
 
         nodes = []
@@ -92,7 +94,7 @@ module SearchEngine
             nodes << parse_raw(entry.to_s)
             i += 1
           when Array
-            nodes << parse_array_entry(entry, klass: klass, joins: joins)
+            nodes.concat(Array(parse_array_entry(entry, klass: klass, joins: joins)))
             i += 1
           else
             raise ArgumentError, "Parser: unsupported where argument #{entry.class}"
