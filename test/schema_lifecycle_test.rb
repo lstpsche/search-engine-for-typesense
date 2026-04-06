@@ -77,6 +77,26 @@ class SchemaLifecycleTest < Minitest::Test
     end
   end
 
+  def test_name_generator_raises_when_sequence_space_is_exhausted
+    fixed = Time.utc(2025, 1, 31, 23, 59, 59)
+    logical = Product.collection
+    prefix = format('%<logical>s_%<fixed>s_', logical: logical, fixed: fixed.strftime('%Y%m%d_%H%M%S'))
+    existing = (1..999).map { |n| { name: format('%<prefix>s%<seq>03d', prefix: prefix, seq: n) } }
+
+    client = FakeClient.new(collections: existing, alias_target: nil)
+
+    error = Time.stub(:now, fixed) do
+      assert_raises(SearchEngine::Errors::InvalidParams) do
+        SearchEngine::Schema.apply!(Product, client: client) { |_name| }
+      end
+    end
+
+    assert_match(/sequence space exhausted/i, error.message)
+    assert_empty(client.created)
+    assert_empty(client.upserts)
+    assert_empty(client.deleted)
+  end
+
   def test_alias_swap_is_idempotent_when_already_pointing
     client = FakeClient.new(collections: [], alias_target: nil)
     forced = 'products_lifecycle_20250101_000000_001'
