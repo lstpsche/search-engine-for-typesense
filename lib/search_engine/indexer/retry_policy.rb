@@ -103,8 +103,12 @@ module SearchEngine
         rng = (Thread.current[:__se_retry_rng__] ||= Random.new)
         min = range.begin.to_f
         max = range.end.to_f
-        # Range may be exclusive; normalize to inclusive space
+        # Honor exclusive-end ranges by shifting the upper bound down one
+        # representable float step. Inclusive ranges preserve the original end.
+        max = max.prev_float if range.exclude_end?
         span = max - min
+        return min if span <= 0.0
+
         min + (rng.rand * span)
       end
     end

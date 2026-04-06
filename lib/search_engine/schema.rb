@@ -436,8 +436,13 @@ module SearchEngine
         existing = list_physicals_starting_with(prefix, client: client)
         used_sequences = existing.map { |name| name.split('_').last.to_i }
 
-        seq = 1
-        seq += 1 while used_sequences.include?(seq) && seq < 999
+        seq = (1..999).find { |candidate| !used_sequences.include?(candidate) }
+        unless seq
+          raise SearchEngine::Errors::InvalidParams,
+                "Schema physical name sequence space exhausted for prefix '#{prefix}' (001..999 all occupied). " \
+                'Wait one second and retry.'
+        end
+
         format('%<prefix>s%<seq>03d', prefix: prefix, seq: seq)
       end
 
