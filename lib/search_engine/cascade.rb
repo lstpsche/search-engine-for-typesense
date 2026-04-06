@@ -18,7 +18,7 @@ module SearchEngine
       # @param context [Symbol] :update or :full
       # @param client [SearchEngine::Client, nil]
       # @return [Hash]
-      # rubocop:disable Metrics/AbcSize, Metrics/MethodLength, Metrics/BlockNesting
+      # rubocop:disable Metrics/AbcSize, Metrics/MethodLength, Metrics/BlockNesting, Metrics/PerceivedComplexity, Metrics/BlockLength
       def cascade_reindex!(source:, ids:, context: :update, client: nil)
         raise ArgumentError, 'context must be :update or :full' unless %i[update full].include?(context.to_sym)
 
@@ -69,6 +69,7 @@ module SearchEngine
           end
 
           mode = :full
+          partial_failure = nil
           if context.to_sym == :update && can_partial_reindex?(ref_klass)
             begin
               SearchEngine::Indexer.rebuild_partition!(ref_klass, partition: { local_key.to_sym => Array(ids) },
@@ -90,9 +91,8 @@ into: nil
                   mode = :skipped_no_partitions
                 end
               end
-              # Record diagnostic on the outcome for visibility upstream
-              outcomes << { collection: referrer_coll, mode: :partial_failed, error_class: error.class.name,
-                            message: error.message.to_s[0, 200] }
+              # Preserve the partial failure details on the final single outcome row.
+              partial_failure = { error_class: error.class.name, message: error.message.to_s[0, 200] }
             end
           elsif seen_full[referrer_coll]
             mode = :skipped_duplicate
@@ -107,7 +107,9 @@ into: nil
             end
           end
 
-          outcomes << { collection: referrer_coll, mode: mode }
+          outcome = { collection: referrer_coll, mode: mode }
+          outcome.merge!(partial_failure) if partial_failure
+          outcomes << outcome
         end
 
         payload = {
@@ -124,7 +126,7 @@ into: nil
 
         payload.merge(outcomes: outcomes)
       end
-      # rubocop:enable Metrics/AbcSize, Metrics/MethodLength, Metrics/BlockNesting
+      # rubocop:enable Metrics/AbcSize, Metrics/MethodLength, Metrics/BlockNesting, Metrics/PerceivedComplexity, Metrics/BlockLength
 
       # Build a reverse graph from Typesense live schemas when possible, falling
       # back to compiled local schemas for registered models.
