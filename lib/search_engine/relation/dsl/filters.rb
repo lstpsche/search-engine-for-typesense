@@ -17,6 +17,7 @@ module SearchEngine
           # @param args [Array<Object>]
           # @return [SearchEngine::Relation]
           def not(*args)
+            @relation.send(:validate_not_args!, args)
             nodes = Array(@relation.send(:build_ast_with_empty_array_rewrites, args, negated: true))
 
             # Invert non-hidden predicates (Eq, In) returned by the builder
@@ -44,6 +45,7 @@ module SearchEngine
         # @return [SearchEngine::Relation, WhereChain]
         def where(*args)
           return self if args.nil? || args.empty?
+          return self if blank_where_args?(args)
 
           ast_nodes = build_ast_with_empty_array_rewrites(args, negated: false)
           fragments = normalize_where(args)
@@ -58,6 +60,7 @@ module SearchEngine
         # @param args [Array<Object>]
         # @return [SearchEngine::Relation]
         def not(*args)
+          validate_not_args!(args)
           nodes = Array(build_ast_with_empty_array_rewrites(args, negated: true))
 
           negated = nodes.map do |node|
@@ -121,6 +124,30 @@ module SearchEngine
         end
 
         private
+
+        def blank_where_args?(args)
+          return false unless args.length == 1
+
+          blank_where_arg?(args.first)
+        end
+
+        def blank_where_arg?(arg)
+          return true if arg.nil?
+          return true if arg.respond_to?(:empty?) && arg.empty?
+
+          arg.is_a?(String) && arg.strip.empty?
+        end
+
+        def validate_not_args!(args)
+          raise ArgumentError, 'wrong number of arguments (given 0, expected 1+)' if args.nil? || args.empty?
+
+          return unless args.length == 1
+
+          value = args.first
+          return unless value.nil? || (value.is_a?(Array) && value.empty?)
+
+          raise ArgumentError, 'Unsupported argument type:  (NilClass)'
+        end
 
         def merge_relation(other, assoc: nil)
           return self if other.nil?

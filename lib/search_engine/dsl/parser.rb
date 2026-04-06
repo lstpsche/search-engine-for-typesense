@@ -106,6 +106,8 @@ module SearchEngine
       # --- Internals -------------------------------------------------------
 
       def parse_array_entry(entry, klass:, joins: nil)
+        raise ArgumentError, 'Unsupported argument type: [] (Array)' if entry.empty?
+
         first = entry.first
         unless first.is_a?(String)
           # Support wrapped nested where-lists while preserving template bind arrays:
