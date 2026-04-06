@@ -28,6 +28,7 @@ module SearchEngine
 
         graph = build_reverse_graph(client: ts_client)
         referencers = Array(graph[src_collection])
+        target_collections = referencers.map { |edge| edge[:referrer] }.uniq
 
         # Detect immediate cycles (A <-> B) and skip those pairs
         cycle_pairs = detect_immediate_cycles(graph)
@@ -43,7 +44,7 @@ module SearchEngine
           alias_cache: alias_cache
         )
 
-        outcomes = []
+        outcomes_by_collection = {}
         partial_count = 0
         full_count = 0
         skipped_unregistered = 0
@@ -57,14 +58,14 @@ module SearchEngine
           # Skip cycle pairs deterministically (avoid ping-pong)
           if cycle_pairs.include?([src_collection, referrer_coll])
             skipped_cycles << { pair: [src_collection, referrer_coll] }
-            outcomes << { collection: referrer_coll, mode: :skipped_cycle }
+            merge_cascade_outcome!(outcomes_by_collection, { collection: referrer_coll, mode: :skipped_cycle })
             next
           end
 
           ref_klass = safe_collection_class(referrer_coll)
           unless ref_klass
             skipped_unregistered += 1
-            outcomes << { collection: referrer_coll, mode: :skipped_unregistered }
+            merge_cascade_outcome!(outcomes_by_collection, { collection: referrer_coll, mode: :skipped_unregistered })
             next
           end
 
@@ -109,14 +110,15 @@ into: nil
 
           outcome = { collection: referrer_coll, mode: mode }
           outcome.merge!(partial_failure) if partial_failure
-          outcomes << outcome
+          merge_cascade_outcome!(outcomes_by_collection, outcome)
         end
+        outcomes = outcomes_by_collection.values
 
         payload = {
           source_collection: src_collection,
           ids_count: Array(ids).size,
           context: context.to_sym,
-          targets_total: referencers.size,
+          targets_total: target_collections.size,
           partial_count: partial_count,
           full_count: full_count,
           skipped_unregistered: skipped_unregistered,
@@ -469,6 +471,42 @@ foreign_key: fk }
           end
         end
         pairs.uniq
+      end
+
+      def merge_cascade_outcome!(outcomes_by_collection, outcome)
+        key = outcome[:collection]
+        existing = outcomes_by_collection[key]
+        if existing.nil?
+          outcomes_by_collection[key] = outcome
+          return
+        end
+
+        winner = if cascade_outcome_priority(outcome[:mode]) > cascade_outcome_priority(existing[:mode])
+                   outcome.dup
+                 else
+                   existing.dup
+                 end
+
+        error_class = existing[:error_class] || outcome[:error_class]
+        message = existing[:message] || outcome[:message]
+        if error_class
+          winner[:error_class] = error_class
+          winner[:message] = message
+        end
+
+        outcomes_by_collection[key] = winner
+      end
+
+      def cascade_outcome_priority(mode)
+        case mode.to_sym
+        when :full then 60
+        when :partial then 50
+        when :skipped_no_partitions then 40
+        when :skipped_duplicate then 30
+        when :skipped_cycle then 20
+        when :skipped_unregistered then 10
+        else 0
+        end
       end
 
       def safe_collection_class(name)
