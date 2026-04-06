@@ -1284,12 +1284,55 @@ module SearchEngine
       # @raise [ArgumentError] if schema cannot be retrieved
       def retrieve_referenced_schema(logical_coll, physical_coll, client)
         referenced_schema = client.retrieve_collection_schema(physical_coll)
-        if referenced_schema.nil?
-          raise ArgumentError,
-                "Referenced collection '#{logical_coll}' (physical: '#{physical_coll}') " \
-                'schema could not be retrieved'
+        return referenced_schema unless referenced_schema.nil?
+
+        repaired_physical = recover_reference_alias_target(
+          logical_coll,
+          missing_physical: physical_coll,
+          client: client
+        )
+        unless repaired_physical.nil?
+          referenced_schema = client.retrieve_collection_schema(repaired_physical)
+          return referenced_schema unless referenced_schema.nil?
         end
-        referenced_schema
+
+        raise ArgumentError,
+              "Referenced collection '#{logical_coll}' (physical: '#{physical_coll}') " \
+              'schema could not be retrieved'
+      end
+
+      # Best-effort repair when a reference alias points to a missing physical
+      # collection. Repoints the logical alias to the newest retained physical.
+      # Returns nil if no safe repair candidate exists.
+      #
+      # @param logical_coll [String]
+      # @param missing_physical [String]
+      # @param client [SearchEngine::Client]
+      # @return [String, nil]
+      def recover_reference_alias_target(logical_coll, missing_physical:, client:)
+        logical_name = logical_coll.to_s
+        return nil if logical_name.strip.empty?
+
+        candidates = list_physicals(logical_name, client: client)
+        return nil if candidates.empty?
+
+        repaired_physical = order_physicals_desc(logical_name, candidates).first
+        return nil if repaired_physical.nil? || repaired_physical.to_s.strip.empty?
+        return nil if repaired_physical.to_s == missing_physical.to_s
+
+        client.upsert_alias(logical_name, repaired_physical)
+        if defined?(ActiveSupport::Notifications)
+          SearchEngine::Instrumentation.instrument(
+            'search_engine.schema.reference_alias_repaired',
+            logical: logical_name,
+            stale_physical: missing_physical.to_s,
+            repaired_physical: repaired_physical
+          ) {}
+        end
+
+        repaired_physical
+      rescue StandardError
+        nil
       end
 
       # Build a detailed error message when a referenced field is not found.
