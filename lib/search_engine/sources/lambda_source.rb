@@ -4,8 +4,13 @@ module SearchEngine
   module Sources
     # Adapter that delegates batch enumeration to a provided callable.
     #
-    # The callable is expected to implement `call(cursor:, partition:)` and return either
-    # an Enumerator or yield arrays of rows. Shapes are application-defined.
+    # The callable is expected to implement `call(cursor:, partition:)` and use one mode:
+    # - return mode: return an Enumerable of batches
+    # - yield mode: yield batches via the provided block argument
+    #
+    # Returning batch-like data (Array/Enumerator) while also yielding is treated as
+    # an ambiguous mixed mode and raises an error.
+    # Shapes are application-defined.
     #
     # @example
     #   src = SearchEngine::Sources::LambdaSource.new(->(cursor:, partition:) { [[row1, row2]] })
@@ -40,6 +45,7 @@ module SearchEngine
           )
           yield(rows)
           started = monotonic_ms
+          nil
         end
 
         begin
@@ -49,7 +55,12 @@ module SearchEngine
             consume_rows.call(rows)
           end
 
-          unless yielded
+          if yielded
+            if mixed_mode_batch_return?(returned)
+              raise SearchEngine::Errors::InvalidParams,
+                    'lambda source callable must either yield batches or return an Enumerable of batches, not both'
+            end
+          else
             to_iterate = returned.respond_to?(:each) ? returned : Array(returned)
             to_iterate.each { |rows| consume_rows.call(rows) }
           end
@@ -59,6 +70,12 @@ module SearchEngine
           )
           raise
         end
+      end
+
+      private
+
+      def mixed_mode_batch_return?(returned)
+        returned.is_a?(Array) || returned.is_a?(Enumerator)
       end
     end
   end

@@ -12,6 +12,11 @@ module SearchEngine
   #     Enumerator.new { |y| external_api.each_page(cursor) { |rows| y << rows } }
   #   end
   #
+  # Lambda source contract:
+  # - return mode: return an Enumerable of batches
+  # - yield mode: call the provided block with each batch
+  # Returning batch-like values while also yielding is treated as mixed mode and raises.
+  #
   # All adapters implement `each_batch(partition:, cursor:)` and return an Enumerator
   # when no block is provided.
   module Sources
@@ -19,7 +24,7 @@ module SearchEngine
     #
     # @param type [Symbol] :active_record, :sql, or :lambda
     # @param options [Hash] adapter-specific options
-    # @yield for :lambda sources, a block taking (cursor:, partition:) and returning an Enumerator
+    # @yield for :lambda sources, block taking (cursor:, partition:) and either yielding or returning batches
     # @return [Object] adapter responding to `each_batch(partition:, cursor:)`
     def self.build(type, **options, &block)
       case type.to_sym

@@ -53,4 +53,38 @@ class RelationWhereASTTest < Minitest::Test
     assert_equal 'brand_id', node.field
     assert_equal [1, 2], node.values
   end
+
+  def test_where_wrapped_nested_template_list_preserves_ast_nodes
+    rel = Product.all.where([['price > ?', 100], ['brand_id IN ?', [1, 2]]])
+
+    assert_equal 2, rel.ast.length
+
+    gt_node = rel.ast.find { |n| n.is_a?(SearchEngine::AST::Gt) }
+    in_node = rel.ast.find { |n| n.is_a?(SearchEngine::AST::In) }
+
+    refute_nil gt_node
+    assert_equal 'price', gt_node.field
+    assert_equal 100.0, gt_node.value
+
+    refute_nil in_node
+    assert_equal 'brand_id', in_node.field
+    assert_equal [1, 2], in_node.values
+  end
+
+  def test_where_not_wrapped_nested_template_list_preserves_negation
+    rel = Product.all.where.not([['brand_id IN ?', [1, 2]], ['active = ?', true]])
+
+    assert_equal 2, rel.ast.length
+
+    not_in = rel.ast.find { |n| n.is_a?(SearchEngine::AST::NotIn) }
+    not_eq = rel.ast.find { |n| n.is_a?(SearchEngine::AST::NotEq) }
+
+    refute_nil not_in
+    assert_equal 'brand_id', not_in.field
+    assert_equal [1, 2], not_in.values
+
+    refute_nil not_eq
+    assert_equal 'active', not_eq.field
+    assert_equal true, not_eq.value
+  end
 end
