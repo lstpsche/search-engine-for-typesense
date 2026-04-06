@@ -166,7 +166,10 @@ module SearchEngine
           started = monotonic_ms
           client = client_with_overrides
           health = client.health
-          ok = !(health && (health[:ok] == true || health['ok'] == true)).nil?
+          ok_value = if health.is_a?(Hash)
+                       health.key?(:ok) ? health[:ok] : health['ok']
+                     end
+          ok = (ok_value == true)
           details = { response: redacted_value(health) }
           hint = ok ? nil : 'Verify host/port/protocol and network reachability to Typesense.'
 

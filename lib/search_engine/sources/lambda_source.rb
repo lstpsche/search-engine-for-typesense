@@ -32,17 +32,26 @@ module SearchEngine
         return enum_for(:each_batch, partition: partition, cursor: cursor) unless block_given?
 
         started = monotonic_ms
+        consume_rows = lambda do |rows|
+          duration = monotonic_ms - started
+          instrument_batch_fetched(source: 'lambda', batch_index: nil, rows_count: Array(rows).size,
+                                   duration_ms: duration, partition: partition, cursor: cursor,
+                                   adapter_options: { callable: @callable.class.name }
+          )
+          yield(rows)
+          started = monotonic_ms
+        end
+
         begin
-          enum = @callable.call(cursor: cursor, partition: partition)
-          to_iterate = enum.respond_to?(:each) ? enum : Array(enum)
-          to_iterate.each do |rows|
-            duration = monotonic_ms - started
-            instrument_batch_fetched(source: 'lambda', batch_index: nil, rows_count: Array(rows).size,
-                                     duration_ms: duration, partition: partition, cursor: cursor,
-                                     adapter_options: { callable: @callable.class.name }
-            )
-            yield(rows)
-            started = monotonic_ms
+          yielded = false
+          returned = @callable.call(cursor: cursor, partition: partition) do |rows|
+            yielded = true
+            consume_rows.call(rows)
+          end
+
+          unless yielded
+            to_iterate = returned.respond_to?(:each) ? returned : Array(returned)
+            to_iterate.each { |rows| consume_rows.call(rows) }
           end
         rescue StandardError => error
           instrument_error(source: 'lambda', error: error, partition: partition, cursor: cursor,

@@ -32,4 +32,35 @@ class LambdaSourceTest < Minitest::Test
 
     assert_equal [[1, 2], [3]], rows
   end
+
+  def test_each_batch_consumes_yielded_batches_when_callable_returns_nil
+    source = SearchEngine::Sources::LambdaSource.new(
+      lambda do |cursor:, partition:, &emit|
+        assert_equal :cursor_value, cursor
+        assert_equal :partition_value, partition
+        emit.call([1])
+        emit.call([2, 3])
+        nil
+      end
+    )
+
+    rows = []
+    source.each_batch(partition: :partition_value, cursor: :cursor_value) { |batch_rows| rows << batch_rows }
+
+    assert_equal [[1], [2, 3]], rows
+  end
+
+  def test_each_batch_does_not_double_process_when_callable_yields_and_returns
+    source = SearchEngine::Sources::LambdaSource.new(
+      lambda do |**_kwargs, &emit|
+        emit.call([1])
+        [[2]]
+      end
+    )
+
+    rows = []
+    source.each_batch { |batch_rows| rows << batch_rows }
+
+    assert_equal [[1]], rows
+  end
 end
