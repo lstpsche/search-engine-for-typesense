@@ -63,6 +63,24 @@ class ParserTest < Minitest::Test
     assert_equal [1, 2], node.values
   end
 
+  def test_parse_wrapped_nested_template_list
+    nodes = SearchEngine::DSL::Parser.parse([['brand_id IN ?', [1, 2]], ['price > ?', 10]], klass: Product)
+
+    assert_kind_of Array, nodes
+    assert_equal 2, nodes.length
+
+    in_node = nodes.find { |n| n.is_a?(SearchEngine::AST::In) }
+    gt_node = nodes.find { |n| n.is_a?(SearchEngine::AST::Gt) }
+
+    refute_nil in_node
+    assert_equal 'brand_id', in_node.field
+    assert_equal [1, 2], in_node.values
+
+    refute_nil gt_node
+    assert_equal 'price', gt_node.field
+    assert_equal 10.0, gt_node.value
+  end
+
   def test_raw_string_returns_raw
     node = SearchEngine::DSL::Parser.parse('brand_id:=[1,2,3]', klass: Product)
     assert_kind_of SearchEngine::AST::Raw, node

@@ -106,7 +106,17 @@ module SearchEngine
       # --- Internals -------------------------------------------------------
 
       def parse_array_entry(entry, klass:, joins: nil)
-        return parse_raw(entry.to_s) unless entry.first.is_a?(String)
+        first = entry.first
+        unless first.is_a?(String)
+          # Support wrapped nested where-lists while preserving template bind arrays:
+          # where([['a > ?', 1], ['b < ?', 2]]) should parse as two predicates.
+          if first.is_a?(Array) || first.is_a?(Hash) || first.is_a?(Symbol)
+            return parse_list(entry, klass: klass, joins: joins)
+          end
+
+          return parse_raw(entry.to_s)
+        end
+
         return parse_list(entry, klass: klass, joins: joins) unless placeholders?(entry.first)
 
         template = entry.first
