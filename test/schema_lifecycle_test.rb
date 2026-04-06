@@ -231,4 +231,35 @@ class SchemaLifecycleTest < Minitest::Test
     SearchEngine::Schema.send(:cleanup_logical_collection_conflict!, 'products_lifecycle', client: client)
     assert_empty(client.deleted, 'should handle string keys and skip alias-resolved schema')
   end
+
+  def test_retrieve_referenced_schema_repairs_alias_to_latest_retained_physical
+    stale = 'products_lifecycle_20250101_000001_001'
+    latest = 'products_lifecycle_20250102_000001_001'
+    client = FakeClient.new(
+      collections: [{ name: stale }, { name: latest }],
+      alias_target: stale,
+      schemas: { latest => { name: latest, fields: [{ name: 'id', type: 'string' }] } }
+    )
+
+    schema = SearchEngine::Schema.send(:retrieve_referenced_schema, 'products_lifecycle', stale, client)
+
+    assert_equal(latest, schema[:name])
+    assert_equal([%w[products_lifecycle products_lifecycle_20250102_000001_001]], client.upserts)
+    assert_equal(latest, client.alias_target)
+  end
+
+  def test_retrieve_referenced_schema_raises_when_alias_cannot_be_repaired
+    stale = 'products_lifecycle_20250101_000001_001'
+    client = FakeClient.new(collections: [], alias_target: stale, schemas: {})
+
+    error = assert_raises(ArgumentError) do
+      SearchEngine::Schema.send(:retrieve_referenced_schema, 'products_lifecycle', stale, client)
+    end
+
+    assert_match(
+      "Referenced collection 'products_lifecycle' (physical: '#{stale}') schema could not be retrieved",
+      error.message
+    )
+    assert_empty(client.upserts)
+  end
 end
