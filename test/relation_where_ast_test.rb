@@ -87,4 +87,28 @@ class RelationWhereASTTest < Minitest::Test
     assert_equal 'active', not_eq.field
     assert_equal true, not_eq.value
   end
+
+  def test_where_empty_array_is_noop_like_active_record
+    rel = Product.all
+
+    assert_same rel, rel.where([])
+  end
+
+  def test_where_not_empty_array_raises_like_active_record
+    error = assert_raises(ArgumentError) { Product.all.where.not([]) }
+
+    assert_match(/Unsupported argument type:  \(NilClass\)/, error.message)
+  end
+
+  def test_where_nested_empty_array_raises_like_active_record
+    error = assert_raises(ArgumentError) { Product.all.where([[]]) }
+
+    assert_match(/Unsupported argument type: \[\] \(Array\)/, error.message)
+  end
+
+  def test_where_not_nested_empty_array_raises_like_active_record
+    error = assert_raises(ArgumentError) { Product.all.where.not([[]]) }
+
+    assert_match(/Unsupported argument type: \[\] \(Array\)/, error.message)
+  end
 end
