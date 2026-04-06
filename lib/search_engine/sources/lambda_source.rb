@@ -34,7 +34,8 @@ module SearchEngine
         started = monotonic_ms
         begin
           enum = @callable.call(cursor: cursor, partition: partition)
-          Array(enum).each do |rows|
+          to_iterate = enum.respond_to?(:each) ? enum : Array(enum)
+          to_iterate.each do |rows|
             duration = monotonic_ms - started
             instrument_batch_fetched(source: 'lambda', batch_index: nil, rows_count: Array(rows).size,
                                      duration_ms: duration, partition: partition, cursor: cursor,

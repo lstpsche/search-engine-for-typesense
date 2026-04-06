@@ -35,4 +35,22 @@ class RelationWhereASTTest < Minitest::Test
     state_3 = r_3.instance_variable_get(:@state)
     assert_equal ast_state, state_3[:ast]
   end
+
+  def test_where_template_in_keeps_array_bind
+    rel = Product.all.where('brand_id IN ?', [1, 2])
+
+    node = rel.ast.last
+    assert_kind_of SearchEngine::AST::In, node
+    assert_equal 'brand_id', node.field
+    assert_equal [1, 2], node.values
+  end
+
+  def test_where_not_template_in_keeps_array_bind
+    rel = Product.all.where.not('brand_id IN ?', [1, 2])
+
+    node = rel.ast.last
+    assert_kind_of SearchEngine::AST::NotIn, node
+    assert_equal 'brand_id', node.field
+    assert_equal [1, 2], node.values
+  end
 end

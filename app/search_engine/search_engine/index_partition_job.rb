@@ -33,6 +33,7 @@ module SearchEngine
     # @param metadata [Hash]
     # @return [void]
     def perform(collection_class_name, partition, into: nil, metadata: {})
+      payload = nil
       klass = constantize_collection!(collection_class_name)
       payload = base_payload(klass, partition: partition, into: into)
       instrument('search_engine.dispatcher.job_started',
@@ -54,7 +55,8 @@ module SearchEngine
       )
       nil
     rescue StandardError => error
-      instrument_error(error, payload: payload.merge(metadata: metadata))
+      safe_payload = payload || error_payload(error)
+      instrument_error(error, payload: safe_payload.merge(metadata: metadata || {}))
       raise
     end
 

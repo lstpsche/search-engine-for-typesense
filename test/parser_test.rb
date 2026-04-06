@@ -53,6 +53,16 @@ class ParserTest < Minitest::Test
     assert_kind_of SearchEngine::AST::Prefix, SearchEngine::DSL::Parser.parse(['name PREFIX ?', 'mil'], klass: Product)
   end
 
+  def test_parse_list_preserves_template_array_bind
+    nodes = SearchEngine::DSL::Parser.parse_list(['brand_id IN ?', [1, 2]], klass: Product)
+
+    assert_equal 1, nodes.length
+    node = nodes.first
+    assert_kind_of SearchEngine::AST::In, node
+    assert_equal 'brand_id', node.field
+    assert_equal [1, 2], node.values
+  end
+
   def test_raw_string_returns_raw
     node = SearchEngine::DSL::Parser.parse('brand_id:=[1,2,3]', klass: Product)
     assert_kind_of SearchEngine::AST::Raw, node
