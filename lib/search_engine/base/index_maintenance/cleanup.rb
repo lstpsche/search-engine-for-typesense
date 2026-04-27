@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'active_support/concern'
+require 'search_engine/logging/output'
 
 module SearchEngine
   class Base
@@ -44,13 +45,15 @@ module SearchEngine
           # @return [Integer] number of deleted documents
           def cleanup(into: nil, partition: nil, clear_cache: false)
             logical = respond_to?(:collection) ? collection.to_s : name.to_s
-            puts
-            puts(SearchEngine::Logging::Color.header(%(>>>>>> Cleanup Collection "#{logical}")))
+            SearchEngine::Logging::Output.puts
+            SearchEngine::Logging::Output.puts(
+              SearchEngine::Logging::Color.header(%(>>>>>> Cleanup Collection "#{logical}"))
+            )
 
             filters = SearchEngine::StaleRules.compile_filters(self, partition: partition)
             filters.compact!
             filters.reject! { |f| f.to_s.strip.empty? }
-            step = SearchEngine::Logging::StepLine.new('Cleanup')
+            step = SearchEngine::Logging::StepLine.new('Cleanup', io: SearchEngine::Logging::Output.io)
             if filters.empty?
               step.skip('no stale configuration')
               return 0
@@ -76,14 +79,14 @@ module SearchEngine
             step&.close
             if clear_cache
               begin
-                puts("Cleanup — #{SearchEngine::Logging::Color.bold('cache clear')}")
+                SearchEngine::Logging::Output.puts("Cleanup — #{SearchEngine::Logging::Color.bold('cache clear')}")
                 SearchEngine::Cache.clear
               rescue StandardError => error
                 err_msg = "Cleanup — cache clear error=#{error.class}: #{error.message.to_s[0, 200]}"
                 warn(SearchEngine::Logging::Color.apply(err_msg, :red))
               end
             end
-            puts(SearchEngine::Logging::Color.header(%(>>>>>> Cleanup Done)))
+            SearchEngine::Logging::Output.puts(SearchEngine::Logging::Color.header(%(>>>>>> Cleanup Done)))
           end
 
           private

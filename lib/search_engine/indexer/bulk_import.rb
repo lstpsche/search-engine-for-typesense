@@ -2,6 +2,7 @@
 
 require 'search_engine/logging/color'
 require 'search_engine/logging/batch_line'
+require 'search_engine/logging/output'
 
 module SearchEngine
   class Indexer
@@ -151,7 +152,11 @@ module SearchEngine
           shared_state[:on_batch] = on_batch
           producer_error = nil
 
-          puts(SearchEngine::Logging::Color.dim('  Starting parallel batch processing...')) if log_batches
+          if log_batches
+            SearchEngine::Logging::Output.puts(
+              SearchEngine::Logging::Color.dim('  Starting parallel batch processing...')
+            )
+          end
           started_at = monotonic_ms
 
           producer_thread = start_producer_thread(
@@ -234,7 +239,7 @@ module SearchEngine
                          else
                            "  Processed #{batch_count} batches... (#{elapsed}ms)"
                          end
-              puts(SearchEngine::Logging::Color.dim(progress))
+              SearchEngine::Logging::Output.puts(SearchEngine::Logging::Color.dim(progress))
             end
           rescue StandardError => error
             yield error if block_given?
@@ -680,7 +685,7 @@ module SearchEngine
         end
 
         def log_batch(stats, batch_number)
-          puts(SearchEngine::Logging::BatchLine.format(stats, batch_number))
+          SearchEngine::Logging::Output.puts(SearchEngine::Logging::BatchLine.format(stats, batch_number))
         end
       end
     end

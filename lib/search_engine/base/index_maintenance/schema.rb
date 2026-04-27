@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require 'search_engine/logging/output'
+
 module SearchEngine
   class Base
     module IndexMaintenance
@@ -27,7 +29,7 @@ module SearchEngine
 
           def update_collection!
             client = SearchEngine.client
-            step = SearchEngine::Logging::StepLine.new('Update Collection')
+            step = SearchEngine::Logging::StepLine.new('Update Collection', io: SearchEngine::Logging::Output.io)
             step.update('analyzing diff')
             updated = SearchEngine::Schema.update!(self, client: client)
 
@@ -51,14 +53,16 @@ module SearchEngine
             physicals = __se_list_all_physicals(logical, client)
             bare_schema = client.retrieve_collection_schema(logical, timeout_ms: 10_000)
 
-            step = SearchEngine::Logging::StepLine.new('Drop Collection')
+            step = SearchEngine::Logging::StepLine.new('Drop Collection', io: SearchEngine::Logging::Output.io)
             if !has_alias && physicals.empty? && bare_schema.nil?
               step.skip('not present')
               return
             end
 
-            puts
-            puts(SearchEngine::Logging::Color.header(%(>>>>>> Dropping Collection "#{logical}")))
+            SearchEngine::Logging::Output.puts
+            SearchEngine::Logging::Output.puts(
+              SearchEngine::Logging::Color.header(%(>>>>>> Dropping Collection "#{logical}"))
+            )
 
             physicals.each do |name|
               step.update("dropping physical #{name}")
@@ -76,7 +80,9 @@ module SearchEngine
             end
 
             step.finish("done (physicals=#{physicals.size})")
-            puts(SearchEngine::Logging::Color.header(%(>>>>>> Dropped Collection "#{logical}")))
+            SearchEngine::Logging::Output.puts(
+              SearchEngine::Logging::Color.header(%(>>>>>> Dropped Collection "#{logical}"))
+            )
             nil
           ensure
             step&.close
@@ -110,7 +116,7 @@ module SearchEngine
             physicals = __se_list_all_physicals(logical, client)
             bare_schema = client.retrieve_collection_schema(logical)
 
-            step = SearchEngine::Logging::StepLine.new('Recreate Collection')
+            step = SearchEngine::Logging::StepLine.new('Recreate Collection', io: SearchEngine::Logging::Output.io)
             if has_alias || physicals.any? || bare_schema
               step.update("dropping existing (logical=#{logical})")
               physicals.each { |name| client.delete_collection(name) }

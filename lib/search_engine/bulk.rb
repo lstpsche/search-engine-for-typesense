@@ -18,9 +18,10 @@ module SearchEngine
       # When no targets are provided, all declared/registered collections are indexed
       # (models are eagerly loaded from the configured `search_engine_models` path).
       # @param targets [Array<Symbol, String, Class>] collections or model classes
+      # @param silent [Boolean] suppress progress output to stdout (errors still go to stderr)
       # @return [Hash] summary (includes :failed_collections_total for unresolved targets)
-      def index_collections(*targets, client: nil)
-        run!(mode: :index, targets: targets, client: client)
+      def index_collections(*targets, client: nil, silent: false)
+        run!(mode: :index, targets: targets, client: client, silent: silent)
       end
 
       # Index all registered/declared collections.
@@ -30,20 +31,22 @@ module SearchEngine
       # and runs indexing as if they were passed to {.index_collections}.
       #
       # @param client [SearchEngine::Client, nil]
+      # @param silent [Boolean] suppress progress output to stdout (errors still go to stderr)
       # @return [Hash] summary (includes :failed_collections_total for unresolved targets)
-      def index_all(client: nil)
+      def index_all(client: nil, silent: false)
         ensure_models_loaded_from_configured_path!
         names = SearchEngine::CollectionResolver.models_map.keys
-        run!(mode: :index, targets: names, client: client)
+        run!(mode: :index, targets: names, client: client, silent: silent)
       end
 
       # Drop+index (destructive), mirroring {SearchEngine::Base.reindex_collection!}.
       # When no targets are provided, all declared/registered collections are reindexed
       # (models are eagerly loaded from the configured `search_engine_models` path).
       # @param targets [Array<Symbol, String, Class>] collections or model classes
+      # @param silent [Boolean] suppress progress output to stdout (errors still go to stderr)
       # @return [Hash] summary (includes :failed_collections_total for unresolved targets)
-      def reindex_collections!(*targets, client: nil)
-        run!(mode: :reindex, targets: targets, client: client)
+      def reindex_collections!(*targets, client: nil, silent: false)
+        run!(mode: :reindex, targets: targets, client: client, silent: silent)
       end
 
       # Reindex all registered/declared collections.
@@ -53,11 +56,12 @@ module SearchEngine
       # and runs reindexing as if they were passed to {.reindex_collections!}.
       #
       # @param client [SearchEngine::Client, nil]
+      # @param silent [Boolean] suppress progress output to stdout (errors still go to stderr)
       # @return [Hash] summary (includes :failed_collections_total for unresolved targets)
-      def reindex_all!(client: nil)
+      def reindex_all!(client: nil, silent: false)
         ensure_models_loaded_from_configured_path!
         names = SearchEngine::CollectionResolver.models_map.keys
-        run!(mode: :reindex, targets: names, client: client)
+        run!(mode: :reindex, targets: names, client: client, silent: silent)
       end
 
       # Drop orphaned physical collections across all logical collections.
@@ -74,8 +78,9 @@ module SearchEngine
       # @param mode [Symbol] :index | :reindex
       # @param targets [Array]
       # @param client [SearchEngine::Client, nil]
+      # @param silent [Boolean]
       # @return [Hash]
-      def run!(mode:, targets:, client: nil)
+      def run!(mode:, targets:, client: nil, silent: false)
         raise ArgumentError, 'mode must be :index or :reindex' unless %i[index reindex].include?(mode.to_sym)
 
         ts_client = client || SearchEngine.client
@@ -119,7 +124,9 @@ module SearchEngine
         collection_results = []
         failed_collections_total = 0
 
-        SearchEngine::Instrumentation.with_context(bulk: true, bulk_suppress_cascade: true, bulk_mode: mode.to_sym) do
+        ctx = { bulk: true, bulk_suppress_cascade: true, bulk_mode: mode.to_sym }
+        ctx[:bulk_silent] = true if silent
+        SearchEngine::Instrumentation.with_context(ctx) do
           SearchEngine::Instrumentation.instrument('search_engine.bulk.run', payload.merge(stats)) do |ctx|
             run_stage!(mode, stage1_list, :input, collection_results)
             run_stage!(mode, cascade_order, :cascade, collection_results)

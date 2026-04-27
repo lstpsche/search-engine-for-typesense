@@ -8,6 +8,7 @@ require 'search_engine/logging/color'
 require 'search_engine/logging/batch_line'
 require 'search_engine/logging/step_line'
 require 'search_engine/logging/live_renderer'
+require 'search_engine/logging/output'
 
 module SearchEngine
   class Base
@@ -43,11 +44,11 @@ module SearchEngine
           return if deps.empty?
 
           indent = '  ' * depth
-          puts if depth.zero?
+          SearchEngine::Logging::Output.puts if depth.zero?
           header = SearchEngine::Logging::Color.header(
             %(#{indent}>>>>>> Preflight Dependencies (mode: #{mode}, collection: "#{current}"))
           )
-          puts(header)
+          SearchEngine::Logging::Output.puts(header)
 
           deps.each do |cfg|
             dep_coll = (cfg[:collection] || cfg['collection']).to_s
@@ -56,7 +57,9 @@ module SearchEngine
             dep_klass = __se_resolve_dep_class(dep_coll)
 
             if dep_klass.nil?
-              puts(SearchEngine::Logging::Color.dim(%(#{indent}  "#{dep_coll}" → skipped (unregistered))))
+              SearchEngine::Logging::Output.puts(
+                SearchEngine::Logging::Color.dim(%(#{indent}  "#{dep_coll}" → skipped (unregistered)))
+              )
               visited.add(dep_coll)
               next
             end
@@ -78,7 +81,9 @@ module SearchEngine
             visited.add(dep_coll)
           end
 
-          puts(SearchEngine::Logging::Color.header(%(#{indent}>>>>>> Preflight Done (collection: "#{current}"))))
+          SearchEngine::Logging::Output.puts(
+            SearchEngine::Logging::Color.header(%(#{indent}>>>>>> Preflight Done (collection: "#{current}")))
+          )
         end
 
         # @return [String] current collection logical name; empty string when unavailable
@@ -172,28 +177,32 @@ module SearchEngine
           when 'ensure'
             if missing
               status_word = SearchEngine::Logging::Color.apply('ensure (missing)', :yellow)
-              puts(%(#{indent}"#{dep_coll}" → #{status_word} → index_collection))
-              # Avoid nested preflight to prevent redundant recursion cycles
+              SearchEngine::Logging::Output.puts(%(#{indent}"#{dep_coll}" → #{status_word} → index_collection))
               SearchEngine::Instrumentation.with_context(bulk_suppress_cascade: true) do
                 dep_klass.index_collection(client: client)
               end
             else
-              puts(SearchEngine::Logging::Color.dim(%(#{indent}"#{dep_coll}" → present (skip))))
+              SearchEngine::Logging::Output.puts(
+                SearchEngine::Logging::Color.dim(%(#{indent}"#{dep_coll}" → present (skip)))
+              )
             end
           when 'index'
             if missing || drift
               reason = missing ? 'missing' : 'drift'
               status_word = SearchEngine::Logging::Color.apply("index (#{reason})", :yellow)
-              puts(%(#{indent}"#{dep_coll}" → #{status_word} → index_collection))
-              # Avoid nested preflight to prevent redundant recursion cycles
+              SearchEngine::Logging::Output.puts(%(#{indent}"#{dep_coll}" → #{status_word} → index_collection))
               SearchEngine::Instrumentation.with_context(bulk_suppress_cascade: true) do
                 dep_klass.index_collection(client: client)
               end
             else
-              puts(SearchEngine::Logging::Color.dim(%(#{indent}"#{dep_coll}" → in_sync (skip))))
+              SearchEngine::Logging::Output.puts(
+                SearchEngine::Logging::Color.dim(%(#{indent}"#{dep_coll}" → in_sync (skip)))
+              )
             end
           else
-            puts(SearchEngine::Logging::Color.dim(%(#{indent}"#{dep_coll}" → skipped (unknown mode: #{mode}))))
+            SearchEngine::Logging::Output.puts(
+              SearchEngine::Logging::Color.dim(%(#{indent}"#{dep_coll}" → skipped (unknown mode: #{mode})))
+            )
           end
         end
 
@@ -201,7 +210,9 @@ module SearchEngine
           return unless batches.is_a?(Array)
 
           batches.each_with_index do |batch_stats, idx|
-            puts(SearchEngine::Logging::BatchLine.format(batch_stats, idx + 1, indifferent: true))
+            SearchEngine::Logging::Output.puts(
+              SearchEngine::Logging::BatchLine.format(batch_stats, idx + 1, indifferent: true)
+            )
           end
         end
 
@@ -285,7 +296,8 @@ module SearchEngine
           docs_estimate = __se_heuristic_docs_estimate(1)
           renderer = SearchEngine::Logging::LiveRenderer.new(
             labels: ['single'], partitions: [nil],
-            per_partition_docs_estimates: [docs_estimate]
+            per_partition_docs_estimates: [docs_estimate],
+            io: SearchEngine::Logging::Output.io
           )
           renderer.start
 
@@ -348,7 +360,9 @@ module SearchEngine
         def __se_index_partitions_seq!(parts, into, compiled)
           docs_estimates = __se_per_partition_docs_estimates(parts, compiled)
           renderer = SearchEngine::Logging::LiveRenderer.new(
-            labels: parts.map(&:inspect), partitions: parts, per_partition_docs_estimates: docs_estimates
+            labels: parts.map(&:inspect), partitions: parts,
+            per_partition_docs_estimates: docs_estimates,
+            io: SearchEngine::Logging::Output.io
           )
           renderer.start
 
@@ -387,7 +401,9 @@ module SearchEngine
 
           docs_estimates = __se_per_partition_docs_estimates(parts, compiled)
           renderer = SearchEngine::Logging::LiveRenderer.new(
-            labels: parts.map(&:inspect), partitions: parts, per_partition_docs_estimates: docs_estimates
+            labels: parts.map(&:inspect), partitions: parts,
+            per_partition_docs_estimates: docs_estimates,
+            io: SearchEngine::Logging::Output.io
           )
           renderer.start
 

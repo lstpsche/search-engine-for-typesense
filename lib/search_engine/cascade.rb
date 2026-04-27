@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require 'search_engine/logging/output'
+
 module SearchEngine
   # Cascade reindexing for collections that reference other collections via
   # Typesense field-level references.
@@ -192,12 +194,16 @@ into: nil
           parts = parts.reject { |p| p.nil? || p.to_s.strip.empty? }
 
           if parts.empty?
-            puts(SearchEngine::Logging::Color.dim(%(  Referencer "#{coll_display}" — partitions=0 → skip)))
+            SearchEngine::Logging::Output.puts(
+              SearchEngine::Logging::Color.dim(%(  Referencer "#{coll_display}" — partitions=0 → skip))
+            )
             return false
           end
 
           parts_str = SearchEngine::Logging::Color.bold("partitions=#{parts.size}")
-          puts(%(  Referencer "#{coll_display}" — #{parts_str} parallel=#{compiled.max_parallel}))
+          SearchEngine::Logging::Output.puts(
+            %(  Referencer "#{coll_display}" — #{parts_str} parallel=#{compiled.max_parallel})
+          )
           mp = compiled.max_parallel.to_i
           if mp > 1 && parts.size > 1
             require 'concurrent-ruby'
@@ -214,7 +220,9 @@ into: nil
           end
 
         else
-          puts(%(  Referencer "#{coll_display}" — #{SearchEngine::Logging::Color.bold('single')}))
+          SearchEngine::Logging::Output.puts(
+            %(  Referencer "#{coll_display}" — #{SearchEngine::Logging::Color.bold('single')})
+          )
           SearchEngine::Indexer.rebuild_partition!(ref_klass, partition: nil, into: nil)
           executed = true
         end
@@ -336,7 +344,7 @@ into: nil
         coll_display = physical && physical != logical ? "#{logical} (physical: #{physical})" : logical
         action = force_rebuild ? 'force_rebuild index_collection' : 'index_collection'
         status_word = SearchEngine::Logging::Color.apply("schema rebuild required, running #{action}", :yellow)
-        puts(%(  Referencer "#{coll_display}" — #{status_word}))
+        SearchEngine::Logging::Output.puts(%(  Referencer "#{coll_display}" — #{status_word}))
 
         SearchEngine::Instrumentation.with_context(bulk_suppress_cascade: true) do
           ref_klass.index_collection(client: client, pre: :ensure, force_rebuild: force_rebuild)
@@ -344,7 +352,7 @@ into: nil
         true
       rescue StandardError => error
         err_line = %(  Referencer "#{logical}" — schema rebuild failed: #{error.message})
-        puts(SearchEngine::Logging::Color.apply(err_line, :red))
+        warn(SearchEngine::Logging::Color.apply(err_line, :red))
         false
       end
 
@@ -353,7 +361,9 @@ into: nil
           pool.post do
             SearchEngine::Instrumentation.with_context(ctx) do
               summary = SearchEngine::Indexer.rebuild_partition!(ref_klass, partition: p, into: nil)
-              mtx.synchronize { puts(SearchEngine::Logging::PartitionProgress.line(p, summary)) }
+              mtx.synchronize do
+                SearchEngine::Logging::Output.puts(SearchEngine::Logging::PartitionProgress.line(p, summary))
+              end
             end
           end
         end
@@ -363,7 +373,7 @@ into: nil
         executed = false
         parts.each do |p|
           summary = SearchEngine::Indexer.rebuild_partition!(ref_klass, partition: p, into: nil)
-          puts(SearchEngine::Logging::PartitionProgress.line(p, summary))
+          SearchEngine::Logging::Output.puts(SearchEngine::Logging::PartitionProgress.line(p, summary))
           executed = true
         end
         executed
