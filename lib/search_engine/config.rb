@@ -56,6 +56,10 @@ module SearchEngine
     #   @return [String, nil, false] path to host app SearchEngine models directory. May be
     #     relative to `Rails.root` (e.g., "app/search_engine") or absolute. When `nil` or
     #     `false`, gem-managed loading of host SearchEngine models is disabled.
+    # @!attribute [rw] syncable_callback_timing
+    #   @return [Symbol] controls ActiveRecordSyncable callback timing.
+    #     +:after_commit+ (default) uses +after_*_commit+ callbacks (safe, post-transaction).
+    #     +:after_save+ uses legacy +after_*+ callbacks (in-transaction).
     attr_accessor :logger,
                   :default_query_by,
                   :default_infix,
@@ -67,7 +71,8 @@ module SearchEngine
                   :client,
                   :default_console_model,
                   :search_engine_models,
-                  :relation_print_materializes
+                  :relation_print_materializes,
+                  :syncable_callback_timing
 
     # Lightweight nested configuration for schema lifecycle.
     class SchemaConfig
@@ -402,6 +407,9 @@ module SearchEngine
       @search_engine_models = 'app/search_engine'
       # When true, Relation#inspect/pretty_print materialize a preview (AR-like).
       @relation_print_materializes = true
+      # Controls whether ActiveRecordSyncable uses after_*_commit (safe, default)
+      # or after_* (legacy in-transaction) callbacks. Values: :after_commit, :after_save.
+      @syncable_callback_timing = :after_commit
     end
 
     # Whether the engine should avoid network I/O and use an offline client.
@@ -701,7 +709,8 @@ module SearchEngine
         presets: presets_hash_for_to_h,
         curation: curation_hash_for_to_h,
         embedding: embedding_hash_for_to_h,
-        relation_print_materializes: relation_print_materializes ? true : false
+        relation_print_materializes: relation_print_materializes ? true : false,
+        syncable_callback_timing: syncable_callback_timing
       }
     end
 
