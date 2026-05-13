@@ -3,7 +3,7 @@
 module SearchEngine
   class Relation
     module DSL
-      # Geo search chainers: filtering by radius/polygon and (future) geo sorting.
+      # Geo search chainers: filtering by radius/polygon, geo distance sorting.
       # Mixed into Relation's DSL; preserves copy-on-write semantics.
       module Geo
         # Filter by geographic proximity (radius) or containment (polygon).
@@ -28,9 +28,37 @@ module SearchEngine
           end
         end
 
+        # Sort by geographic distance from a reference point.
+        #
+        # @param field [Symbol, String] a `:geopoint` or `[:geopoint]` attribute
+        # @param from [Hash] `{ lat:, lng: }` — the reference point
+        # @param direction [Symbol] `:asc` (nearest first, default) or `:desc`
+        # @param exclude_radius [String, nil] e.g. `"2 km"` — exclude results within this radius from distance scoring
+        # @param precision [String, nil] e.g. `"1 km"` — bucket precision for distance sort
+        # @return [SearchEngine::Relation]
+        def order_geo(field, from:, direction: :asc, exclude_radius: nil, precision: nil)
+          validate_geo_field!(field, context: 'order_geo')
+
+          lat = from[:lat]
+          lng = from[:lng]
+          validate_geo_coordinate!(lat, lng, context: 'order_geo')
+
+          dir = direction.to_s.downcase
+          unless %w[asc desc].include?(dir)
+            raise ArgumentError, "order_geo: direction must be :asc or :desc (got #{direction.inspect})"
+          end
+
+          sort_token = build_geo_sort_token(field, lat, lng, dir, exclude_radius, precision)
+
+          spawn do |s|
+            existing = Array(s[:orders])
+            s[:orders] = dedupe_orders_last_wins(existing + [sort_token])
+          end
+        end
+
         private
 
-        def validate_geo_field!(field)
+        def validate_geo_field!(field, context: 'where_geo')
           attrs = safe_attributes_map
           return unless attrs && !attrs.empty?
 
@@ -38,7 +66,7 @@ module SearchEngine
           return if [:geopoint, [:geopoint]].include?(type)
 
           raise ArgumentError,
-                "where_geo: field :#{field} must be declared as :geopoint or [:geopoint]"
+                "#{context}: field :#{field} must be declared as :geopoint or [:geopoint]"
         end
 
         def validate_geo_predicate_exclusivity!(within_radius, within_polygon)
@@ -50,20 +78,20 @@ module SearchEngine
           raise ArgumentError, 'where_geo: within_radius: and within_polygon: are mutually exclusive'
         end
 
-        def validate_geo_coordinate!(lat, lng)
+        def validate_geo_coordinate!(lat, lng, context: 'where_geo')
           unless lat.is_a?(Numeric) && lat >= -90 && lat <= 90
-            raise ArgumentError, "where_geo: lat must be a number in [-90, 90] (got #{lat.inspect})"
+            raise ArgumentError, "#{context}: lat must be a number in [-90, 90] (got #{lat.inspect})"
           end
           return if lng.is_a?(Numeric) && lng >= -180 && lng <= 180
 
-          raise ArgumentError, "where_geo: lng must be a number in [-180, 180] (got #{lng.inspect})"
+          raise ArgumentError, "#{context}: lng must be a number in [-180, 180] (got #{lng.inspect})"
         end
 
-        def validate_radius!(radius)
+        def validate_radius!(radius, context: 'where_geo')
           return if radius.is_a?(String) && radius.match?(/\A\d+(\.\d+)?\s*(km|mi)\z/)
 
           raise ArgumentError,
-                "where_geo: radius must be a string like '10 km' or '5 mi' (got #{radius.inspect})"
+                "#{context}: radius must be a string like '10 km' or '5 mi' (got #{radius.inspect})"
         end
 
         def build_radius_filter(field, opts)
@@ -90,6 +118,19 @@ module SearchEngine
 
           coords = points.map { |p| "#{p[0]}, #{p[1]}" }.join(', ')
           "#{field}:(#{coords})"
+        end
+
+        def build_geo_sort_token(field, lat, lng, dir, exclude_radius, precision)
+          parts = +"#{field}(#{lat}, #{lng}"
+          if exclude_radius
+            validate_radius!(exclude_radius, context: 'order_geo')
+            parts << ", exclude_radius: #{exclude_radius}"
+          end
+          if precision
+            validate_radius!(precision, context: 'order_geo')
+            parts << ", precision: #{precision}"
+          end
+          "#{parts}):#{dir}"
         end
       end
     end
