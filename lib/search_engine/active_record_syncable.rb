@@ -235,10 +235,21 @@ module SearchEngine
       end
 
       actions = cfg[:actions]
+      timing = begin
+        SearchEngine.config.syncable_callback_timing
+      rescue StandardError
+        :after_commit
+      end
 
-      ar_klass.after_create :__se_syncable_upsert! if actions.include?(:create)
-      ar_klass.after_update :__se_syncable_upsert! if actions.include?(:update)
-      ar_klass.after_destroy :__se_syncable_delete! if actions.include?(:destroy)
+      if timing == :after_commit
+        ar_klass.after_create_commit :__se_syncable_upsert! if actions.include?(:create)
+        ar_klass.after_update_commit :__se_syncable_upsert! if actions.include?(:update)
+        ar_klass.after_destroy_commit :__se_syncable_delete! if actions.include?(:destroy)
+      else
+        ar_klass.after_create :__se_syncable_upsert! if actions.include?(:create)
+        ar_klass.after_update :__se_syncable_upsert! if actions.include?(:update)
+        ar_klass.after_destroy :__se_syncable_delete! if actions.include?(:destroy)
+      end
 
       ar_klass.instance_variable_set(:@__se_syncable_callbacks_installed__, true)
       nil
