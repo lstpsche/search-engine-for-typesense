@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'search_engine/relation/dsl/filters'
+require 'search_engine/relation/dsl/geo'
 require 'search_engine/relation/dsl/selection'
 require 'search_engine/relation/dsl/vectors'
 
@@ -10,6 +11,7 @@ module SearchEngine
     # Chainers MUST be copy-on-write and return new Relation instances.
     module DSL
       include SearchEngine::Relation::DSL::Filters
+      include SearchEngine::Relation::DSL::Geo
       include SearchEngine::Relation::DSL::Selection
       include SearchEngine::Relation::DSL::Vectors
 
