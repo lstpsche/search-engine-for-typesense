@@ -116,6 +116,36 @@ SearchEngine::Product.upsert_bulk(records: Product.limit(2))
 
 # Bulk upsert mapped payloads
 SearchEngine::Product.upsert_bulk(data: [mapped])
+
+# Geo search
+class SearchEngine::Venue < SearchEngine::Base
+  collection :venues
+
+  attribute :id, :integer
+  attribute :name, :string
+  attribute :location, :geopoint
+end
+
+# Filter by radius
+SearchEngine::Venue
+  .where_geo(:location, within_radius: { lat: 54.69, lng: 25.28, radius: "10 km" })
+  .order_geo(:location, from: { lat: 54.69, lng: 25.28 })
+  .to_a
+
+# Filter by polygon (viewport)
+SearchEngine::Venue
+  .where_geo(:location, within_polygon: [[54.72, 25.35], [54.72, 25.22], [54.67, 25.22], [54.67, 25.35]])
+  .to_a
+
+# Viewport boost with _eval() + distance tiebreaker
+SearchEngine::Venue
+  .order_eval("location:(54.72,25.35, 54.72,25.22, 54.67,25.22, 54.67,25.35)", direction: :desc)
+  .order_geo(:location, from: { lat: 54.69, lng: 25.28 })
+  .to_a
+
+# Access geo distance on results (present when order_geo is used)
+result = SearchEngine::Venue.all.order_geo(:location, from: { lat: 54.69, lng: 25.28 }).execute
+result.hits.first.geo_distance_meters # => { "location" => 1234 }
 ```
 
 ## Documentation
