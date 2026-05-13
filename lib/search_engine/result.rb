@@ -291,7 +291,7 @@ module SearchEngine
     module GeoDistance
       # @return [Hash{String=>Numeric}, nil] mapping of geo field name to distance in meters
       def geo_distance_meters
-        instance_variable_get(:@__se_geo_distance__)
+        instance_variable_get(:@__se_geo_distance__)&.dup
       end
     end
 

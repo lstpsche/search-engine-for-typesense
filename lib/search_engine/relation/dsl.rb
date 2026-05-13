@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require 'search_engine/relation/dsl/eval'
 require 'search_engine/relation/dsl/filters'
 require 'search_engine/relation/dsl/geo'
 require 'search_engine/relation/dsl/selection'
@@ -10,6 +11,7 @@ module SearchEngine
     # User-facing chainers and input normalizers.
     # Chainers MUST be copy-on-write and return new Relation instances.
     module DSL
+      include SearchEngine::Relation::DSL::Eval
       include SearchEngine::Relation::DSL::Filters
       include SearchEngine::Relation::DSL::Geo
       include SearchEngine::Relation::DSL::Selection

@@ -120,8 +120,8 @@ SearchEngine::Product.upsert_bulk(data: [mapped])
 # Geo search
 class SearchEngine::Venue < SearchEngine::Base
   collection :venues
+  identify_by :id
 
-  attribute :id, :integer
   attribute :name, :string
   attribute :location, :geopoint
 end
