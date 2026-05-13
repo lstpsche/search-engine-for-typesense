@@ -31,7 +31,8 @@ module SearchEngine
       datetime: 'int64',
       time_string: 'string',
       datetime_string: 'string',
-      vector: 'float[]'
+      vector: 'float[]',
+      geopoint: 'geopoint'
     }.freeze
 
     FIELD_COMPARE_KEYS = %i[
@@ -818,11 +819,13 @@ module SearchEngine
         s = type_string.to_s
         return 'string[]' if s.casecmp('string[]').zero?
         return 'float[]' if s.casecmp('float[]').zero?
+        return 'geopoint[]' if s.casecmp('geopoint[]').zero?
         return 'int64' if s.casecmp('int64').zero?
         return 'int32' if s.casecmp('int32').zero?
         return 'float' if s.casecmp('float').zero?
         return 'bool' if %w[bool boolean].include?(s.downcase)
         return 'string' if s.casecmp('string').zero?
+        return 'geopoint' if s.casecmp('geopoint').zero?
 
         # Fallback: return as-is
         s
