@@ -94,6 +94,7 @@ module SearchEngine
 
           obj = hydrate(entry[:document])
           attach_highlighting!(obj, entry)
+          attach_geo_distance!(obj, entry)
           hydrated << obj
         end
         @hits = hydrated.freeze
@@ -284,6 +285,16 @@ module SearchEngine
       end
     end
 
+    # Per-hit geo distance mixin: added onto hydrated objects when Typesense
+    # returns geo_distance_meters metadata (present when sort_by includes a
+    # geopoint distance sort).
+    module GeoDistance
+      # @return [Hash{String=>Numeric}, nil] mapping of geo field name to distance in meters
+      def geo_distance_meters
+        instance_variable_get(:@__se_geo_distance__)
+      end
+    end
+
     def parse_facets
       @__facets_parsed_memo || {}.freeze
     end
@@ -389,7 +400,9 @@ module SearchEngine
           next unless doc
 
           obj = hydrate(doc)
-          attach_highlighting!(obj, symbolize_hit(sub))
+          sym_sub = symbolize_hit(sub)
+          attach_highlighting!(obj, sym_sub)
+          attach_geo_distance!(obj, sym_sub)
           hydrated << obj
         end
 
@@ -528,6 +541,17 @@ module SearchEngine
       obj.extend(HitHighlighting) unless obj.singleton_class.included_modules.include?(HitHighlighting)
       obj.instance_variable_set(:@__se_highlights_map__, map)
       obj.instance_variable_set(:@__se_highlight_ctx__, safe_highlight_ctx)
+      obj
+    rescue StandardError
+      obj
+    end
+
+    def attach_geo_distance!(obj, hit_entry)
+      raw_geo = hit_entry[:geo_distance_meters]
+      return obj unless raw_geo.is_a?(Hash) && !raw_geo.empty?
+
+      obj.extend(GeoDistance) unless obj.singleton_class.included_modules.include?(GeoDistance)
+      obj.instance_variable_set(:@__se_geo_distance__, raw_geo)
       obj
     rescue StandardError
       obj
