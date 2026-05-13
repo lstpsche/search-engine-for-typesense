@@ -31,6 +31,9 @@ class ConfigDefaultsTest < Minitest::Test
     assert_equal true, h.dig(:presets, :enabled)
     assert_nil h.dig(:presets, :namespace)
     assert_equal %i[filter_by sort_by include_fields exclude_fields], h.dig(:presets, :locked_domains)
+
+    # Syncable callback timing
+    assert_equal :after_commit, h[:syncable_callback_timing]
   end
 
   def test_configure_yields_and_returns_config
