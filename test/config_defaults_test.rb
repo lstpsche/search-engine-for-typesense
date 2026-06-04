@@ -32,6 +32,14 @@ class ConfigDefaultsTest < Minitest::Test
     assert_nil h.dig(:presets, :namespace)
     assert_equal %i[filter_by sort_by include_fields exclude_fields], h.dig(:presets, :locked_domains)
 
+    # Async partition indexing defaults
+    assert_equal :inline, h.dig(:indexer, :partition_execution)
+    assert_nil h.dig(:indexer, :partition_queue_name)
+    assert_equal 2, h.dig(:indexer, :partition_poll_interval_s)
+    assert_nil h.dig(:indexer, :partition_timeout_s)
+    assert_equal 86_400, h.dig(:indexer, :partition_run_ttl_s)
+    assert_nil h.dig(:indexer, :partition_run_store)
+
     # Syncable callback timing
     assert_equal :after_commit, h[:syncable_callback_timing]
   end

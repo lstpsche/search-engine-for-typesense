@@ -8,6 +8,8 @@ module SearchEngine
   # - partition [Object] (JSON-serializable)
   # - into [String, nil]
   # - metadata [Hash]
+  # - run_id [String, nil]
+  # - partition_key [String, nil]
   class IndexPartitionJob < ::ActiveJob::Base
     queue_as do
       cfg = SearchEngine.config.indexer
@@ -31,11 +33,16 @@ module SearchEngine
     # @param partition [Object]
     # @param into [String, nil]
     # @param metadata [Hash]
+    # @param run_id [String, nil]
+    # @param partition_key [String, nil]
     # @return [void]
-    def perform(collection_class_name, partition, into: nil, metadata: {})
+    def perform(collection_class_name, partition, into: nil, metadata: {}, run_id: nil, partition_key: nil)
       payload = nil
       klass = constantize_collection!(collection_class_name)
       payload = base_payload(klass, partition: partition, into: into)
+      run_store = indexing_run_store(run_id)
+      partition_key ||= SearchEngine::IndexingRun.partition_key(partition) if run_id
+      run_store&.mark_started(run_id: run_id, partition_key: partition_key, job_id: job_id)
       instrument('search_engine.dispatcher.job_started',
                  payload.merge(queue: queue_name, job_id: job_id, metadata: metadata)
                 )
@@ -46,6 +53,7 @@ module SearchEngine
         summary = SearchEngine::Indexer.rebuild_partition!(klass, partition: partition, into: into)
       end
       duration = (monotonic_ms - started).round(1)
+      run_store&.mark_succeeded(run_id: run_id, partition_key: partition_key, summary: summary)
 
       instrument(
         'search_engine.dispatcher.job_finished',
@@ -56,6 +64,7 @@ module SearchEngine
       nil
     rescue StandardError => error
       safe_payload = payload || error_payload(error)
+      run_store&.mark_failed(run_id: run_id, partition_key: partition_key, error: error) unless retryable_error?(error)
       instrument_error(error, payload: safe_payload.merge(metadata: metadata || {}))
       raise
     end
@@ -97,6 +106,24 @@ module SearchEngine
         error_payload(error).merge(queue: queue_name, job_id: job_id, retry_after_s: wait_seconds)
       )
       retry_job wait: wait_seconds
+    end
+
+    def indexing_run_store(run_id)
+      return nil if run_id.nil?
+
+      SearchEngine::IndexingRunStore.resolve
+    end
+
+    def retryable_error?(error)
+      transient_error?(error) && executions.to_i < retry_policy.attempts
+    end
+
+    def transient_error?(error)
+      return true if error.is_a?(SearchEngine::Errors::Timeout)
+      return true if error.is_a?(SearchEngine::Errors::Connection)
+
+      error.is_a?(SearchEngine::Errors::Api) &&
+        SearchEngine::Indexer::RetryPolicy.transient_status?(error.status.to_i)
     end
 
     def error_payload(error)

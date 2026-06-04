@@ -181,6 +181,24 @@ SearchEngine.configure do |c|
   # Queue name for ActiveJob dispatch. Default: 'search_index'
   # c.indexer.queue_name = 'search_index'
 
+  # Advanced partition execution for full indexing. Default: :inline
+  # Use :active_job with a real ActiveJob backend to enqueue one job per
+  # partition during blue/green indexing. Does not require Sidekiq.
+  # c.indexer.partition_execution = :inline
+
+  # Optional queue override for partition jobs. Falls back to c.indexer.queue_name.
+  # Size worker concurrency carefully: partition jobs can multiply partition max_parallel.
+  # c.indexer.partition_queue_name = nil
+
+  # Parent wait settings for async partition runs. Defaults shown.
+  # c.indexer.partition_poll_interval_s = 2
+  # c.indexer.partition_timeout_s = nil
+
+  # Operational metadata for async partition runs. Defaults shown.
+  # Use shared Rails.cache or provide a custom store visible to workers and parent.
+  # c.indexer.partition_run_store = nil
+  # c.indexer.partition_run_ttl_s = 86_400
+
   # --- Sources -------------------------------------------------------------
 
   # ActiveRecord source: default ORM batch size. Default: 2000

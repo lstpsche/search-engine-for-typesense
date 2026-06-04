@@ -164,6 +164,30 @@ You can control this explicitly with:
 
 If you set `SearchEngine.configure { |c| c.client = ... }`, the custom client is always used.
 
+## Async partition indexing
+
+Async partition indexing is an advanced opt-in mode for partitioned full indexing. The default remains
+inline execution. Apps with a real ActiveJob backend can use queue-backed partition execution so each
+search/index partition imports into the same blue/green physical collection before the alias is swapped.
+This mode does not require Sidekiq; use any ActiveJob backend that can run the partition jobs.
+
+```ruby
+SearchEngine.configure do |c|
+  c.indexer.partition_execution = :active_job
+  c.indexer.partition_queue_name = "search_index_partitions"
+  c.indexer.partition_timeout_s = 7_200
+end
+```
+
+Async mode is partition-based, not app-domain based. The gem enqueues one
+`SearchEngine::IndexPartitionJob` per configured partition, waits for every partition to finish, and
+only then lets the schema lifecycle swap the alias. If any partition fails or times out, the previous
+alias target remains active.
+
+Use a shared `Rails.cache` backend, or provide `c.indexer.partition_run_store`, so worker processes and
+the parent indexing process can see the same run metadata. Size the queue carefully: worker concurrency
+multiplies with any per-partition `max_parallel` setting.
+
 ## Example app
 
 See `examples/demo_shop` — demonstrates single/multi search, JOINs, grouping, presets/curation, and DX/observability. Supports offline mode via the stub client (see [Testing](https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/testing)).

@@ -281,6 +281,11 @@ module SearchEngine
           if compiled
             parts = Array(compiled.partitions)
             max_p = compiled.max_parallel.to_i
+            if __se_async_partition_execution_requested?(parts)
+              return __se_async_partition_result_unless_available unless __se_async_partition_execution_available?
+
+              return SearchEngine::AsyncPartitionCoordinator.call(klass: self, partitions: parts, into: into)
+            end
             return __se_index_partitions_seq!(parts, into, compiled) if max_p <= 1 || parts.size <= 1
 
             __se_index_partitions_parallel!(parts, into, max_p, compiled)
@@ -291,6 +296,32 @@ module SearchEngine
           { status: :failed, docs_total: 0, success_total: 0, failed_total: 0,
             sample_error: "#{error.class}: #{error.message.to_s[0, 200]}" }
         end
+
+        def __se_async_partition_execution_requested?(parts)
+          parts.size > 1 && SearchEngine.config.indexer.partition_execution.to_sym == :active_job
+        end
+
+        def __se_async_partition_execution_available?
+          defined?(::ActiveJob::Base) && defined?(SearchEngine::IndexPartitionJob)
+        end
+
+        def __se_async_partition_result_unless_available
+          missing = []
+          missing << 'ActiveJob::Base' unless defined?(::ActiveJob::Base)
+          missing << 'SearchEngine::IndexPartitionJob' unless defined?(SearchEngine::IndexPartitionJob)
+
+          {
+            status: :failed,
+            docs_total: 0,
+            success_total: 0,
+            failed_total: 0,
+            sample_error: "async partition indexing requires #{missing.join(' and ')}"
+          }
+        end
+
+        private :__se_async_partition_execution_requested?,
+                :__se_async_partition_execution_available?,
+                :__se_async_partition_result_unless_available
 
         def __se_index_single_with_renderer!(into)
           docs_estimate = __se_heuristic_docs_estimate(1)
