@@ -172,6 +172,11 @@ module SearchEngine
         entry[:success_total] = summary_value(summary, :success_total).to_i
         entry[:failed_total] = summary_value(summary, :failed_total).to_i
         entry[:sample_error] = summary_value(summary, :sample_error)
+        entry[:duration_ms_total] = summary_value(summary, :duration_ms_total)
+        entry[:source_duration_ms_total] = summary_value(summary, :source_duration_ms_total)
+        entry[:map_duration_ms_total] = summary_value(summary, :map_duration_ms_total)
+        entry[:jsonl_duration_ms_total] = summary_value(summary, :jsonl_duration_ms_total)
+        entry[:import_duration_ms_total] = summary_value(summary, :import_duration_ms_total)
       end
 
       def summary_value(summary, key)

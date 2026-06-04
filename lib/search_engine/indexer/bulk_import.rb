@@ -73,10 +73,15 @@ module SearchEngine
           failed_total = 0
           failed_batches_total = 0
           batches_total = 0
+          source_duration_ms_total = 0.0
+          map_duration_ms_total = 0.0
+          jsonl_duration_ms_total = 0.0
+          import_duration_ms_total = 0.0
           source_batches_done = 0
           started_at = monotonic_ms
 
           docs_enum.each do |raw_batch|
+            stage_metrics = stage_metrics_for(raw_batch)
             stats_list = import_batch_with_handling(
               client: client,
               collection: into,
@@ -97,6 +102,10 @@ module SearchEngine
               validate_soft_batch_size!(batch_size, stats[:docs_count])
               log_batch(stats, batches_total) if log_batches
             end
+            source_duration_ms_total += stage_metrics[:source_duration_ms].to_f
+            map_duration_ms_total += stage_metrics[:map_duration_ms].to_f
+            jsonl_duration_ms_total += stats_list.sum { |stats| stats[:jsonl_duration_ms].to_f }
+            import_duration_ms_total += stats_list.sum { |stats| stats[:import_duration_ms].to_f }
 
             source_batches_done += 1
             on_batch&.call(
@@ -117,6 +126,10 @@ module SearchEngine
             failed_total: failed_total,
             failed_batches_total: failed_batches_total,
             duration_ms_total: total_duration_ms,
+            source_duration_ms_total: source_duration_ms_total.round(1),
+            map_duration_ms_total: map_duration_ms_total.round(1),
+            jsonl_duration_ms_total: jsonl_duration_ms_total.round(1),
+            import_duration_ms_total: import_duration_ms_total.round(1),
             batches: batches
           )
         end
@@ -202,6 +215,10 @@ module SearchEngine
             failed_total: 0,
             failed_batches_total: 0,
             batches_total: 0,
+            source_duration_ms_total: 0.0,
+            map_duration_ms_total: 0.0,
+            jsonl_duration_ms_total: 0.0,
+            import_duration_ms_total: 0.0,
             source_batches_done: 0,
             idx_counter: -1,
             started_at: monotonic_ms,
@@ -325,6 +342,7 @@ module SearchEngine
           thread_client = SearchEngine.client
           thread_buffer = +''
           thread_idx = shared_state[:mtx].synchronize { shared_state[:idx_counter] += 1 }
+          stage_metrics = stage_metrics_for(raw_batch)
 
           snapshot = begin
             stats_list = import_batch_with_handling(
@@ -339,6 +357,7 @@ module SearchEngine
 
             shared_state[:mtx].synchronize do
               aggregate_stats(stats_list, shared_state, batch_size, log_batches)
+              aggregate_stage_metrics(stage_metrics, stats_list, shared_state)
               shared_state[:source_batches_done] += 1
               progress_snapshot(shared_state)
             end
@@ -355,6 +374,7 @@ module SearchEngine
               err_msg = "  batch_index=#{thread_idx} → error=#{error.class}: #{error.message.to_s[0, 200]}"
               warn(SearchEngine::Logging::Color.apply(err_msg, :red))
               aggregate_stats([failure_stat], shared_state, batch_size, log_batches)
+              aggregate_stage_metrics(stage_metrics, [failure_stat], shared_state)
               shared_state[:source_batches_done] += 1
               progress_snapshot(shared_state)
             end
@@ -420,6 +440,10 @@ module SearchEngine
             failed_total: shared_state[:failed_total],
             failed_batches_total: shared_state[:failed_batches_total],
             duration_ms_total: total_duration_ms,
+            source_duration_ms_total: shared_state[:source_duration_ms_total].round(1),
+            map_duration_ms_total: shared_state[:map_duration_ms_total].round(1),
+            jsonl_duration_ms_total: shared_state[:jsonl_duration_ms_total].round(1),
+            import_duration_ms_total: shared_state[:import_duration_ms_total].round(1),
             batches: shared_state[:batches]
           )
         end
@@ -586,8 +610,10 @@ module SearchEngine
           docs = BatchPlanner.to_array(raw_batch)
           return [] if docs.empty?
 
+          jsonl_started_at = monotonic_ms
           docs_count, bytes_sent = BatchPlanner.encode_jsonl!(docs, buffer)
           jsonl = buffer.dup
+          jsonl_duration_ms = (monotonic_ms - jsonl_started_at).round(1)
           # Use provided batch_index if available (for recursive splits), otherwise compute from next_index
           idx = batch_index || (next_index.is_a?(Proc) ? next_index.call : next_index)
 
@@ -605,6 +631,8 @@ module SearchEngine
             dry_run: false
           )
           stats[:duration_ms] = (monotonic_ms - started_at).round(1)
+          stats[:jsonl_duration_ms] = jsonl_duration_ms
+          stats[:import_duration_ms] = stats[:duration_ms]
           stats[:index] = idx
           [stats]
         rescue Errors::Api => error
@@ -646,9 +674,27 @@ module SearchEngine
             attempts: 1,
             http_status: error&.status.to_i,
             duration_ms: 0.0,
+            jsonl_duration_ms: 0.0,
+            import_duration_ms: 0.0,
             bytes_sent: bytes_sent,
             errors_sample: [safe_error_excerpt(error)]
           }
+        end
+
+        def stage_metrics_for(raw_batch)
+          metrics = raw_batch.instance_variable_get(:@__search_engine_stage_metrics__)
+          return metrics if metrics.is_a?(Hash)
+
+          {}
+        rescue StandardError
+          {}
+        end
+
+        def aggregate_stage_metrics(stage_metrics, stats_list, shared_state)
+          shared_state[:source_duration_ms_total] += stage_metrics[:source_duration_ms].to_f
+          shared_state[:map_duration_ms_total] += stage_metrics[:map_duration_ms].to_f
+          shared_state[:jsonl_duration_ms_total] += stats_list.sum { |stats| stats[:jsonl_duration_ms].to_f }
+          shared_state[:import_duration_ms_total] += stats_list.sum { |stats| stats[:import_duration_ms].to_f }
         end
 
         def safe_error_excerpt(error)

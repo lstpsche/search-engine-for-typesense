@@ -26,6 +26,10 @@ module SearchEngine
       :failed_total,
       :failed_batches_total,
       :duration_ms_total,
+      :source_duration_ms_total,
+      :map_duration_ms_total,
+      :jsonl_duration_ms_total,
+      :import_duration_ms_total,
       :batches,
       keyword_init: true
     )
@@ -489,6 +493,7 @@ module SearchEngine
       end
 
       def instrument_partition_finish(klass, target_into, pfields, summary, started_at)
+        duration_ms = (monotonic_ms - started_at).round(1)
         SearchEngine::Instrumentation.instrument(
           'search_engine.indexer.partition_finish',
           {
@@ -501,8 +506,12 @@ module SearchEngine
             success_total: summary.success_total,
             failed_total: summary.failed_total,
             status: summary.status,
-            duration_ms: (monotonic_ms - started_at).round(1)
-          }
+            duration_ms: duration_ms,
+            source_duration_ms_total: summary_metric(summary, :source_duration_ms_total),
+            map_duration_ms_total: summary_metric(summary, :map_duration_ms_total),
+            jsonl_duration_ms_total: summary_metric(summary, :jsonl_duration_ms_total),
+            import_duration_ms_total: summary_metric(summary, :import_duration_ms_total)
+          }.compact
         ) {}
       end
 
@@ -510,11 +519,36 @@ module SearchEngine
         Enumerator.new do |y|
           idx = 0
           rows_enum.each do |rows|
+            source_started_at = monotonic_ms
+            rows = BatchPlanner.to_array(rows)
+            source_duration_ms = (monotonic_ms - source_started_at).round(1)
+
+            map_started_at = monotonic_ms
             docs, _report = mapper.map_batch!(rows, batch_index: idx)
+            map_duration_ms = (monotonic_ms - map_started_at).round(1)
+            attach_stage_metrics!(
+              docs,
+              source_duration_ms: source_duration_ms,
+              map_duration_ms: map_duration_ms,
+              source_rows_count: rows.size
+            )
             y << docs
             idx += 1
           end
         end
+      end
+
+      def attach_stage_metrics!(docs, metrics)
+        docs.instance_variable_set(:@__search_engine_stage_metrics__, metrics)
+      rescue StandardError
+        nil
+      end
+
+      def summary_metric(summary, key)
+        return unless summary.respond_to?(key)
+
+        value = summary.public_send(key)
+        value.nil? ? nil : value.to_f.round(1)
       end
     end
   end
