@@ -157,7 +157,10 @@ module SearchEngine
       def run_single_collection(mode, klass, stage)
         case mode.to_sym
         when :index
-          stage == :cascade ? klass.index_collection(pre: :ensure, force_rebuild: true) : klass.index_collection
+          options = { force_rebuild: true }
+          options[:pre] = :ensure if stage == :cascade
+
+          klass.index_collection(**options)
         else
           klass.reindex_collection!
         end
