@@ -177,4 +177,19 @@ class IndexPartitionJobTest < Minitest::Test
   ensure
     SearchEngine.config.indexer.dispatch = :inline
   end
+
+  def test_perform_later_uses_active_job_instrumentation_without_name_collision
+    previous_adapter = ActiveJob::Base.queue_adapter
+    ActiveJob::Base.queue_adapter = :test
+    ActiveJob::Base.queue_adapter.enqueued_jobs.clear
+
+    job = SearchEngine::IndexPartitionJob
+          .set(queue: 'partition_search')
+          .perform_later('SearchEngine::Author', { shard: 1 }, into: 'authors_v2')
+
+    assert_kind_of ActiveJob::Base, job
+    assert_equal 1, ActiveJob::Base.queue_adapter.enqueued_jobs.size
+  ensure
+    ActiveJob::Base.queue_adapter = previous_adapter
+  end
 end

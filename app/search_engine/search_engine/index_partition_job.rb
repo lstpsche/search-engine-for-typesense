@@ -43,9 +43,9 @@ module SearchEngine
       run_store = indexing_run_store(run_id)
       partition_key ||= SearchEngine::IndexingRun.partition_key(partition) if run_id
       run_store&.mark_started(run_id: run_id, partition_key: partition_key, job_id: job_id)
-      instrument('search_engine.dispatcher.job_started',
-                 payload.merge(queue: queue_name, job_id: job_id, metadata: metadata)
-                )
+      instrument_event('search_engine.dispatcher.job_started',
+                       payload.merge(queue: queue_name, job_id: job_id, metadata: metadata)
+                      )
 
       started = monotonic_ms
       summary = nil
@@ -55,7 +55,7 @@ module SearchEngine
       duration = (monotonic_ms - started).round(1)
       run_store&.mark_succeeded(run_id: run_id, partition_key: partition_key, summary: summary)
 
-      instrument(
+      instrument_event(
         'search_engine.dispatcher.job_finished',
         payload.merge(queue: queue_name, job_id: job_id, duration_ms: duration, status: summary.status,
                       metadata: metadata
@@ -101,7 +101,7 @@ module SearchEngine
       end
 
       wait_seconds = policy.next_delay(attempt_no + 1, error)
-      instrument(
+      instrument_event(
         'search_engine.dispatcher.job_error',
         error_payload(error).merge(queue: queue_name, job_id: job_id, retry_after_s: wait_seconds)
       )
@@ -141,7 +141,7 @@ module SearchEngine
     end
 
     def instrument_error(error, payload: nil)
-      instrument(
+      instrument_event(
         'search_engine.dispatcher.job_error',
         (payload || {}).merge(queue: queue_name, job_id: job_id, error_class: error.class.name,
                               message_truncated: error.message.to_s[0, 200]
@@ -149,7 +149,7 @@ module SearchEngine
       )
     end
 
-    def instrument(event, payload)
+    def instrument_event(event, payload)
       SearchEngine::Instrumentation.instrument(event, payload) {}
     end
 
