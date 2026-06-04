@@ -1,12 +1,28 @@
 # frozen_string_literal: true
 
 require 'test_helper'
+require 'active_job'
+require 'ostruct'
+require_relative '../app/search_engine/search_engine/index_partition_job'
 
 class SchemaLifecycleTest < Minitest::Test
   class Product < SearchEngine::Base
     collection 'products_lifecycle'
     identify_by :id
     attribute :name, :string
+  end
+
+  class PartitionedProduct < SearchEngine::Base
+    collection 'partitioned_products_lifecycle'
+    identify_by :id
+    attribute :name, :string
+
+    index do
+      partitions { [1, 2] }
+      partition_max_parallel 2
+      partition_fetch { |partition| [[OpenStruct.new(id: partition, name: "Product #{partition}")]] }
+      map { |record| { id: record.id, name: record.name } }
+    end
   end
 
   # Simple fake client to simulate Typesense behavior
@@ -56,7 +72,10 @@ class SchemaLifecycleTest < Minitest::Test
 
   def setup
     # Global default: keep none unless overridden
-    SearchEngine.configure { |c| c.schema.retention.keep_last = 0 }
+    SearchEngine.configure do |c|
+      c.schema.retention.keep_last = 0
+      c.indexer.partition_execution = :inline
+    end
   end
 
   def test_name_generator_sequence_increments_on_conflict
@@ -181,6 +200,71 @@ class SchemaLifecycleTest < Minitest::Test
     end
 
     assert_equal([forced], client.deleted)
+  end
+
+  def test_async_partition_success_swaps_alias_after_schema_apply
+    client = FakeClient.new(collections: [], alias_target: nil)
+    forced = 'partitioned_products_lifecycle_20250101_000001_001'
+    result = { status: :ok, docs_total: 2, success_total: 2, failed_total: 0, sample_error: nil }
+    calls = []
+
+    SearchEngine.config.indexer.partition_execution = :active_job
+    coordinator = lambda do |**kwargs|
+      calls << kwargs
+      result
+    end
+    SearchEngine::AsyncPartitionCoordinator.stub(:call, coordinator) do
+      SearchEngine::Schema.stub(:generate_physical_name, forced) do
+        PartitionedProduct.index_collection(client: client, force_rebuild: true)
+      end
+    end
+
+    assert_equal 1, calls.size
+    assert_equal PartitionedProduct, calls.first[:klass]
+    assert_equal [1, 2], calls.first[:partitions]
+    assert_equal forced, calls.first[:into]
+    assert_equal [['partitioned_products_lifecycle', forced]], client.upserts
+  ensure
+    SearchEngine.config.indexer.partition_execution = :inline
+  end
+
+  def test_async_partition_failure_aborts_alias_swap
+    client = FakeClient.new(collections: [], alias_target: nil)
+    forced = 'partitioned_products_lifecycle_20250101_000001_001'
+    result = { status: :failed, docs_total: 0, success_total: 0, failed_total: 1, sample_error: 'partition failed' }
+
+    SearchEngine.config.indexer.partition_execution = :active_job
+    SearchEngine::AsyncPartitionCoordinator.stub(:call, result) do
+      SearchEngine::Schema.stub(:generate_physical_name, forced) do
+        PartitionedProduct.index_collection(client: client, force_rebuild: true)
+      end
+    end
+
+    assert_empty client.upserts
+    assert_equal [forced], client.deleted
+  ensure
+    SearchEngine.config.indexer.partition_execution = :inline
+  end
+
+  def test_async_partition_missing_job_returns_failed_result_before_inline_work
+    removed_job = SearchEngine.send(:remove_const, :IndexPartitionJob)
+    indexer_called = false
+
+    SearchEngine.config.indexer.partition_execution = :active_job
+    indexer = lambda do |*|
+      indexer_called = true
+    end
+    SearchEngine::Indexer.stub(:rebuild_partition!, indexer) do
+      result = PartitionedProduct.__se_index_partitions!(into: 'partitioned_products_lifecycle_20250101_000001_001')
+
+      assert_equal :failed, result[:status]
+      assert_match(/SearchEngine::IndexPartitionJob/, result[:sample_error])
+    end
+
+    refute indexer_called
+  ensure
+    SearchEngine.const_set(:IndexPartitionJob, removed_job) if removed_job
+    SearchEngine.config.indexer.partition_execution = :inline
   end
 
   # --- cleanup_logical_collection_conflict! tests ---

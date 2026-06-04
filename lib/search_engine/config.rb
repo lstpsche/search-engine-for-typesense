@@ -108,6 +108,18 @@ module SearchEngine
       attr_accessor :dispatch
       # @return [String] queue name for ActiveJob enqueues
       attr_accessor :queue_name
+      # @return [Symbol] partition execution mode: :inline or :active_job
+      attr_accessor :partition_execution
+      # @return [String, nil] optional queue override for async partition jobs
+      attr_accessor :partition_queue_name
+      # @return [Integer] parent wait polling interval for async partition runs (seconds)
+      attr_accessor :partition_poll_interval_s
+      # @return [Integer, nil] maximum parent wait budget for async partition runs (seconds)
+      attr_accessor :partition_timeout_s
+      # @return [Integer] TTL for async partition run metadata (seconds)
+      attr_accessor :partition_run_ttl_s
+      # @return [Object, nil] custom async partition run store
+      attr_accessor :partition_run_store
       # @return [Boolean] whether to run model.count for progress bar estimates (default true)
       attr_accessor :estimate_progress
       # @return [Integer, nil] graceful-shutdown timeout (seconds) for the parallel
@@ -121,6 +133,12 @@ module SearchEngine
         @gzip = false
         @dispatch = active_job_available? ? :active_job : :inline
         @queue_name = 'search_index'
+        @partition_execution = :inline
+        @partition_queue_name = nil
+        @partition_poll_interval_s = 2
+        @partition_timeout_s = nil
+        @partition_run_ttl_s = 86_400
+        @partition_run_store = nil
         @estimate_progress = true
         @pool_timeout = nil
       end
@@ -737,6 +755,12 @@ module SearchEngine
         gzip: indexer.gzip ? true : false,
         dispatch: indexer.dispatch,
         queue_name: indexer.queue_name,
+        partition_execution: indexer.partition_execution,
+        partition_queue_name: indexer.partition_queue_name,
+        partition_poll_interval_s: indexer.partition_poll_interval_s,
+        partition_timeout_s: indexer.partition_timeout_s,
+        partition_run_ttl_s: indexer.partition_run_ttl_s,
+        partition_run_store: indexer.partition_run_store,
         estimate_progress: indexer.estimate_progress
       }
     end
