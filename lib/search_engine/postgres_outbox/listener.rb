@@ -37,6 +37,7 @@ module SearchEngine
         @mutex = Mutex.new
         @stop_requested = false
         @thread = nil
+        @last_enqueue_at = nil
       end
 
       # Start the listener thread.
@@ -120,7 +121,7 @@ module SearchEngine
             next if notified || stop_requested?
 
             instrument('search_engine.postgres_outbox.listener_fallback') {}
-            enqueue_drain
+            enqueue_drain(force: true)
           end
         ensure
           connection.execute("UNLISTEN #{quoted_channel}")
@@ -187,8 +188,31 @@ module SearchEngine
         end
       end
 
-      def enqueue_drain
+      def enqueue_drain(force: false)
+        return if enqueue_throttled?(force: force)
+
         drain_job.perform_later
+      end
+
+      def enqueue_throttled?(force:)
+        @mutex.synchronize do
+          now = monotonic_time
+          if force
+            @last_enqueue_at = now
+            next false
+          end
+
+          if @last_enqueue_at && (now - @last_enqueue_at) < poll_interval_s
+            true
+          else
+            @last_enqueue_at = now
+            false
+          end
+        end
+      end
+
+      def monotonic_time
+        Process.clock_gettime(Process::CLOCK_MONOTONIC)
       end
 
       def drain_job

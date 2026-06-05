@@ -14,10 +14,20 @@ module SearchEngine
       def perform(limit: nil)
         return nil unless SearchEngine.config.postgres_outbox.enabled
 
+        effective_limit = limit || SearchEngine.config.postgres_outbox.batch_size
         drainer = SearchEngine::PostgresOutbox::Drainer.new
-        return drainer.drain_once if limit.nil?
+        summary = drainer.drain_once(limit: effective_limit)
+        enqueue_continuation(limit: limit) if summary[:claimed].to_i >= effective_limit.to_i
 
-        drainer.drain_once(limit: limit)
+        summary
+      end
+
+      private
+
+      def enqueue_continuation(limit:)
+        return self.class.perform_later if limit.nil?
+
+        self.class.perform_later(limit: limit)
       end
     end
   end

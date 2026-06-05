@@ -123,6 +123,26 @@ class PostgresOutboxListenerTest < Minitest::Test
     assert_equal 1, drain_job.calls
   end
 
+  def test_notification_enqueues_are_throttled_within_poll_interval
+    drain_job = FakeDrainJob.new
+    listener = build_listener(drain_job: drain_job, poll_interval_s: 10)
+
+    listener.send(:enqueue_drain)
+    listener.send(:enqueue_drain)
+
+    assert_equal 1, drain_job.calls
+  end
+
+  def test_fallback_enqueue_bypasses_notification_throttle
+    drain_job = FakeDrainJob.new
+    listener = build_listener(drain_job: drain_job, poll_interval_s: 10)
+
+    listener.send(:enqueue_drain)
+    listener.send(:enqueue_drain, force: true)
+
+    assert_equal 2, drain_job.calls
+  end
+
   def test_advisory_lock_skipped_prevents_enqueue
     drain_job = FakeDrainJob.new
     sleeps = []
@@ -201,6 +221,7 @@ class PostgresOutboxListenerTest < Minitest::Test
     connection_pool: FakeConnectionPool.new(connection),
     drain_job: FakeDrainJob.new,
     advisory_lock: false,
+    poll_interval_s: 0.01,
     sleeper: ->(_seconds) {}
   )
     SearchEngine::PostgresOutbox::Listener.new(
@@ -208,7 +229,7 @@ class PostgresOutboxListenerTest < Minitest::Test
       drain_job: drain_job,
       channel: 'search_engine_outbox',
       wait_timeout_s: 0.01,
-      poll_interval_s: 0.01,
+      poll_interval_s: poll_interval_s,
       advisory_lock: advisory_lock,
       advisory_lock_key: 1_658_021_551,
       sleeper: sleeper
