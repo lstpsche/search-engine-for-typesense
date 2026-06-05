@@ -88,6 +88,30 @@ class PostgresOutboxDrainJobTest < Minitest::Test
     assert_equal [[[], { limit: 25 }]], drainer.calls
   end
 
+  def test_no_arg_job_enqueues_target_drains_when_delivery_targets_are_configured
+    SearchEngine.config.postgres_outbox.enabled = true
+    SearchEngine.config.postgres_outbox.delivery_targets = lambda do
+      [
+        SearchEngine::PostgresOutbox::DeliveryTarget.new(key: 'target_1', queue_name: 'queue_1'),
+        SearchEngine::PostgresOutbox::DeliveryTarget.new(key: 'target_2', queue_name: 'queue_2')
+      ]
+    end
+    drainer_called = false
+    enqueued_limit = :unset
+
+    SearchEngine::PostgresOutbox::Drainer.stub(:new, -> { drainer_called = true }) do
+      SearchEngine::PostgresOutbox::DrainEnqueuer.stub(:enqueue_all, ->(limit: nil) { enqueued_limit = limit }) do
+        assert_equal(
+          { claimed: 0, processed: 0, enqueued_targets: 2 },
+          SearchEngine::PostgresOutbox::DrainJob.new.perform(limit: 25)
+        )
+      end
+    end
+
+    refute drainer_called
+    assert_equal 25, enqueued_limit
+  end
+
   def test_enqueues_continuation_when_full_default_batch_is_claimed
     ActiveJob::Base.queue_adapter = :test
     ActiveJob::Base.queue_adapter.enqueued_jobs.clear

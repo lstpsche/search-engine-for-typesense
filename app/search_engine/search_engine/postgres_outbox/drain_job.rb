@@ -14,6 +14,7 @@ module SearchEngine
       # @return [Hash, nil]
       def perform(limit: nil, target_key: nil)
         return nil unless SearchEngine.config.postgres_outbox.enabled
+        return enqueue_target_drains(limit: limit) if target_key.nil? && delivery_targets.any?
 
         effective_limit = limit || SearchEngine.config.postgres_outbox.batch_size
         drainer = drainer_for(target_key)
@@ -24,6 +25,11 @@ module SearchEngine
       end
 
       private
+
+      def enqueue_target_drains(limit:)
+        SearchEngine::PostgresOutbox::DrainEnqueuer.enqueue_all(limit: limit)
+        { claimed: 0, processed: 0, enqueued_targets: delivery_targets.size }
+      end
 
       def drainer_for(target_key)
         return SearchEngine::PostgresOutbox::Drainer.new if target_key.nil?
