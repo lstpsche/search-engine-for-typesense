@@ -50,4 +50,78 @@ class CurationTest < Minitest::Test
     params = rel.to_typesense_params
     assert_equal({ filter_curated_hits: true }, params[:_curation])
   end
+
+  def test_result_hydrates_curated_hit_metadata
+    hits = result_from_hits(
+      { 'curated' => true, 'document' => { 'id' => 'p_1' } },
+      { 'curated' => false, 'document' => { 'id' => 'p_2' } },
+      { 'document' => { 'id' => 'p_3' } }
+    ).to_a
+
+    assert_equal true, hits[0].curated_hit?
+    assert_equal false, hits[1].curated_hit?
+    refute_respond_to hits[2], :curated_hit?
+  end
+
+  def test_grouped_result_hydrates_curated_hit_metadata
+    result = SearchEngine::Result.new(
+      {
+        'found' => 2,
+        'out_of' => 2,
+        'request_params' => { 'group_by' => 'brand_id' },
+        'grouped_hits' => [
+          {
+            'group_key' => ['10'],
+            'hits' => [
+              { 'curated' => true, 'document' => { 'id' => 'p_1', 'brand_id' => 10 } }
+            ]
+          },
+          {
+            'group_key' => ['20'],
+            'hits' => [
+              { 'curated' => false, 'document' => { 'id' => 'p_2', 'brand_id' => 20 } }
+            ]
+          }
+        ]
+      },
+      klass: Product
+    )
+
+    assert_equal true, result.groups.first.hits.first.curated_hit?
+    assert_equal true, result.to_a.first.curated_hit?
+    assert_equal false, result.groups.last.hits.first.curated_hit?
+  end
+
+  def test_filter_curated_hits_count_uses_hydrated_curated_metadata
+    client = SearchEngine::Test::StubClient.new
+    client.enqueue_response(
+      :search,
+      {
+        'found' => 42,
+        'out_of' => 42,
+        'hits' => [
+          { 'curated' => true, 'document' => { 'id' => 'p_1' } },
+          { 'curated' => false, 'document' => { 'id' => 'p_2' } },
+          { 'document' => { 'id' => 'p_3' } },
+          { 'curated' => true, 'document' => { 'id' => 'p_4' } }
+        ]
+      }
+    )
+
+    rel = Product.all.curate(filter_curated_hits: true).per(10).page(1)
+    rel.instance_variable_set(:@__client, client)
+
+    assert_equal 2, rel.count
+    assert_equal 4, rel.to_a.size
+    assert_equal 1, client.search_calls.size
+  end
+
+  private
+
+  def result_from_hits(*hits)
+    SearchEngine::Result.new(
+      { 'found' => hits.size, 'out_of' => hits.size, 'hits' => hits },
+      klass: Product
+    )
+  end
 end

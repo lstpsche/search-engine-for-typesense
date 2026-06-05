@@ -93,6 +93,7 @@ module SearchEngine
           next unless entry[:document]
 
           obj = hydrate(entry[:document])
+          attach_curation!(obj, entry)
           attach_highlighting!(obj, entry)
           attach_geo_distance!(obj, entry)
           hydrated << obj
@@ -295,6 +296,15 @@ module SearchEngine
       end
     end
 
+    # Per-hit curation mixin: added onto hydrated objects when Typesense
+    # returns curated metadata for the hit.
+    module HitCuration
+      # @return [Boolean] whether Typesense marked this search hit as curated
+      def curated_hit?
+        instance_variable_get(:@__se_curated_hit__) == true
+      end
+    end
+
     def parse_facets
       @__facets_parsed_memo || {}.freeze
     end
@@ -401,6 +411,7 @@ module SearchEngine
 
           obj = hydrate(doc)
           sym_sub = symbolize_hit(sub)
+          attach_curation!(obj, sym_sub)
           attach_highlighting!(obj, sym_sub)
           attach_geo_distance!(obj, sym_sub)
           hydrated << obj
@@ -541,6 +552,18 @@ module SearchEngine
       obj.extend(HitHighlighting) unless obj.singleton_class.included_modules.include?(HitHighlighting)
       obj.instance_variable_set(:@__se_highlights_map__, map)
       obj.instance_variable_set(:@__se_highlight_ctx__, safe_highlight_ctx)
+      obj
+    rescue StandardError
+      obj
+    end
+
+    def attach_curation!(obj, hit_entry)
+      return obj unless hit_entry.key?(:curated)
+
+      value = hit_entry[:curated]
+      curated = value == true || value.to_s == 'true'
+      obj.extend(HitCuration) unless obj.singleton_class.included_modules.include?(HitCuration)
+      obj.instance_variable_set(:@__se_curated_hit__, curated)
       obj
     rescue StandardError
       obj
