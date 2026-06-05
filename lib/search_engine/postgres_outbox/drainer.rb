@@ -31,6 +31,8 @@ module SearchEngine
           summary = empty_summary(events)
           next summary if events.empty?
 
+          summary[:continue] = true if continue_after_nonempty_target_batch?
+
           kept, superseded_ids = coalesce(events)
           repository.mark_superseded!(superseded_ids)
           summary[:superseded] = superseded_ids.size
@@ -57,6 +59,10 @@ module SearchEngine
         }
         summary[:target_key] = target_key if target_key
         summary
+      end
+
+      def continue_after_nonempty_target_batch?
+        !target_key.nil?
       end
 
       def coalesce(events)

@@ -19,7 +19,7 @@ module SearchEngine
         effective_limit = limit || SearchEngine.config.postgres_outbox.batch_size
         drainer = drainer_for(target_key)
         summary = drainer.drain_once(limit: effective_limit)
-        enqueue_continuation(limit: limit, target_key: target_key) if summary[:claimed].to_i >= effective_limit.to_i
+        enqueue_continuation(limit: limit, target_key: target_key) if continue_draining?(summary, effective_limit)
 
         summary
       end
@@ -29,6 +29,10 @@ module SearchEngine
       def enqueue_target_drains(limit:)
         SearchEngine::PostgresOutbox::DrainEnqueuer.enqueue_all(limit: limit)
         { claimed: 0, processed: 0, enqueued_targets: delivery_targets.size }
+      end
+
+      def continue_draining?(summary, effective_limit)
+        summary[:continue] || summary[:claimed].to_i >= effective_limit.to_i
       end
 
       def drainer_for(target_key)

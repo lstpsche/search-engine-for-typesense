@@ -86,6 +86,7 @@ class PostgresOutboxDrainerTest < Minitest::Test
       assert_equal [1], repository.superseded_ids
       assert_equal [2, 3], repository.processed_ids.sort
       assert_equal 3, summary[:claimed]
+      refute summary[:continue]
       assert_equal 2, summary[:processed]
       assert_equal 1, summary[:superseded]
     end
@@ -219,6 +220,7 @@ class PostgresOutboxDrainerTest < Minitest::Test
       summary = drainer.drain_once(limit: 10)
 
       assert_equal 'target_1', summary[:target_key]
+      assert_equal true, summary[:continue]
       assert_equal [1], repository.processed_ids
       assert_equal [{ worker_id: 'w1', target_key: 'target_1' }], processor.calls.map(&:last)
     end

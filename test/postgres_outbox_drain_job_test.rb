@@ -183,6 +183,28 @@ class PostgresOutboxDrainJobTest < Minitest::Test
     )
   end
 
+  def test_target_continuation_uses_explicit_continue_signal_for_partial_batches
+    ActiveJob::Base.queue_adapter = :test
+    ActiveJob::Base.queue_adapter.enqueued_jobs.clear
+    SearchEngine.config.postgres_outbox.enabled = true
+    SearchEngine.config.postgres_outbox.delivery_targets = lambda do
+      [SearchEngine::PostgresOutbox::DeliveryTarget.new(key: 'target_1', queue_name: 'target_queue')]
+    end
+    drainer = FakeDrainer.new(summary: { claimed: 3, processed: 3, continue: true })
+
+    SearchEngine::PostgresOutbox::Drainer.stub(:new, drainer) do
+      SearchEngine::PostgresOutbox::DrainJob.new.perform(limit: 25, target_key: 'target_1')
+    end
+
+    job = ActiveJob::Base.queue_adapter.enqueued_jobs.first
+    assert_equal 1, ActiveJob::Base.queue_adapter.enqueued_jobs.size
+    assert_equal 'target_queue', job[:queue]
+    assert_equal(
+      { 'target_key' => 'target_1', 'limit' => 25, '_aj_ruby2_keywords' => %w[target_key limit] },
+      job[:args].first
+    )
+  end
+
   def test_target_continuation_raises_when_target_is_not_configured
     SearchEngine.config.postgres_outbox.enabled = true
     SearchEngine.config.postgres_outbox.batch_size = 10
