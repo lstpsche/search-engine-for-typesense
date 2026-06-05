@@ -217,6 +217,7 @@ SearchEngine.configure do |c|
   c.postgres_outbox.enabled = true
   c.postgres_outbox.listener_enabled = -> { Rails.env.production? }
   c.postgres_outbox.table_name = "search_engine_outbox_events"
+  c.postgres_outbox.delivery_table_name = "search_engine_outbox_deliveries"
   c.postgres_outbox.channel = "search_engine_outbox"
   c.postgres_outbox.queue_name = "search_engine"
   c.postgres_outbox.batch_size = 1000
@@ -225,6 +226,14 @@ SearchEngine.configure do |c|
 
   # Optional. Leave off when your deployment already guarantees one listener.
   c.postgres_outbox.advisory_lock = false
+
+  # Optional. Leave empty for the default single-target flow.
+  c.postgres_outbox.delivery_targets = lambda do
+    [
+      { key: :mirror_a, queue_name: :search_engine_mirror_a },
+      { key: :mirror_b, queue_name: :search_engine_mirror_b }
+    ]
+  end
 end
 ```
 
@@ -242,6 +251,8 @@ class CreateSearchEngineOutboxEvents < ActiveRecord::Migration[7.1]
 
   def change
     create_search_engine_outbox_events
+    # Required only when c.postgres_outbox.delivery_targets is configured.
+    create_search_engine_outbox_deliveries
   end
 end
 ```
@@ -277,6 +288,13 @@ end
 
 `record_id_sql` and `document_id_sql` are trusted migration SQL expressions. They may refer to the
 PL/pgSQL `record_data` variable, which is `NEW` for inserts/updates and `OLD` for deletes.
+
+The event table stores logical changes. When `delivery_targets` is empty, drain jobs claim those event rows
+directly and existing single-target setups do not need to create or use delivery rows. When you configure
+delivery targets, `search_engine_outbox_deliveries` stores target-specific status, retry, lock, and queue
+state for each logical event. The listener uses the drain enqueuer to materialize missing delivery rows and
+enqueue one drain job per target queue. Processors still receive event objects and return event IDs; the
+parent event status is refreshed from the aggregate delivery states.
 
 Pair triggered source models with `sync_strategy: :postgres_outbox` so Active Record callbacks do not also
 write to Typesense for the same changes:

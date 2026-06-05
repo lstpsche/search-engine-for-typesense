@@ -15,7 +15,9 @@ module SearchEngine
                   :operation,
                   :attempts,
                   :payload,
-                  :created_at
+                  :created_at,
+                  :delivery_id,
+                  :target_key
 
       # @param row [Hash] outbox row with string or symbol keys
       # @raise [ArgumentError] when operation is not upsert/delete
@@ -27,9 +29,11 @@ module SearchEngine
         @record_id = string_value(row, :record_id)
         @document_id = string_value(row, :document_id)
         @operation = normalize_operation(value(row, :operation))
-        @attempts = value(row, :attempts).to_i
+        @attempts = (value(row, :delivery_attempts) || value(row, :attempts)).to_i
         @payload = value(row, :payload) || {}
         @created_at = value(row, :created_at)
+        @delivery_id = value(row, :delivery_id)
+        @target_key = string_value(row, :target_key)
       end
 
       # @return [Array<String>] key used by drainer coalescing

@@ -36,16 +36,22 @@ class PostgresOutboxRepositoryTest < Minitest::Test
 
   def setup
     @previous_table = SearchEngine.config.postgres_outbox.table_name
+    @previous_delivery_table = SearchEngine.config.postgres_outbox.delivery_table_name
+    @previous_delivery_targets = SearchEngine.config.postgres_outbox.delivery_targets
     @previous_attempts = SearchEngine.config.postgres_outbox.max_attempts
     @previous_backoff = SearchEngine.config.postgres_outbox.retry_backoff
 
     SearchEngine.config.postgres_outbox.table_name = 'custom_outbox'
+    SearchEngine.config.postgres_outbox.delivery_table_name = 'custom_outbox_deliveries'
+    SearchEngine.config.postgres_outbox.delivery_targets = -> { [] }
     SearchEngine.config.postgres_outbox.max_attempts = 3
     SearchEngine.config.postgres_outbox.retry_backoff = ->(_attempt) { 12 }
   end
 
   def teardown
     SearchEngine.config.postgres_outbox.table_name = @previous_table
+    SearchEngine.config.postgres_outbox.delivery_table_name = @previous_delivery_table
+    SearchEngine.config.postgres_outbox.delivery_targets = @previous_delivery_targets
     SearchEngine.config.postgres_outbox.max_attempts = @previous_attempts
     SearchEngine.config.postgres_outbox.retry_backoff = @previous_backoff
   end
@@ -121,6 +127,102 @@ class PostgresOutboxRepositoryTest < Minitest::Test
     assert_includes sql, "last_error = 'hard failure'"
   end
 
+  def test_materialize_deliveries_inserts_missing_rows_for_configured_targets
+    SearchEngine.config.postgres_outbox.delivery_targets = lambda do
+      [
+        { key: :target_1, queue_name: :queue_1 },
+        SearchEngine::PostgresOutbox::DeliveryTarget.new(key: 'target_2', queue_name: 'queue_2')
+      ]
+    end
+    connection = FakeConnection.new
+    repository = SearchEngine::PostgresOutbox::Repository.new(connection: connection, target_key: 'target_1')
+
+    repository.materialize_deliveries!
+
+    sql = connection.executed_sql.last
+    assert_includes sql, 'INSERT INTO "custom_outbox_deliveries"'
+    assert_includes sql, 'CROSS JOIN ('
+    assert_includes sql, "VALUES ('target_1', 'queue_1'), ('target_2', 'queue_2')"
+    assert_includes sql, "WHERE outbox.status IN ('pending', 'processing', 'failed')"
+    assert_includes sql, 'ON CONFLICT (event_id, target_key) DO NOTHING'
+  end
+
+  def test_materialize_deliveries_noops_when_no_targets_are_configured
+    connection = FakeConnection.new
+    repository = SearchEngine::PostgresOutbox::Repository.new(connection: connection, target_key: 'target_1')
+
+    repository.materialize_deliveries!
+
+    assert_empty connection.executed_sql
+  end
+
+  def test_delivery_claim_uses_target_scoped_delivery_rows
+    SearchEngine.config.postgres_outbox.delivery_targets = -> { [{ key: 'target_1', queue_name: 'queue_1' }] }
+    rows = [event_row(id: 11).merge('delivery_id' => 101, 'target_key' => 'target_1')]
+    connection = FakeConnection.new(rows: rows)
+    repository = SearchEngine::PostgresOutbox::Repository.new(connection: connection, target_key: 'target_1')
+
+    events = repository.claim_pending(limit: 25, worker_id: 'worker-1')
+
+    assert_equal [11], events.map(&:id)
+    assert_equal [101], events.map(&:delivery_id)
+    assert_equal ['target_1'], events.map(&:target_key)
+    assert_delivery_claim_select_sql(connection.selected_sql.first)
+    assert_delivery_claim_update_sql(connection.executed_sql)
+  end
+
+  def test_delivery_claim_with_no_configured_targets_stays_in_delivery_mode
+    connection = FakeConnection.new(rows: [])
+    repository = SearchEngine::PostgresOutbox::Repository.new(connection: connection, target_key: 'target_1')
+
+    events = repository.claim_pending(limit: 25, worker_id: 'worker-1')
+
+    assert_empty events
+    assert_equal 1, connection.selected_sql.size
+    assert_empty connection.executed_sql.grep(/UPDATE "custom_outbox"\n          SET status = 'processing'/)
+    assert_includes connection.executed_sql.first, 'UPDATE "custom_outbox_deliveries"'
+  end
+
+  def test_delivery_mark_processed_updates_target_delivery_and_refreshes_parent
+    connection = FakeConnection.new
+    repository = SearchEngine::PostgresOutbox::Repository.new(connection: connection, target_key: 'target_1')
+
+    repository.mark_processed!([11])
+
+    assert_includes connection.executed_sql[0], 'UPDATE "custom_outbox_deliveries"'
+    assert_includes connection.executed_sql[0], "status = 'processed'"
+    assert_includes connection.executed_sql[0], "WHERE target_key = 'target_1'"
+    assert_includes connection.executed_sql[0], "event_id IN ('11')"
+    assert_parent_refresh_sql(connection.executed_sql[1])
+  end
+
+  def test_delivery_mark_retryable_updates_target_delivery_and_refreshes_parent
+    connection = FakeConnection.new
+    repository = SearchEngine::PostgresOutbox::Repository.new(connection: connection, target_key: 'target_1')
+
+    repository.mark_retryable!([12], error: 'temporary')
+
+    assert_includes connection.executed_sql[0], 'UPDATE "custom_outbox_deliveries"'
+    assert_includes connection.executed_sql[0], 'attempts = attempts + 1'
+    assert_includes connection.executed_sql[0], "status = CASE WHEN attempts + 1 >= 3 THEN 'failed' ELSE 'pending' END"
+    assert_includes connection.executed_sql[0], "WHERE target_key = 'target_1'"
+    assert_includes connection.executed_sql[0], "last_error = 'temporary'"
+    assert_parent_refresh_sql(connection.executed_sql[1])
+  end
+
+  def test_delivery_mark_failed_updates_target_delivery_and_refreshes_parent
+    connection = FakeConnection.new
+    repository = SearchEngine::PostgresOutbox::Repository.new(connection: connection, target_key: 'target_1')
+
+    repository.mark_failed!([13], error: 'hard failure')
+
+    assert_includes connection.executed_sql[0], 'UPDATE "custom_outbox_deliveries"'
+    assert_includes connection.executed_sql[0], "status = 'failed'"
+    assert_includes connection.executed_sql[0], "WHERE target_key = 'target_1'"
+    assert_includes connection.executed_sql[0], "last_error = 'hard failure'"
+    assert_parent_refresh_sql(connection.executed_sql[1])
+  end
+
   private
 
   def assert_claim_select_sql(sql)
@@ -148,6 +250,55 @@ class PostgresOutboxRepositoryTest < Minitest::Test
     assert_includes sql, 'older.document_id = latest.document_id'
     assert_includes sql, 'older.id < latest.id'
     assert_includes sql, "('products', '1', '1')"
+  end
+
+  def assert_delivery_claim_select_sql(sql)
+    assert_includes sql, 'FOR UPDATE SKIP LOCKED'
+    assert_includes sql, 'FROM "custom_outbox_deliveries" deliveries'
+    assert_includes sql, 'INNER JOIN "custom_outbox" events'
+    assert_includes sql, "deliveries.target_key = 'target_1'"
+    assert_includes sql, "deliveries.status = 'pending'"
+    assert_includes sql, 'PARTITION BY deliveries.target_key, events.collection, events.document_id'
+    assert_includes sql, 'ranked_pending.row_number = 1'
+    assert_includes sql, 'deliveries.next_attempt_at <= CURRENT_TIMESTAMP'
+    assert_includes sql, 'LIMIT 25'
+    assert_includes sql, 'deliveries.id AS delivery_id'
+    assert_includes sql, 'deliveries.target_key'
+  end
+
+  def assert_delivery_claim_update_sql(executed_sql)
+    assert_includes executed_sql[0], 'INSERT INTO "custom_outbox_deliveries"'
+    assert_includes executed_sql[1], 'UPDATE "custom_outbox_deliveries"'
+    assert_includes executed_sql[1], "target_key = 'target_1'"
+    assert_delivery_supersede_sql(executed_sql[2])
+    assert_includes executed_sql[3], 'UPDATE "custom_outbox_deliveries"'
+    assert_includes executed_sql[3], "status = 'processing'"
+    assert_includes executed_sql[3], "locked_by = 'worker-1'"
+    assert_includes executed_sql[3], "WHERE id IN ('101')"
+  end
+
+  def assert_delivery_supersede_sql(sql)
+    assert_includes sql, 'WITH updated_deliveries AS ('
+    assert_includes sql, 'UPDATE "custom_outbox_deliveries" older_deliveries'
+    assert_includes sql, "status = 'superseded'"
+    assert_includes sql, 'older_deliveries.status = \'pending\''
+    assert_includes sql, 'older_deliveries.target_key = latest.target_key'
+    assert_includes sql, 'older_events.collection = latest.collection'
+    assert_includes sql, 'older_events.document_id = latest.document_id'
+    assert_includes sql, 'older_events.id < latest.event_id'
+    assert_includes sql, 'RETURNING older_deliveries.event_id'
+    assert_includes sql, "('target_1', 'products', '11', '11', '101')"
+    assert_parent_refresh_sql(sql)
+  end
+
+  def assert_parent_refresh_sql(sql)
+    assert_includes sql, 'UPDATE "custom_outbox" events'
+    assert_includes sql, 'FROM "custom_outbox_deliveries"'
+    assert_includes sql, "WHEN COUNT(*) FILTER (WHERE status = 'failed') > 0 THEN 'failed'"
+    assert_includes sql, "WHEN COUNT(*) FILTER (WHERE status IN ('pending', 'processing')) > 0 THEN 'pending'"
+    assert_includes sql, "WHEN COUNT(*) FILTER (WHERE status = 'superseded') = COUNT(*) THEN 'superseded'"
+    assert_includes sql, "WHEN COUNT(*) FILTER (WHERE status = 'processed') > 0 THEN 'processed'"
+    assert_includes sql, "WHEN aggregate.status IN ('processed', 'superseded') THEN CURRENT_TIMESTAMP"
   end
 
   def event_row(id:)

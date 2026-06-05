@@ -10,6 +10,7 @@ module SearchEngine
 
       # @param connection_pool [#with_connection, nil] ActiveRecord connection pool
       # @param drain_job [#perform_later] job class used to nudge outbox draining
+      # @param drain_enqueuer [#enqueue_all, nil] enqueue coordinator for drain jobs
       # @param channel [String] PostgreSQL notification channel
       # @param wait_timeout_s [Numeric] wait timeout for LISTEN notifications
       # @param poll_interval_s [Numeric] fallback/retry polling interval
@@ -19,6 +20,7 @@ module SearchEngine
       def initialize(
         connection_pool: nil,
         drain_job: nil,
+        drain_enqueuer: nil,
         channel: SearchEngine.config.postgres_outbox.channel,
         wait_timeout_s: SearchEngine.config.postgres_outbox.listener_wait_timeout_s,
         poll_interval_s: SearchEngine.config.postgres_outbox.poll_interval_s,
@@ -28,6 +30,7 @@ module SearchEngine
       )
         @connection_pool = connection_pool
         @drain_job = drain_job
+        @drain_enqueuer = drain_enqueuer
         @channel = channel.to_s
         @wait_timeout_s = wait_timeout_s.to_f
         @poll_interval_s = poll_interval_s.to_f
@@ -191,7 +194,7 @@ module SearchEngine
       def enqueue_drain(force: false)
         return if enqueue_throttled?(force: force)
 
-        drain_job.perform_later
+        drain_enqueuer.enqueue_all
       end
 
       def enqueue_throttled?(force:)
@@ -217,6 +220,10 @@ module SearchEngine
 
       def drain_job
         @drain_job ||= SearchEngine::PostgresOutbox::DrainJob
+      end
+
+      def drain_enqueuer
+        @drain_enqueuer ||= SearchEngine::PostgresOutbox::DrainEnqueuer.new(drain_job: drain_job)
       end
 
       def connection_pool

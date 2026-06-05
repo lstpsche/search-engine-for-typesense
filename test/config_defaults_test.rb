@@ -49,6 +49,7 @@ class ConfigDefaultsTest < Minitest::Test
 
     assert_equal false, h[:enabled]
     assert_equal 'search_engine_outbox_events', h[:table_name]
+    assert_equal 'search_engine_outbox_deliveries', h[:delivery_table_name]
     assert_equal 'search_engine_outbox', h[:channel]
     assert_equal 'search_engine', h[:queue_name]
     assert_equal 1000, h[:batch_size]
@@ -62,23 +63,36 @@ class ConfigDefaultsTest < Minitest::Test
     assert_equal false, h[:listener_enabled].call
     assert_equal({}, h[:collection_processors])
     assert_operator h[:retry_backoff].call(1), :>, 0
+    assert_equal [], h[:delivery_targets].call
   end
 
   def test_postgres_outbox_config_mutation
     cfg = SearchEngine::Config.new
     processor = ->(event) { event }
+    delivery_targets = lambda do
+      [
+        SearchEngine::PostgresOutbox::DeliveryTarget.new(
+          key: 'target_1',
+          queue_name: 'target_1_search'
+        )
+      ]
+    end
 
     cfg.postgres_outbox.enabled = true
     cfg.postgres_outbox.queue_name = 'critical_search'
     cfg.postgres_outbox.collection_processors[:products] = processor
     cfg.postgres_outbox.listener_enabled = -> { true }
+    cfg.postgres_outbox.delivery_table_name = 'custom_outbox_deliveries'
+    cfg.postgres_outbox.delivery_targets = delivery_targets
 
     h = cfg.to_h.fetch(:postgres_outbox)
 
     assert_equal true, h[:enabled]
     assert_equal 'critical_search', h[:queue_name]
+    assert_equal 'custom_outbox_deliveries', h[:delivery_table_name]
     assert_same processor, h.dig(:collection_processors, :products)
     assert_equal true, h[:listener_enabled].call
+    assert_same delivery_targets, h[:delivery_targets]
   end
 
   def test_configure_yields_and_returns_config

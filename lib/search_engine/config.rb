@@ -270,6 +270,8 @@ module SearchEngine
       attr_accessor :enabled
       # @return [String] database table used by host-managed outbox events
       attr_accessor :table_name
+      # @return [String] database table used by host-managed outbox deliveries
+      attr_accessor :delivery_table_name
       # @return [String] PostgreSQL notification channel for wakeups
       attr_accessor :channel
       # @return [String] queue name used by host app job dispatch
@@ -296,10 +298,13 @@ module SearchEngine
       attr_accessor :collection_processors
       # @return [#call] retry backoff calculator receiving the attempt number
       attr_accessor :retry_backoff
+      # @return [#call] resolver returning configured delivery targets
+      attr_accessor :delivery_targets
 
       def initialize
         @enabled = false
         @table_name = 'search_engine_outbox_events'
+        @delivery_table_name = 'search_engine_outbox_deliveries'
         @channel = 'search_engine_outbox'
         @queue_name = 'search_engine'
         @batch_size = 1000
@@ -313,6 +318,7 @@ module SearchEngine
         @listener_enabled = -> { false }
         @collection_processors = {}
         @retry_backoff = ->(attempt) { [attempt.to_i, 1].max * 5 }
+        @delivery_targets = -> { [] }
       end
     end
 
@@ -863,6 +869,7 @@ module SearchEngine
       {
         enabled: postgres_outbox.enabled ? true : false,
         table_name: postgres_outbox.table_name,
+        delivery_table_name: postgres_outbox.delivery_table_name,
         channel: postgres_outbox.channel,
         queue_name: postgres_outbox.queue_name,
         batch_size: postgres_outbox.batch_size,
@@ -875,7 +882,8 @@ module SearchEngine
         advisory_lock_key: postgres_outbox.advisory_lock_key,
         listener_enabled: postgres_outbox.listener_enabled,
         collection_processors: postgres_outbox.collection_processors,
-        retry_backoff: postgres_outbox.retry_backoff
+        retry_backoff: postgres_outbox.retry_backoff,
+        delivery_targets: postgres_outbox.delivery_targets
       }
     end
 

@@ -52,6 +52,53 @@ module SearchEngine
                   where: "status IN ('processed', 'superseded')"
       end
 
+      # Create the durable SearchEngine outbox deliveries table.
+      #
+      # @param table_name [String, Symbol] destination delivery table name
+      # @param events_table_name [String, Symbol] source events table name
+      # @return [void]
+      def create_search_engine_outbox_deliveries(
+        table_name: SearchEngine.config.postgres_outbox.delivery_table_name,
+        events_table_name: SearchEngine.config.postgres_outbox.table_name
+      )
+        create_table table_name do |t|
+          t.bigint :event_id, null: false
+          t.string :target_key, null: false
+          t.string :queue_name, null: false
+          t.string :status, null: false, default: 'pending'
+          t.integer :attempts, null: false, default: 0
+          t.datetime :locked_at
+          t.datetime :next_attempt_at
+          t.datetime :processed_at
+          t.string :locked_by
+          t.text :last_error
+          t.timestamps
+        end
+
+        add_index table_name,
+                  %i[event_id target_key],
+                  name: 'idx_se_outbox_deliveries_unique',
+                  unique: true
+        add_index table_name,
+                  %i[target_key status next_attempt_at id],
+                  name: 'idx_se_outbox_deliveries_pending'
+        add_index table_name,
+                  %i[target_key status event_id],
+                  name: 'idx_se_outbox_deliveries_coalescing'
+        add_index table_name,
+                  :locked_at,
+                  name: 'idx_se_outbox_deliveries_processing',
+                  where: "status = 'processing'"
+        add_index table_name,
+                  :processed_at,
+                  name: 'idx_se_outbox_deliveries_cleanup',
+                  where: "status IN ('processed', 'superseded')"
+        add_foreign_key table_name,
+                        events_table_name,
+                        column: :event_id,
+                        on_delete: :cascade
+      end
+
       # Create or replace a row-level PostgreSQL trigger that writes outbox events.
       #
       # @param table_name [String, Symbol] source table name

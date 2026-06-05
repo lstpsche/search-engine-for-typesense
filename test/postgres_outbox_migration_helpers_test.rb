@@ -32,10 +32,11 @@ class PostgresOutboxMigrationHelpersTest < Minitest::Test
   class FakeMigration
     include SearchEngine::PostgresOutbox::MigrationHelpers
 
-    attr_reader :created_tables, :indexes, :executed_sql
+    attr_reader :created_tables, :foreign_keys, :indexes, :executed_sql
 
     def initialize
       @created_tables = {}
+      @foreign_keys = []
       @indexes = []
       @executed_sql = []
     end
@@ -52,6 +53,10 @@ class PostgresOutboxMigrationHelpersTest < Minitest::Test
 
     def add_index(table, columns, **options)
       indexes << [table, columns, options]
+    end
+
+    def add_foreign_key(from_table, to_table, **options)
+      foreign_keys << [from_table, to_table, options]
     end
 
     def execute(sql)
@@ -94,6 +99,46 @@ class PostgresOutboxMigrationHelpersTest < Minitest::Test
                      { name: 'idx_search_engine_outbox_cleanup', where: "status IN ('processed', 'superseded')" }]
   end
 
+  def test_create_search_engine_outbox_deliveries_creates_columns_indexes_and_foreign_key
+    @migration.create_search_engine_outbox_deliveries(
+      table_name: :custom_outbox_deliveries,
+      events_table_name: :custom_outbox_events
+    )
+
+    table = @migration.created_tables.fetch(:custom_outbox_deliveries)
+
+    assert_includes table.columns, [:bigint, [:event_id], { null: false }]
+    assert_includes table.columns, [:string, [:target_key], { null: false }]
+    assert_includes table.columns, [:string, [:queue_name], { null: false }]
+    assert_includes table.columns, [:string, [:status], { null: false, default: 'pending' }]
+    assert_includes table.columns, [:integer, [:attempts], { null: false, default: 0 }]
+    assert_includes table.columns, [:datetime, [:locked_at], {}]
+    assert_includes table.columns, [:datetime, [:next_attempt_at], {}]
+    assert_includes table.columns, [:datetime, [:processed_at], {}]
+    assert_includes table.columns, [:string, [:locked_by], {}]
+    assert_includes table.columns, [:text, [:last_error], {}]
+    assert_includes table.columns, [:timestamps, [], {}]
+
+    assert_includes @migration.indexes,
+                    [:custom_outbox_deliveries, %i[event_id target_key],
+                     { name: 'idx_se_outbox_deliveries_unique', unique: true }]
+    assert_includes @migration.indexes,
+                    [:custom_outbox_deliveries, %i[target_key status next_attempt_at id],
+                     { name: 'idx_se_outbox_deliveries_pending' }]
+    assert_includes @migration.indexes,
+                    [:custom_outbox_deliveries, %i[target_key status event_id],
+                     { name: 'idx_se_outbox_deliveries_coalescing' }]
+    assert_includes @migration.indexes,
+                    [:custom_outbox_deliveries, :locked_at,
+                     { name: 'idx_se_outbox_deliveries_processing', where: "status = 'processing'" }]
+    assert_includes @migration.indexes,
+                    [:custom_outbox_deliveries, :processed_at,
+                     { name: 'idx_se_outbox_deliveries_cleanup', where: "status IN ('processed', 'superseded')" }]
+    assert_includes @migration.foreign_keys,
+                    [:custom_outbox_deliveries, :custom_outbox_events,
+                     { column: :event_id, on_delete: :cascade }]
+  end
+
   def test_create_search_engine_outbox_trigger_generates_idempotent_row_trigger_sql
     @migration.create_search_engine_outbox_trigger(
       :products,
@@ -110,6 +155,7 @@ class PostgresOutboxMigrationHelpersTest < Minitest::Test
     assert_includes sql, 'FOR EACH ROW'
     assert_includes sql, 'EXECUTE FUNCTION "search_engine_outbox_products_fn"();'
     assert_includes sql, 'INSERT INTO "search_engine_outbox_events"'
+    refute_includes sql, 'search_engine_outbox_deliveries'
     assert_includes sql, "'Product'"
     assert_includes sql, "'products'"
     assert_includes sql, '(record_data.id::text)'
@@ -183,10 +229,13 @@ class PostgresOutboxMigrationHelpersTest < Minitest::Test
 
     assert_includes table_template, 'include SearchEngine::PostgresOutbox::MigrationHelpers'
     assert_includes table_template, 'create_search_engine_outbox_events'
+    assert_includes table_template, 'create_search_engine_outbox_deliveries'
     assert_includes trigger_template, 'create_search_engine_outbox_trigger'
     assert_includes trigger_template, 'drop_search_engine_outbox_trigger'
     assert_includes trigger_template, 'document_id_sql'
+    refute_includes trigger_template, 'create_search_engine_outbox_deliveries'
     refute_includes trigger_template, 'Novus'
+    refute_includes table_template, 'Novus'
   end
 
   def test_generator_loads_with_rails_generator_dependencies

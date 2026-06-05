@@ -205,9 +205,46 @@ class PostgresOutboxDrainerTest < Minitest::Test
     end
   end
 
+  def test_target_key_is_added_to_summary_and_processor_context
+    repository = FakeRepository.new([event(id: 1, collection: 'products', delivery_id: 100, target_key: 'target_1')])
+    processor = RecordingProcessor.new
+    drainer = SearchEngine::PostgresOutbox::Drainer.new(
+      repository: repository,
+      processor: processor,
+      worker_id: 'w1',
+      target_key: :target_1
+    )
+
+    SearchEngine::DependencyPlanner.stub(:order_events, ->(input) { input }) do
+      summary = drainer.drain_once(limit: 10)
+
+      assert_equal 'target_1', summary[:target_key]
+      assert_equal [1], repository.processed_ids
+      assert_equal [{ worker_id: 'w1', target_key: 'target_1' }], processor.calls.map(&:last)
+    end
+  end
+
+  def test_target_key_constructor_builds_target_scoped_repository
+    repository_seen = nil
+    factory = lambda do |target_key: nil|
+      repository_seen = FakeRepository.new([])
+      assert_equal 'target_1', target_key
+      repository_seen
+    end
+
+    SearchEngine::PostgresOutbox::Repository.stub(:new, factory) do
+      summary = SearchEngine::PostgresOutbox::Drainer
+                .new(worker_id: 'w1', target_key: :target_1)
+                .drain_once(limit: 10)
+
+      assert_equal 'target_1', summary[:target_key]
+      assert_equal({ limit: 10, worker_id: 'w1' }, repository_seen.claim_args)
+    end
+  end
+
   private
 
-  def event(id:, collection: 'products', document_id: nil)
+  def event(id:, collection: 'products', document_id: nil, delivery_id: nil, target_key: nil)
     SearchEngine::PostgresOutbox::Event.new(
       id: id,
       source_table: collection,
@@ -217,7 +254,9 @@ class PostgresOutboxDrainerTest < Minitest::Test
       document_id: document_id || id.to_s,
       operation: 'upsert',
       attempts: 0,
-      payload: {}
+      payload: {},
+      delivery_id: delivery_id,
+      target_key: target_key
     )
   end
 end

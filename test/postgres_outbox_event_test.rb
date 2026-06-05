@@ -14,7 +14,9 @@ class PostgresOutboxEventTest < Minitest::Test
       operation: 'UPSERT',
       attempts: 2,
       payload: { 'trigger_operation' => 'UPDATE' },
-      created_at: 'now'
+      created_at: 'now',
+      delivery_id: 99,
+      target_key: :target_1
     )
 
     assert_equal 7, event.id
@@ -25,7 +27,26 @@ class PostgresOutboxEventTest < Minitest::Test
     assert_equal 'sku-42', event.document_id
     assert_equal :upsert, event.operation
     assert_equal 2, event.attempts
+    assert_equal 99, event.delivery_id
+    assert_equal 'target_1', event.target_key
     assert_equal %w[products sku-42], event.coalesce_key
+  end
+
+  def test_delivery_metadata_is_optional
+    event = SearchEngine::PostgresOutbox::Event.new(operation: 'upsert')
+
+    assert_nil event.delivery_id
+    assert_nil event.target_key
+  end
+
+  def test_delivery_attempts_override_parent_event_attempts
+    event = SearchEngine::PostgresOutbox::Event.new(
+      operation: 'upsert',
+      attempts: 1,
+      delivery_attempts: 3
+    )
+
+    assert_equal 3, event.attempts
   end
 
   def test_rejects_invalid_operation

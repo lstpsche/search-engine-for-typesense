@@ -24,6 +24,8 @@ class PostgresOutboxDrainJobTest < Minitest::Test
     @previous_enabled = SearchEngine.config.postgres_outbox.enabled
     @previous_queue_name = SearchEngine.config.postgres_outbox.queue_name
     @previous_batch_size = SearchEngine.config.postgres_outbox.batch_size
+    @previous_delivery_targets = SearchEngine.config.postgres_outbox.delivery_targets
+    SearchEngine.config.postgres_outbox.delivery_targets = -> { [] }
   end
 
   def teardown
@@ -31,6 +33,7 @@ class PostgresOutboxDrainJobTest < Minitest::Test
     SearchEngine.config.postgres_outbox.enabled = @previous_enabled
     SearchEngine.config.postgres_outbox.queue_name = @previous_queue_name
     SearchEngine.config.postgres_outbox.batch_size = @previous_batch_size
+    SearchEngine.config.postgres_outbox.delivery_targets = @previous_delivery_targets
   end
 
   def test_disabled_outbox_returns_without_instantiating_drainer
@@ -67,6 +70,24 @@ class PostgresOutboxDrainJobTest < Minitest::Test
     assert_equal [[[], { limit: 25 }]], drainer.calls
   end
 
+  def test_target_key_is_passed_to_drainer
+    SearchEngine.config.postgres_outbox.enabled = true
+    drainer = FakeDrainer.new
+    constructor_args = []
+
+    constructor = lambda do |**kwargs|
+      constructor_args << kwargs
+      drainer
+    end
+
+    SearchEngine::PostgresOutbox::Drainer.stub(:new, constructor) do
+      SearchEngine::PostgresOutbox::DrainJob.new.perform(limit: 25, target_key: :target_1)
+    end
+
+    assert_equal [{ target_key: :target_1 }], constructor_args
+    assert_equal [[[], { limit: 25 }]], drainer.calls
+  end
+
   def test_enqueues_continuation_when_full_default_batch_is_claimed
     ActiveJob::Base.queue_adapter = :test
     ActiveJob::Base.queue_adapter.enqueued_jobs.clear
@@ -94,6 +115,63 @@ class PostgresOutboxDrainJobTest < Minitest::Test
 
     assert_equal 1, ActiveJob::Base.queue_adapter.enqueued_jobs.size
     assert_equal({ 'limit' => 25, '_aj_ruby2_keywords' => ['limit'] }, ActiveJob::Base.queue_adapter.enqueued_jobs.first[:args].first)
+  end
+
+  def test_target_continuation_uses_target_queue_without_limit
+    ActiveJob::Base.queue_adapter = :test
+    ActiveJob::Base.queue_adapter.enqueued_jobs.clear
+    SearchEngine.config.postgres_outbox.enabled = true
+    SearchEngine.config.postgres_outbox.batch_size = 10
+    SearchEngine.config.postgres_outbox.delivery_targets = lambda do
+      [{ key: :target_1, queue_name: :target_queue }]
+    end
+    drainer = FakeDrainer.new(summary: { claimed: 10, processed: 10 })
+
+    SearchEngine::PostgresOutbox::Drainer.stub(:new, drainer) do
+      SearchEngine::PostgresOutbox::DrainJob.new.perform(target_key: :target_1)
+    end
+
+    job = ActiveJob::Base.queue_adapter.enqueued_jobs.first
+    assert_equal 1, ActiveJob::Base.queue_adapter.enqueued_jobs.size
+    assert_equal 'target_queue', job[:queue]
+    assert_equal({ 'target_key' => 'target_1', '_aj_ruby2_keywords' => ['target_key'] }, job[:args].first)
+  end
+
+  def test_target_continuation_preserves_explicit_limit
+    ActiveJob::Base.queue_adapter = :test
+    ActiveJob::Base.queue_adapter.enqueued_jobs.clear
+    SearchEngine.config.postgres_outbox.enabled = true
+    SearchEngine.config.postgres_outbox.delivery_targets = lambda do
+      [SearchEngine::PostgresOutbox::DeliveryTarget.new(key: 'target_1', queue_name: 'target_queue')]
+    end
+    drainer = FakeDrainer.new(summary: { claimed: 25, processed: 25 })
+
+    SearchEngine::PostgresOutbox::Drainer.stub(:new, drainer) do
+      SearchEngine::PostgresOutbox::DrainJob.new.perform(limit: 25, target_key: 'target_1')
+    end
+
+    job = ActiveJob::Base.queue_adapter.enqueued_jobs.first
+    assert_equal 1, ActiveJob::Base.queue_adapter.enqueued_jobs.size
+    assert_equal 'target_queue', job[:queue]
+    assert_equal(
+      { 'target_key' => 'target_1', 'limit' => 25, '_aj_ruby2_keywords' => %w[target_key limit] },
+      job[:args].first
+    )
+  end
+
+  def test_target_continuation_raises_when_target_is_not_configured
+    SearchEngine.config.postgres_outbox.enabled = true
+    SearchEngine.config.postgres_outbox.batch_size = 10
+    SearchEngine.config.postgres_outbox.delivery_targets = -> { [] }
+    drainer = FakeDrainer.new(summary: { claimed: 10, processed: 10 })
+
+    error = assert_raises(ArgumentError) do
+      SearchEngine::PostgresOutbox::Drainer.stub(:new, drainer) do
+        SearchEngine::PostgresOutbox::DrainJob.new.perform(target_key: 'missing')
+      end
+    end
+
+    assert_equal 'unknown postgres outbox delivery target: missing', error.message
   end
 
   def test_does_not_enqueue_continuation_when_partial_batch_is_claimed

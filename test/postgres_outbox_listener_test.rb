@@ -16,6 +16,18 @@ class PostgresOutboxListenerTest < Minitest::Test
     end
   end
 
+  class FakeDrainEnqueuer
+    attr_reader :calls
+
+    def initialize
+      @calls = 0
+    end
+
+    def enqueue_all
+      @calls += 1
+    end
+  end
+
   class FakeConnectionPool
     attr_reader :connections
 
@@ -79,6 +91,15 @@ class PostgresOutboxListenerTest < Minitest::Test
     end
   end
 
+  def setup
+    @previous_delivery_targets = SearchEngine.config.postgres_outbox.delivery_targets
+    SearchEngine.config.postgres_outbox.delivery_targets = -> { [] }
+  end
+
+  def teardown
+    SearchEngine.config.postgres_outbox.delivery_targets = @previous_delivery_targets
+  end
+
   def test_start_is_idempotent_and_stop_joins_thread
     drain_job = FakeDrainJob.new
     listener = build_listener(raw: FakeRawConnection.new, drain_job: drain_job)
@@ -131,6 +152,17 @@ class PostgresOutboxListenerTest < Minitest::Test
     listener.send(:enqueue_drain)
 
     assert_equal 1, drain_job.calls
+  end
+
+  def test_enqueue_drain_delegates_to_explicit_drain_enqueuer
+    drain_enqueuer = FakeDrainEnqueuer.new
+    drain_job = FakeDrainJob.new
+    listener = build_listener(drain_job: drain_job, drain_enqueuer: drain_enqueuer)
+
+    listener.send(:enqueue_drain)
+
+    assert_equal 1, drain_enqueuer.calls
+    assert_equal 0, drain_job.calls
   end
 
   def test_fallback_enqueue_bypasses_notification_throttle
@@ -220,6 +252,7 @@ class PostgresOutboxListenerTest < Minitest::Test
     connection: FakeConnection.new(raw: raw),
     connection_pool: FakeConnectionPool.new(connection),
     drain_job: FakeDrainJob.new,
+    drain_enqueuer: nil,
     advisory_lock: false,
     poll_interval_s: 0.01,
     sleeper: ->(_seconds) {}
@@ -227,6 +260,7 @@ class PostgresOutboxListenerTest < Minitest::Test
     SearchEngine::PostgresOutbox::Listener.new(
       connection_pool: connection_pool,
       drain_job: drain_job,
+      drain_enqueuer: drain_enqueuer,
       channel: 'search_engine_outbox',
       wait_timeout_s: 0.01,
       poll_interval_s: poll_interval_s,

@@ -11,8 +11,10 @@ module SearchEngine
       # @param repository [SearchEngine::PostgresOutbox::Repository]
       # @param processor [#call]
       # @param worker_id [String, nil]
-      def initialize(repository: Repository.new, processor: EventProcessor, worker_id: nil)
-        @repository = repository
+      # @param target_key [String, Symbol, nil] optional delivery target scope
+      def initialize(repository: nil, processor: EventProcessor, worker_id: nil, target_key: nil)
+        @target_key = normalize_optional_target_key(target_key)
+        @repository = repository || Repository.new(target_key: @target_key)
         @processor = processor
         @worker_id = worker_id || default_worker_id
       end
@@ -21,7 +23,10 @@ module SearchEngine
       # @param limit [Integer]
       # @return [Hash]
       def drain_once(limit: SearchEngine.config.postgres_outbox.batch_size)
-        SearchEngine::Instrumentation.instrument('search_engine.postgres_outbox.drain', limit: limit) do |payload|
+        SearchEngine::Instrumentation.instrument(
+          'search_engine.postgres_outbox.drain',
+          drain_payload(limit)
+        ) do |payload|
           events = repository.claim_pending(limit: limit, worker_id: worker_id)
           summary = empty_summary(events)
           next summary if events.empty?
@@ -39,10 +44,10 @@ module SearchEngine
 
       private
 
-      attr_reader :repository, :processor, :worker_id
+      attr_reader :repository, :processor, :worker_id, :target_key
 
       def empty_summary(events)
-        {
+        summary = {
           claimed: events.size,
           processed: 0,
           superseded: 0,
@@ -50,6 +55,8 @@ module SearchEngine
           failed: 0,
           collections: []
         }
+        summary[:target_key] = target_key if target_key
+        summary
       end
 
       def coalesce(events)
@@ -109,7 +116,7 @@ module SearchEngine
       end
 
       def call_processor(collection, events)
-        result = processor_for(collection).call(events: events, context: { worker_id: worker_id })
+        result = processor_for(collection).call(events: events, context: processor_context)
         normalize_result(result, events)
       end
 
@@ -170,6 +177,25 @@ module SearchEngine
 
       def default_worker_id
         "#{Socket.gethostname}:#{$PROCESS_ID}:#{Thread.current.object_id}"
+      end
+
+      def processor_context
+        context = { worker_id: worker_id }
+        context[:target_key] = target_key if target_key
+        context
+      end
+
+      def drain_payload(limit)
+        payload = { limit: limit }
+        payload[:target_key] = target_key if target_key
+        payload
+      end
+
+      def normalize_optional_target_key(value)
+        normalized = value&.to_s
+        return nil if normalized.nil? || normalized.strip.empty?
+
+        normalized
       end
     end
   end
