@@ -1,0 +1,9 @@
+# frozen_string_literal: true
+
+class CreateSearchEngineOutboxEvents < ActiveRecord::Migration[<%= ActiveRecord::Migration.current_version %>]
+  include SearchEngine::PostgresOutbox::MigrationHelpers
+
+  def change
+    create_search_engine_outbox_events
+  end
+end

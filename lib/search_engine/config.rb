@@ -264,6 +264,58 @@ module SearchEngine
       end
     end
 
+    # Lightweight nested configuration for PostgreSQL outbox sync.
+    class PostgresOutboxConfig
+      # @return [Boolean] global kill switch for PostgreSQL outbox sync
+      attr_accessor :enabled
+      # @return [String] database table used by host-managed outbox events
+      attr_accessor :table_name
+      # @return [String] PostgreSQL notification channel for wakeups
+      attr_accessor :channel
+      # @return [String] queue name used by host app job dispatch
+      attr_accessor :queue_name
+      # @return [Integer] maximum events to claim per processing batch
+      attr_accessor :batch_size
+      # @return [Integer] maximum processing attempts before leaving an event failed
+      attr_accessor :max_attempts
+      # @return [Integer] polling interval in seconds
+      attr_accessor :poll_interval_s
+      # @return [Integer] listener wait timeout in seconds
+      attr_accessor :listener_wait_timeout_s
+      # @return [Integer] processing timeout in seconds
+      attr_accessor :processing_timeout_s
+      # @return [Integer] retention period in seconds
+      attr_accessor :retention_s
+      # @return [Boolean] whether host processing should use advisory locking
+      attr_accessor :advisory_lock
+      # @return [Integer, nil] optional PostgreSQL advisory lock key
+      attr_accessor :advisory_lock_key
+      # @return [#call] predicate controlling whether listener work may run
+      attr_accessor :listener_enabled
+      # @return [Hash] host-provided collection processors by collection name
+      attr_accessor :collection_processors
+      # @return [#call] retry backoff calculator receiving the attempt number
+      attr_accessor :retry_backoff
+
+      def initialize
+        @enabled = false
+        @table_name = 'search_engine_outbox_events'
+        @channel = 'search_engine_outbox'
+        @queue_name = 'search_engine'
+        @batch_size = 1000
+        @max_attempts = 10
+        @poll_interval_s = 5
+        @listener_wait_timeout_s = 30
+        @processing_timeout_s = 900
+        @retention_s = 604_800
+        @advisory_lock = false
+        @advisory_lock_key = nil
+        @listener_enabled = -> { false }
+        @collection_processors = {}
+        @retry_backoff = ->(attempt) { [attempt.to_i, 1].max * 5 }
+      end
+    end
+
     # Lightweight nested configuration for observability/logging.
     # Kept for backward compatibility during refactor; delegates to external class.
     #
@@ -414,6 +466,7 @@ module SearchEngine
       @mapper = MapperConfig.new
       @partitioning = PartitioningConfig.new
       @stale_deletes = StaleDeletesConfig.new
+      @postgres_outbox = PostgresOutboxConfig.new
       @observability = ObservabilityConfig.new
       @grouping = GroupingConfig.new
       @selection = SelectionConfig.new
@@ -523,6 +576,12 @@ module SearchEngine
     # @return [SearchEngine::Config::StaleDeletesConfig]
     def stale_deletes
       @stale_deletes ||= StaleDeletesConfig.new
+    end
+
+    # Expose PostgreSQL outbox configuration.
+    # @return [SearchEngine::Config::PostgresOutboxConfig]
+    def postgres_outbox
+      @postgres_outbox ||= PostgresOutboxConfig.new
     end
 
     # Expose structured logging configuration.
@@ -722,6 +781,7 @@ module SearchEngine
         sources: sources_hash_for_to_h,
         mapper: mapper_hash_for_to_h,
         partitioning: partitioning_hash_for_to_h,
+        postgres_outbox: postgres_outbox_hash_for_to_h,
         observability: observability_hash_for_to_h,
         selection: selection_hash_for_to_h,
         presets: presets_hash_for_to_h,
@@ -796,6 +856,26 @@ module SearchEngine
         before_hook_timeout_ms: partitioning.before_hook_timeout_ms,
         after_hook_timeout_ms: partitioning.after_hook_timeout_ms,
         max_error_samples: partitioning.max_error_samples
+      }
+    end
+
+    def postgres_outbox_hash_for_to_h
+      {
+        enabled: postgres_outbox.enabled ? true : false,
+        table_name: postgres_outbox.table_name,
+        channel: postgres_outbox.channel,
+        queue_name: postgres_outbox.queue_name,
+        batch_size: postgres_outbox.batch_size,
+        max_attempts: postgres_outbox.max_attempts,
+        poll_interval_s: postgres_outbox.poll_interval_s,
+        listener_wait_timeout_s: postgres_outbox.listener_wait_timeout_s,
+        processing_timeout_s: postgres_outbox.processing_timeout_s,
+        retention_s: postgres_outbox.retention_s,
+        advisory_lock: postgres_outbox.advisory_lock ? true : false,
+        advisory_lock_key: postgres_outbox.advisory_lock_key,
+        listener_enabled: postgres_outbox.listener_enabled,
+        collection_processors: postgres_outbox.collection_processors,
+        retry_backoff: postgres_outbox.retry_backoff
       }
     end
 

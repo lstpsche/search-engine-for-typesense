@@ -548,7 +548,7 @@ module SearchEngine
         return unless summary.respond_to?(key)
 
         value = summary.public_send(key)
-        value.nil? ? nil : value.to_f.round(1)
+        value&.to_f&.round(1)
       end
     end
   end

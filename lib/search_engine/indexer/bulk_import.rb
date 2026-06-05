@@ -66,51 +66,25 @@ module SearchEngine
           client = SearchEngine.client
           buffer = +''
           next_index = sequence_generator
-
-          batches = []
-          docs_total = 0
-          success_total = 0
-          failed_total = 0
-          failed_batches_total = 0
-          batches_total = 0
-          source_duration_ms_total = 0.0
-          map_duration_ms_total = 0.0
-          jsonl_duration_ms_total = 0.0
-          import_duration_ms_total = 0.0
-          source_batches_done = 0
+          import_context = {
+            client: client,
+            collection: into,
+            action: action,
+            retry_policy: retry_policy,
+            buffer: buffer,
+            next_index: next_index
+          }
+          state = initialize_sequential_state
           started_at = monotonic_ms
 
           docs_enum.each do |raw_batch|
-            stage_metrics = stage_metrics_for(raw_batch)
-            stats_list = import_batch_with_handling(
-              client: client,
-              collection: into,
+            process_single_batch_sequential(
+              import_context,
               raw_batch: raw_batch,
-              action: action,
-              retry_policy: retry_policy,
-              buffer: buffer,
-              next_index: next_index
-            )
-
-            stats_list.each do |stats|
-              docs_total += stats[:docs_count].to_i
-              success_total += stats[:success_count].to_i
-              failed_total += stats[:failure_count].to_i
-              failed_batches_total += 1 if stats[:failure_count].to_i.positive?
-              batches_total += 1
-              batches << stats
-              validate_soft_batch_size!(batch_size, stats[:docs_count])
-              log_batch(stats, batches_total) if log_batches
-            end
-            source_duration_ms_total += stage_metrics[:source_duration_ms].to_f
-            map_duration_ms_total += stage_metrics[:map_duration_ms].to_f
-            jsonl_duration_ms_total += stats_list.sum { |stats| stats[:jsonl_duration_ms].to_f }
-            import_duration_ms_total += stats_list.sum { |stats| stats[:import_duration_ms].to_f }
-
-            source_batches_done += 1
-            on_batch&.call(
-              batches_done: source_batches_done, docs_total: docs_total,
-              success_total: success_total, failed_total: failed_total
+              batch_size: batch_size,
+              log_batches: log_batches,
+              on_batch: on_batch,
+              state: state
             )
           end
 
@@ -119,19 +93,54 @@ module SearchEngine
 
           Summary.new(
             collection: klass.respond_to?(:collection) ? klass.collection : klass.name.to_s,
-            status: status_from_counts(success_total, failed_total),
-            batches_total: batches_total,
-            docs_total: docs_total,
-            success_total: success_total,
-            failed_total: failed_total,
-            failed_batches_total: failed_batches_total,
+            status: status_from_counts(state[:success_total], state[:failed_total]),
+            batches_total: state[:batches_total],
+            docs_total: state[:docs_total],
+            success_total: state[:success_total],
+            failed_total: state[:failed_total],
+            failed_batches_total: state[:failed_batches_total],
             duration_ms_total: total_duration_ms,
-            source_duration_ms_total: source_duration_ms_total.round(1),
-            map_duration_ms_total: map_duration_ms_total.round(1),
-            jsonl_duration_ms_total: jsonl_duration_ms_total.round(1),
-            import_duration_ms_total: import_duration_ms_total.round(1),
-            batches: batches
+            source_duration_ms_total: state[:source_duration_ms_total].round(1),
+            map_duration_ms_total: state[:map_duration_ms_total].round(1),
+            jsonl_duration_ms_total: state[:jsonl_duration_ms_total].round(1),
+            import_duration_ms_total: state[:import_duration_ms_total].round(1),
+            batches: state[:batches]
           )
+        end
+
+        # @return [Hash] sequential import counters using the same keys as parallel aggregation
+        def initialize_sequential_state
+          {
+            batches: [],
+            docs_total: 0,
+            success_total: 0,
+            failed_total: 0,
+            failed_batches_total: 0,
+            batches_total: 0,
+            source_duration_ms_total: 0.0,
+            map_duration_ms_total: 0.0,
+            jsonl_duration_ms_total: 0.0,
+            import_duration_ms_total: 0.0,
+            source_batches_done: 0
+          }
+        end
+
+        def process_single_batch_sequential(import_context, raw_batch:, batch_size:, log_batches:, on_batch:, state:)
+          stage_metrics = stage_metrics_for(raw_batch)
+          stats_list = import_batch_with_handling(
+            client: import_context.fetch(:client),
+            collection: import_context.fetch(:collection),
+            raw_batch: raw_batch,
+            action: import_context.fetch(:action),
+            retry_policy: import_context.fetch(:retry_policy),
+            buffer: import_context.fetch(:buffer),
+            next_index: import_context.fetch(:next_index)
+          )
+
+          aggregate_stats(stats_list, state, batch_size, log_batches)
+          aggregate_stage_metrics(stage_metrics, stats_list, state)
+          state[:source_batches_done] += 1
+          on_batch&.call(**progress_snapshot(state))
         end
 
         # Process batches in parallel using a thread pool.
