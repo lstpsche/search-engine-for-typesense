@@ -294,6 +294,8 @@ module SearchEngine
       end
 
       def exists?(relation)
+        return count(relation).positive? if relation.send(:curation_filter_curated_hits?)
+
         loaded = relation.instance_variable_get(:@__loaded)
         memo = relation.instance_variable_get(:@__result_memo)
         return memo.found.to_i.positive? if loaded && memo
@@ -303,8 +305,8 @@ module SearchEngine
 
       def count(relation)
         if relation.send(:curation_filter_curated_hits?)
-          to_a(relation)
-          return relation.send(:curated_indices_for_current_result).size
+          result = execute(relation)
+          return curated_total_count(result)
         end
 
         loaded = relation.instance_variable_get(:@__loaded)
@@ -363,6 +365,21 @@ module SearchEngine
         count
       end
       module_function :fetch_found_only
+
+      def curated_total_count(result)
+        raw = result.raw || {}
+        base_count = raw['found_docs'] || raw[:found_docs] || result.found
+
+        base_count.to_i + curated_hits_count(result)
+      end
+      module_function :curated_total_count
+
+      def curated_hits_count(result)
+        result.to_a.count do |obj|
+          obj.respond_to?(:curated_hit?) && obj.curated_hit?
+        end
+      end
+      module_function :curated_hits_count
 
       # Detect Typesense 400 errors caused by missing infix/prefix configuration
       # e.g., "Could not find `name` in the infix index. Make sure to enable infix search by specifying `infix: true` in the schema."

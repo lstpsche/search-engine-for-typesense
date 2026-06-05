@@ -92,12 +92,13 @@ class CurationTest < Minitest::Test
     assert_equal false, result.groups.last.hits.first.curated_hit?
   end
 
-  def test_filter_curated_hits_count_uses_hydrated_curated_metadata
+  def test_filter_curated_hits_count_includes_visible_curated_hits
     client = SearchEngine::Test::StubClient.new
     client.enqueue_response(
       :search,
       {
-        'found' => 42,
+        'found' => 40,
+        'found_docs' => 40,
         'out_of' => 42,
         'hits' => [
           { 'curated' => true, 'document' => { 'id' => 'p_1' } },
@@ -111,8 +112,50 @@ class CurationTest < Minitest::Test
     rel = Product.all.curate(filter_curated_hits: true).per(10).page(1)
     rel.instance_variable_set(:@__client, client)
 
-    assert_equal 2, rel.count
+    assert_equal 42, rel.count
     assert_equal 4, rel.to_a.size
+    assert_equal 1, client.search_calls.size
+  end
+
+  def test_filter_curated_hits_count_uses_found_as_base_when_found_docs_is_absent
+    client = SearchEngine::Test::StubClient.new
+    client.enqueue_response(
+      :search,
+      {
+        'found' => 42,
+        'out_of' => 42,
+        'hits' => [
+          { 'curated' => true, 'document' => { 'id' => 'p_1' } },
+          { 'curated' => false, 'document' => { 'id' => 'p_2' } }
+        ]
+      }
+    )
+
+    rel = Product.all.curate(filter_curated_hits: true).per(10).page(1)
+    rel.instance_variable_set(:@__client, client)
+
+    assert_equal 43, rel.count
+    assert_equal 1, client.search_calls.size
+  end
+
+  def test_filter_curated_hits_exists_uses_visible_curated_hits
+    client = SearchEngine::Test::StubClient.new
+    client.enqueue_response(
+      :search,
+      {
+        'found' => 0,
+        'found_docs' => 0,
+        'out_of' => 1,
+        'hits' => [
+          { 'curated' => true, 'document' => { 'id' => 'p_1' } }
+        ]
+      }
+    )
+
+    rel = Product.all.curate(filter_curated_hits: true).per(10).page(1)
+    rel.instance_variable_set(:@__client, client)
+
+    assert rel.exists?
     assert_equal 1, client.search_calls.size
   end
 

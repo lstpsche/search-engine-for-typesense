@@ -563,12 +563,6 @@ module SearchEngine
 
     # pluck helpers reside in Materializers
 
-    def curated_indices_for_current_result
-      @__result_memo.to_a.each_with_index.select do |obj, _idx|
-        obj.respond_to?(:curated_hit?) && obj.curated_hit?
-      end.map(&:last)
-    end
-
     def curation_filter_curated_hits?
       @state[:curation] && @state[:curation][:filter_curated_hits]
     end
