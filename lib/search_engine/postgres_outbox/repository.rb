@@ -222,6 +222,27 @@ module SearchEngine
         SQL
       end
 
+      # Release a queued slot when a follow-up job could not be enqueued.
+      #
+      # @param target_key [String, Symbol]
+      # @param slot [Integer]
+      # @param error [Exception, String, nil]
+      # @return [void]
+      def release_requeued_drain_slot!(target_key:, slot:, error: nil)
+        execute(<<~SQL)
+          UPDATE #{quoted_drain_slot_table}
+          SET status = 'idle',
+              locked_at = NULL,
+              locked_by = NULL,
+              finished_at = CURRENT_TIMESTAMP,
+              last_error = #{quote(error.nil? ? nil : truncate_error(error))},
+              updated_at = CURRENT_TIMESTAMP
+          WHERE target_key = #{quote(target_key)}
+            AND slot = #{slot.to_i}
+            AND status = 'queued'
+        SQL
+      end
+
       private
 
       attr_reader :target_key

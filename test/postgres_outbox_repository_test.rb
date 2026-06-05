@@ -376,6 +376,23 @@ class PostgresOutboxRepositoryTest < Minitest::Test
     assert_includes sql, "AND locked_by = 'worker-1'"
   end
 
+  def test_release_requeued_drain_slot_marks_queued_slot_idle_and_records_error
+    connection = FakeConnection.new
+    repository = SearchEngine::PostgresOutbox::Repository.new(connection: connection)
+
+    repository.release_requeued_drain_slot!(target_key: 'target_1', slot: 2, error: 'enqueue boom')
+
+    sql = connection.executed_sql.last
+    assert_includes sql, 'UPDATE "custom_outbox_drain_slots"'
+    assert_includes sql, "status = 'idle'"
+    assert_includes sql, 'locked_at = NULL'
+    assert_includes sql, "last_error = 'enqueue boom'"
+    assert_includes sql, "target_key = 'target_1'"
+    assert_includes sql, 'slot = 2'
+    assert_includes sql, "AND status = 'queued'"
+    refute_includes sql, 'locked_by = \'worker-1\''
+  end
+
   private
 
   def assert_claim_select_sql(sql)

@@ -42,6 +42,7 @@ module SearchEngine
         slot = drain_slot.to_i
         effective_limit = limit || SearchEngine.config.postgres_outbox.batch_size
         repository = repository_for_slot
+        slot_requeued = false
         return stale_slot_summary(target.key, slot) unless repository.start_drain_slot!(
           target_key: target.key,
           slot: slot,
@@ -55,13 +56,16 @@ module SearchEngine
             slot: slot,
             worker_id: worker_id
           )
-          enqueue_target_continuation(limit: limit, target_key: target.key, drain_slot: slot) if requeued
+          if requeued
+            slot_requeued = true
+            enqueue_requeued_slot_continuation(repository, target.key, slot, limit: limit)
+          end
         else
           repository.release_drain_slot!(target_key: target.key, slot: slot, worker_id: worker_id)
         end
         summary
       rescue StandardError => error
-        if repository && target && slot
+        if repository && target && slot && !slot_requeued
           repository.release_drain_slot!(target_key: target.key, slot: slot, worker_id: worker_id, error: error)
         end
         raise
@@ -86,6 +90,13 @@ module SearchEngine
         summary[:batches] = batches
         summary[:more_work] = more_work
         summary
+      end
+
+      def enqueue_requeued_slot_continuation(repository, target_key, slot, limit:)
+        enqueue_target_continuation(limit: limit, target_key: target_key, drain_slot: slot)
+      rescue StandardError => error
+        repository.release_requeued_drain_slot!(target_key: target_key, slot: slot, error: error)
+        raise
       end
 
       def continue_draining?(summary, effective_limit)

@@ -20,7 +20,7 @@ class PostgresOutboxDrainJobTest < Minitest::Test
   end
 
   class FakeSlotRepository
-    attr_reader :started_slots, :released_slots, :requeued_slots
+    attr_reader :started_slots, :released_slots, :requeued_slots, :released_requeued_slots
 
     def initialize(start_result: true, drain_slots_table_exists: false)
       @start_result = start_result
@@ -28,6 +28,7 @@ class PostgresOutboxDrainJobTest < Minitest::Test
       @started_slots = []
       @released_slots = []
       @requeued_slots = []
+      @released_requeued_slots = []
     end
 
     def start_drain_slot!(target_key:, slot:, worker_id:)
@@ -42,6 +43,10 @@ class PostgresOutboxDrainJobTest < Minitest::Test
 
     def release_drain_slot!(target_key:, slot:, worker_id: nil, error: nil)
       released_slots << { target_key: target_key, slot: slot, worker_id: worker_id, error: error }
+    end
+
+    def release_requeued_drain_slot!(target_key:, slot:, error: nil)
+      released_requeued_slots << { target_key: target_key, slot: slot, error: error }
     end
 
     def drain_slots_table_exists?
@@ -357,6 +362,32 @@ class PostgresOutboxDrainJobTest < Minitest::Test
     assert_equal 1, slot_repository.released_slots.size
     assert_equal error, slot_repository.released_slots.first.fetch(:error)
     assert_match(/:.+:/, slot_repository.released_slots.first.fetch(:worker_id))
+  end
+
+  def test_slot_aware_job_releases_requeued_slot_when_continuation_enqueue_fails
+    SearchEngine.config.postgres_outbox.enabled = true
+    SearchEngine.config.postgres_outbox.drain_job_max_batches = 1
+    SearchEngine.config.postgres_outbox.delivery_targets = lambda do
+      [{ key: :target_1, queue_name: :target_queue }]
+    end
+    slot_repository = FakeSlotRepository.new
+    drainer = FakeDrainer.new(summary: { claimed: 3, processed: 3, continue: true, collections: ['products'] })
+    error = RuntimeError.new('enqueue failed')
+
+    SearchEngine::PostgresOutbox::Repository.stub(:new, slot_repository) do
+      SearchEngine::PostgresOutbox::Drainer.stub(:new, drainer) do
+        SearchEngine::PostgresOutbox::DrainJob.stub(:set, ->(**_kwargs) { raise error }) do
+          raised = assert_raises(RuntimeError) do
+            SearchEngine::PostgresOutbox::DrainJob.new.perform(limit: 3, target_key: :target_1, drain_slot: 2)
+          end
+          assert_same error, raised
+        end
+      end
+    end
+
+    assert_empty slot_repository.released_slots
+    assert_requeued_slot(slot_repository, target_key: 'target_1', slot: 2)
+    assert_equal [{ target_key: 'target_1', slot: 2, error: error }], slot_repository.released_requeued_slots
   end
 
   def test_legacy_target_continuation_uses_slot_aware_enqueuer_when_slots_exist
