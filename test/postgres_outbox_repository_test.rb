@@ -142,7 +142,7 @@ class PostgresOutboxRepositoryTest < Minitest::Test
 
     rows = repository.materialize_deliveries!(limit: 25)
 
-    assert_equal [11], rows.map { |row| row['id'] }
+    assert_equal([11], rows.map { |row| row['id'] })
     assert_materialization_select_sql(connection.selected_sql.first)
     assert_includes connection.selected_sql.first, "VALUES ('target_1', 'queue_1'), ('target_2', 'queue_2')"
     assert_materialization_delivery_supersede_sql(connection.executed_sql[0])
