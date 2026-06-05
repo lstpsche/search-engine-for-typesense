@@ -111,11 +111,78 @@ module SearchEngine
 
       # Create missing delivery rows for all configured delivery targets.
       # @return [void]
-      def materialize_deliveries!
+      def materialize_deliveries!(limit: SearchEngine.config.postgres_outbox.batch_size)
         targets = delivery_targets
         return if targets.empty?
 
-        execute(<<~SQL)
+        rows = []
+        connection.transaction do
+          rows = select_rows(delivery_materialization_select_sql(limit.to_i, targets))
+          next if rows.empty?
+
+          execute(materialization_supersede_older_deliveries_sql(rows, targets))
+          execute(supersede_older_pending_sql(rows))
+          execute(delivery_materialization_insert_sql(rows, targets))
+        end
+
+        rows
+      end
+
+      private
+
+      attr_reader :target_key
+
+      def connection
+        @connection ||= begin
+          require 'active_record'
+          ActiveRecord::Base.connection
+        end
+      end
+
+      def claim_pending_deliveries(limit:, worker_id:)
+        reset_stale_delivery_processing!
+        rows = claim_pending_delivery_rows(limit: limit, worker_id: worker_id)
+
+        if rows.empty?
+          materialize_deliveries!(limit: limit)
+          rows = claim_pending_delivery_rows(limit: limit, worker_id: worker_id)
+        end
+
+        rows.map { |row| Event.new(row) }
+      end
+
+      def delivery_materialization_select_sql(limit, targets)
+        <<~SQL
+          WITH target(target_key, queue_name) AS (
+            VALUES #{delivery_target_values_sql(targets)}
+          ),
+          candidate_events AS (
+            SELECT outbox.*
+            FROM #{quoted_table} outbox
+            WHERE outbox.status IN ('pending', 'processing', 'failed')
+              AND (outbox.next_attempt_at IS NULL OR outbox.next_attempt_at <= CURRENT_TIMESTAMP)
+              AND EXISTS (
+                SELECT 1
+                FROM target
+                WHERE NOT EXISTS (
+                  SELECT 1
+                  FROM #{quoted_delivery_table} deliveries
+                  WHERE deliveries.event_id = outbox.id
+                    AND deliveries.target_key = target.target_key
+                )
+              )
+            ORDER BY outbox.id ASC
+            LIMIT #{limit}
+            FOR UPDATE SKIP LOCKED
+          )
+          SELECT DISTINCT ON (collection, document_id) *
+          FROM candidate_events
+          ORDER BY collection, document_id, id DESC
+        SQL
+      end
+
+      def delivery_materialization_insert_sql(rows, targets)
+        <<~SQL
           INSERT INTO #{quoted_delivery_table} (
             event_id,
             target_key,
@@ -132,29 +199,19 @@ module SearchEngine
                  0,
                  CURRENT_TIMESTAMP,
                  CURRENT_TIMESTAMP
-          FROM #{quoted_table} outbox
+          FROM (
+            VALUES #{materialization_event_values_sql(rows)}
+          ) AS selected_events(event_id)
+          INNER JOIN #{quoted_table} outbox
+            ON outbox.id = selected_events.event_id
           CROSS JOIN (
             VALUES #{delivery_target_values_sql(targets)}
           ) AS target(target_key, queue_name)
-          WHERE outbox.status IN ('pending', 'processing', 'failed')
           ON CONFLICT (event_id, target_key) DO NOTHING
         SQL
       end
 
-      private
-
-      attr_reader :target_key
-
-      def connection
-        @connection ||= begin
-          require 'active_record'
-          ActiveRecord::Base.connection
-        end
-      end
-
-      def claim_pending_deliveries(limit:, worker_id:)
-        materialize_deliveries!
-        reset_stale_delivery_processing!
+      def claim_pending_delivery_rows(limit:, worker_id:)
         rows = []
 
         connection.transaction do
@@ -164,7 +221,7 @@ module SearchEngine
           execute(delivery_claim_update_sql(delivery_ids, worker_id)) unless delivery_ids.empty?
         end
 
-        rows.map { |row| Event.new(row) }
+        rows
       end
 
       def reset_stale_delivery_processing!
@@ -268,6 +325,46 @@ module SearchEngine
               locked_by = #{quote(worker_id)},
               updated_at = CURRENT_TIMESTAMP
           WHERE id IN (#{ids_sql(delivery_ids)})
+        SQL
+      end
+
+      def materialization_supersede_older_deliveries_sql(rows, targets)
+        <<~SQL
+          WITH updated_deliveries AS (
+            UPDATE #{quoted_delivery_table} older_deliveries
+            SET status = 'superseded',
+                processed_at = CURRENT_TIMESTAMP,
+                locked_at = NULL,
+                locked_by = NULL,
+                updated_at = CURRENT_TIMESTAMP
+            FROM #{quoted_table} older_events,
+                 (
+                   VALUES #{coalesce_values_sql(rows)}
+                 ) AS latest(collection, document_id, id),
+                 (
+                   VALUES #{delivery_target_values_sql(targets)}
+                 ) AS target(target_key, queue_name)
+            WHERE older_deliveries.event_id = older_events.id
+              AND older_deliveries.status = 'pending'
+              AND older_deliveries.target_key = target.target_key
+              AND older_events.collection = latest.collection
+              AND older_events.document_id = latest.document_id
+              AND older_events.id < latest.id
+            RETURNING older_deliveries.event_id
+          ),
+          aggregate AS (
+            #{event_status_aggregate_sql('SELECT event_id FROM updated_deliveries')}
+          )
+          UPDATE #{quoted_table} events
+          SET status = aggregate.status,
+              processed_at = CASE
+                WHEN aggregate.status IN ('processed', 'superseded') THEN CURRENT_TIMESTAMP
+                ELSE NULL
+              END,
+              last_error = aggregate.last_error,
+              updated_at = CURRENT_TIMESTAMP
+          FROM aggregate
+          WHERE events.id = aggregate.event_id
         SQL
       end
 
@@ -465,6 +562,12 @@ module SearchEngine
       def delivery_target_values_sql(targets)
         targets.map do |target|
           "(#{quote(target.key)}, #{quote(target.queue_name)})"
+        end.join(', ')
+      end
+
+      def materialization_event_values_sql(rows)
+        rows.map do |row|
+          "(#{quote(row_value(row, :id))})"
         end.join(', ')
       end
 

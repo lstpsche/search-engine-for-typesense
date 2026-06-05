@@ -8,11 +8,11 @@ class PostgresOutboxDrainEnqueuerTest < Minitest::Test
     attr_reader :materialize_calls
 
     def initialize
-      @materialize_calls = 0
+      @materialize_calls = []
     end
 
-    def materialize_deliveries!
-      @materialize_calls += 1
+    def materialize_deliveries!(limit: nil)
+      @materialize_calls << { limit: limit }
     end
   end
 
@@ -59,7 +59,7 @@ class PostgresOutboxDrainEnqueuerTest < Minitest::Test
     enqueuer = SearchEngine::PostgresOutbox::DrainEnqueuer.new(repository: repository, drain_job: drain_job)
     enqueuer.enqueue_all
 
-    assert_equal 0, repository.materialize_calls
+    assert_empty repository.materialize_calls
     assert_equal [{ queue: nil, kwargs: {} }], drain_job.calls
   end
 
@@ -93,7 +93,7 @@ class PostgresOutboxDrainEnqueuerTest < Minitest::Test
     )
     enqueuer.enqueue_all
 
-    assert_equal 1, repository.materialize_calls
+    assert_equal [{ limit: nil }], repository.materialize_calls
     assert_equal(
       [
         { queue: 'queue_1', kwargs: { target_key: 'target_1' } },
@@ -104,14 +104,17 @@ class PostgresOutboxDrainEnqueuerTest < Minitest::Test
   end
 
   def test_target_jobs_preserve_explicit_limit
+    repository = FakeRepository.new
     drain_job = FakeDrainJob.new
 
     enqueuer = SearchEngine::PostgresOutbox::DrainEnqueuer.new(
+      repository: repository,
       drain_job: drain_job,
       targets_resolver: -> { [{ 'key' => :target_1, 'queue_name' => :queue_1 }] }
     )
     enqueuer.enqueue_all(limit: 10)
 
+    assert_equal [{ limit: 10 }], repository.materialize_calls
     assert_equal(
       [{ queue: 'queue_1', kwargs: { target_key: 'target_1', limit: 10 } }],
       drain_job.calls

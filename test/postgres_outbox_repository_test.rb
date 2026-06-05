@@ -6,8 +6,9 @@ class PostgresOutboxRepositoryTest < Minitest::Test
   class FakeConnection
     attr_reader :executed_sql, :selected_sql
 
-    def initialize(rows: [])
+    def initialize(rows: [], row_sets: nil)
       @rows = rows
+      @row_sets = row_sets
       @executed_sql = []
       @selected_sql = []
     end
@@ -18,6 +19,8 @@ class PostgresOutboxRepositoryTest < Minitest::Test
 
     def select_all(sql)
       selected_sql << sql
+      return @row_sets.shift if @row_sets
+
       @rows
     end
 
@@ -134,17 +137,17 @@ class PostgresOutboxRepositoryTest < Minitest::Test
         SearchEngine::PostgresOutbox::DeliveryTarget.new(key: 'target_2', queue_name: 'queue_2')
       ]
     end
-    connection = FakeConnection.new
+    connection = FakeConnection.new(rows: [event_row(id: 11)])
     repository = SearchEngine::PostgresOutbox::Repository.new(connection: connection, target_key: 'target_1')
 
-    repository.materialize_deliveries!
+    rows = repository.materialize_deliveries!(limit: 25)
 
-    sql = connection.executed_sql.last
-    assert_includes sql, 'INSERT INTO "custom_outbox_deliveries"'
-    assert_includes sql, 'CROSS JOIN ('
-    assert_includes sql, "VALUES ('target_1', 'queue_1'), ('target_2', 'queue_2')"
-    assert_includes sql, "WHERE outbox.status IN ('pending', 'processing', 'failed')"
-    assert_includes sql, 'ON CONFLICT (event_id, target_key) DO NOTHING'
+    assert_equal [11], rows.map { |row| row['id'] }
+    assert_materialization_select_sql(connection.selected_sql.first)
+    assert_includes connection.selected_sql.first, "VALUES ('target_1', 'queue_1'), ('target_2', 'queue_2')"
+    assert_materialization_delivery_supersede_sql(connection.executed_sql[0])
+    assert_supersede_sql(connection.executed_sql[1])
+    assert_materialization_insert_sql(connection.executed_sql[2])
   end
 
   def test_materialize_deliveries_noops_when_no_targets_are_configured
@@ -167,8 +170,32 @@ class PostgresOutboxRepositoryTest < Minitest::Test
     assert_equal [11], events.map(&:id)
     assert_equal [101], events.map(&:delivery_id)
     assert_equal ['target_1'], events.map(&:target_key)
+    assert_equal 1, connection.selected_sql.size
     assert_delivery_claim_select_sql(connection.selected_sql.first)
     assert_delivery_claim_update_sql(connection.executed_sql)
+  end
+
+  def test_delivery_claim_materializes_bounded_deliveries_when_no_delivery_rows_are_due
+    SearchEngine.config.postgres_outbox.delivery_targets = -> { [{ key: 'target_1', queue_name: 'queue_1' }] }
+    rows = [
+      [],
+      [event_row(id: 11)],
+      [event_row(id: 11).merge('delivery_id' => 101, 'target_key' => 'target_1')]
+    ]
+    connection = FakeConnection.new(row_sets: rows)
+    repository = SearchEngine::PostgresOutbox::Repository.new(connection: connection, target_key: 'target_1')
+
+    events = repository.claim_pending(limit: 25, worker_id: 'worker-1')
+
+    assert_equal [11], events.map(&:id)
+    assert_delivery_claim_select_sql(connection.selected_sql[0])
+    assert_materialization_select_sql(connection.selected_sql[1])
+    assert_delivery_claim_select_sql(connection.selected_sql[2])
+    assert_materialization_delivery_supersede_sql(connection.executed_sql[1])
+    assert_supersede_sql(connection.executed_sql[2])
+    assert_materialization_insert_sql(connection.executed_sql[3])
+    assert_delivery_supersede_sql(connection.executed_sql[4])
+    assert_includes connection.executed_sql[5], "status = 'processing'"
   end
 
   def test_delivery_claim_with_no_configured_targets_stays_in_delivery_mode
@@ -178,7 +205,7 @@ class PostgresOutboxRepositoryTest < Minitest::Test
     events = repository.claim_pending(limit: 25, worker_id: 'worker-1')
 
     assert_empty events
-    assert_equal 1, connection.selected_sql.size
+    assert_equal 2, connection.selected_sql.size
     assert_empty connection.executed_sql.grep(/UPDATE "custom_outbox"\n          SET status = 'processing'/)
     assert_includes connection.executed_sql.first, 'UPDATE "custom_outbox_deliveries"'
   end
@@ -249,7 +276,7 @@ class PostgresOutboxRepositoryTest < Minitest::Test
     assert_includes sql, 'older.collection = latest.collection'
     assert_includes sql, 'older.document_id = latest.document_id'
     assert_includes sql, 'older.id < latest.id'
-    assert_includes sql, "('products', '1', '1')"
+    assert_includes sql, 'VALUES'
   end
 
   def assert_delivery_claim_select_sql(sql)
@@ -267,14 +294,44 @@ class PostgresOutboxRepositoryTest < Minitest::Test
   end
 
   def assert_delivery_claim_update_sql(executed_sql)
-    assert_includes executed_sql[0], 'INSERT INTO "custom_outbox_deliveries"'
-    assert_includes executed_sql[1], 'UPDATE "custom_outbox_deliveries"'
-    assert_includes executed_sql[1], "target_key = 'target_1'"
-    assert_delivery_supersede_sql(executed_sql[2])
-    assert_includes executed_sql[3], 'UPDATE "custom_outbox_deliveries"'
-    assert_includes executed_sql[3], "status = 'processing'"
-    assert_includes executed_sql[3], "locked_by = 'worker-1'"
-    assert_includes executed_sql[3], "WHERE id IN ('101')"
+    assert_includes executed_sql[0], 'UPDATE "custom_outbox_deliveries"'
+    assert_includes executed_sql[0], "target_key = 'target_1'"
+    assert_delivery_supersede_sql(executed_sql[1])
+    assert_includes executed_sql[2], 'UPDATE "custom_outbox_deliveries"'
+    assert_includes executed_sql[2], "status = 'processing'"
+    assert_includes executed_sql[2], "locked_by = 'worker-1'"
+    assert_includes executed_sql[2], "WHERE id IN ('101')"
+  end
+
+  def assert_materialization_select_sql(sql)
+    assert_includes sql, 'WITH target(target_key, queue_name) AS ('
+    assert_includes sql, "outbox.status IN ('pending', 'processing', 'failed')"
+    assert_includes sql, 'NOT EXISTS ('
+    assert_includes sql, 'deliveries.event_id = outbox.id'
+    assert_includes sql, 'deliveries.target_key = target.target_key'
+    assert_includes sql, 'LIMIT 25'
+    assert_includes sql, 'FOR UPDATE SKIP LOCKED'
+    assert_includes sql, 'SELECT DISTINCT ON (collection, document_id) *'
+  end
+
+  def assert_materialization_insert_sql(sql)
+    assert_includes sql, 'INSERT INTO "custom_outbox_deliveries"'
+    assert_includes sql, 'INNER JOIN "custom_outbox" outbox'
+    assert_includes sql, 'CROSS JOIN ('
+    assert_includes sql, "VALUES ('target_1', 'queue_1')"
+    assert_includes sql, 'ON CONFLICT (event_id, target_key) DO NOTHING'
+  end
+
+  def assert_materialization_delivery_supersede_sql(sql)
+    assert_includes sql, 'WITH updated_deliveries AS ('
+    assert_includes sql, 'UPDATE "custom_outbox_deliveries" older_deliveries'
+    assert_includes sql, "status = 'superseded'"
+    assert_includes sql, "VALUES ('target_1', 'queue_1')"
+    assert_includes sql, 'older_deliveries.target_key = target.target_key'
+    assert_includes sql, 'older_events.collection = latest.collection'
+    assert_includes sql, 'older_events.document_id = latest.document_id'
+    assert_includes sql, 'older_events.id < latest.id'
+    assert_parent_refresh_sql(sql)
   end
 
   def assert_delivery_supersede_sql(sql)

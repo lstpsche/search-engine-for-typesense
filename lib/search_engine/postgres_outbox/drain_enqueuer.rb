@@ -27,7 +27,7 @@ module SearchEngine
         targets = delivery_targets
         return enqueue_legacy(limit: limit) if targets.empty?
 
-        repository.materialize_deliveries!
+        materialize_deliveries(limit: limit)
         targets.each { |target| enqueue_target(target, limit: limit) }
         nil
       end
@@ -35,6 +35,12 @@ module SearchEngine
       private
 
       attr_reader :repository, :targets_resolver
+
+      def materialize_deliveries(limit:)
+        return repository.materialize_deliveries! if limit.nil?
+
+        repository.materialize_deliveries!(limit: limit)
+      end
 
       def enqueue_legacy(limit:)
         return drain_job.perform_later if limit.nil?
