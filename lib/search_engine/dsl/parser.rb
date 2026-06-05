@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require 'date'
+
 module SearchEngine
   module DSL
     # Safe parser that converts Relation#where inputs into validated AST nodes.
