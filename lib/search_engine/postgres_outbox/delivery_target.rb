@@ -8,12 +8,16 @@ module SearchEngine
       attr_reader :key
       # @return [String] ActiveJob queue name used to process this target
       attr_reader :queue_name
+      # @return [Integer] maximum concurrent drain jobs for this target
+      attr_reader :parallelism
 
       # @param key [String, Symbol] stable target identifier
       # @param queue_name [String, Symbol] queue name for target-specific drain jobs
-      def initialize(key:, queue_name:)
+      # @param parallelism [Integer, #to_i, nil] optional target concurrency cap
+      def initialize(key:, queue_name:, parallelism: nil)
         @key = normalize_value(key, 'key')
         @queue_name = normalize_value(queue_name, 'queue_name')
+        @parallelism = normalize_parallelism(parallelism)
       end
 
       # Normalize a configured target into a DeliveryTarget.
@@ -25,11 +29,16 @@ module SearchEngine
 
         if value.respond_to?(:to_hash)
           hash = value.to_hash
-          return new(key: fetch_hash_value(hash, :key), queue_name: fetch_hash_value(hash, :queue_name))
+          return new(
+            key: fetch_hash_value(hash, :key),
+            queue_name: fetch_hash_value(hash, :queue_name),
+            parallelism: fetch_hash_value(hash, :parallelism)
+          )
         end
 
         if value.respond_to?(:key) && value.respond_to?(:queue_name)
-          return new(key: value.key, queue_name: value.queue_name)
+          parallelism = value.parallelism if value.respond_to?(:parallelism)
+          return new(key: value.key, queue_name: value.queue_name, parallelism: parallelism)
         end
 
         raise ArgumentError, 'delivery target must be a DeliveryTarget, Hash, or target-like object'
@@ -52,6 +61,11 @@ module SearchEngine
         raise ArgumentError, "#{name} must be present" if normalized.strip.empty?
 
         normalized
+      end
+
+      def normalize_parallelism(value)
+        normalized = value.nil? ? SearchEngine.config.postgres_outbox.drain_target_parallelism : value
+        [normalized.to_i, 1].max
       end
     end
   end

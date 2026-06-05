@@ -28,6 +28,8 @@ module SearchEngine
         return enqueue_legacy(limit: limit) if targets.empty?
 
         materialize_deliveries(limit: limit)
+        return enqueue_acquired_slots(targets, limit: limit) if repository.drain_slots_table_exists?
+
         targets.each { |target| enqueue_target(target, limit: limit) }
         nil
       end
@@ -53,6 +55,20 @@ module SearchEngine
         return job.perform_later(target_key: target.key) if limit.nil?
 
         job.perform_later(target_key: target.key, limit: limit)
+      end
+
+      def enqueue_acquired_slots(targets, limit:)
+        repository.acquire_drain_slots!(targets: targets).each do |slot|
+          enqueue_drain_slot(slot, limit: limit)
+        end
+        nil
+      end
+
+      def enqueue_drain_slot(slot, limit:)
+        job = drain_job.set(queue: slot.fetch(:queue_name))
+        kwargs = { target_key: slot.fetch(:target_key), drain_slot: slot.fetch(:slot) }
+        kwargs[:limit] = limit unless limit.nil?
+        job.perform_later(**kwargs)
       end
 
       def delivery_targets

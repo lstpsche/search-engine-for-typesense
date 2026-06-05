@@ -99,6 +99,39 @@ module SearchEngine
                         on_delete: :cascade
       end
 
+      # Create the SearchEngine outbox drain slots table.
+      #
+      # @param table_name [String, Symbol] destination drain slots table name
+      # @return [void]
+      def create_search_engine_outbox_drain_slots(
+        table_name: SearchEngine.config.postgres_outbox.drain_slot_table_name
+      )
+        create_table table_name do |t|
+          t.string :target_key, null: false
+          t.integer :slot, null: false
+          t.string :queue_name, null: false
+          t.string :status, null: false, default: 'idle'
+          t.datetime :locked_at
+          t.string :locked_by
+          t.datetime :enqueued_at
+          t.datetime :started_at
+          t.datetime :finished_at
+          t.text :last_error
+          t.timestamps
+        end
+
+        add_index table_name,
+                  %i[target_key slot],
+                  name: 'idx_se_outbox_drain_slots_unique',
+                  unique: true
+        add_index table_name,
+                  %i[target_key status slot],
+                  name: 'idx_se_outbox_drain_slots_target_status'
+        add_index table_name,
+                  %i[status locked_at],
+                  name: 'idx_se_outbox_drain_slots_stale'
+      end
+
       # Create or replace a row-level PostgreSQL trigger that writes outbox events.
       #
       # @param table_name [String, Symbol] source table name

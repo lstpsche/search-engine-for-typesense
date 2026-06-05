@@ -128,6 +128,100 @@ module SearchEngine
         rows
       end
 
+      # Check whether the optional drain slot table exists.
+      #
+      # @return [Boolean]
+      def drain_slots_table_exists?
+        if connection.respond_to?(:data_source_exists?)
+          connection.data_source_exists?(drain_slot_table_name)
+        else
+          connection.table_exists?(drain_slot_table_name)
+        end
+      end
+
+      # Acquire idle drain slots for configured delivery targets.
+      #
+      # @param targets [Array<SearchEngine::PostgresOutbox::DeliveryTarget, Hash>]
+      # @return [Array<Hash>] acquired slot descriptors
+      def acquire_drain_slots!(targets:)
+        normalized_targets = Array(targets).map { |target| DeliveryTarget.normalize(target) }
+        return [] if normalized_targets.empty?
+
+        connection.transaction do
+          ensure_drain_slots!(normalized_targets)
+          reset_stale_drain_slots!(normalized_targets)
+          rows = select_rows(acquire_drain_slots_sql(normalized_targets))
+          return rows.map { |row| drain_slot_descriptor(row) }
+        end
+      end
+
+      # Mark an acquired drain slot as processing for the current worker.
+      #
+      # @param target_key [String, Symbol]
+      # @param slot [Integer]
+      # @param worker_id [String]
+      # @return [Boolean] whether the queued slot was claimed by this worker
+      def start_drain_slot!(target_key:, slot:, worker_id:)
+        rows = select_rows(<<~SQL)
+          UPDATE #{quoted_drain_slot_table}
+          SET status = 'processing',
+              locked_at = CURRENT_TIMESTAMP,
+              locked_by = #{quote(worker_id)},
+              started_at = CURRENT_TIMESTAMP,
+              updated_at = CURRENT_TIMESTAMP
+          WHERE target_key = #{quote(target_key)}
+            AND slot = #{slot.to_i}
+            AND status = 'queued'
+          RETURNING target_key, slot
+        SQL
+        rows.any?
+      end
+
+      # Requeue a processing drain slot for a follow-up job.
+      #
+      # @param target_key [String, Symbol]
+      # @param slot [Integer]
+      # @param worker_id [String]
+      # @return [Boolean] whether the current worker still owned and requeued the slot
+      def requeue_drain_slot!(target_key:, slot:, worker_id:)
+        rows = select_rows(<<~SQL)
+          UPDATE #{quoted_drain_slot_table}
+          SET status = 'queued',
+              locked_at = CURRENT_TIMESTAMP,
+              locked_by = NULL,
+              enqueued_at = CURRENT_TIMESTAMP,
+              updated_at = CURRENT_TIMESTAMP
+          WHERE target_key = #{quote(target_key)}
+            AND slot = #{slot.to_i}
+            AND status = 'processing'
+            AND locked_by = #{quote(worker_id)}
+          RETURNING target_key, slot
+        SQL
+        rows.any?
+      end
+
+      # Release a drain slot back to idle.
+      #
+      # @param target_key [String, Symbol]
+      # @param slot [Integer]
+      # @param worker_id [String, nil]
+      # @param error [Exception, String, nil]
+      # @return [void]
+      def release_drain_slot!(target_key:, slot:, worker_id: nil, error: nil)
+        execute(<<~SQL)
+          UPDATE #{quoted_drain_slot_table}
+          SET status = 'idle',
+              locked_at = NULL,
+              locked_by = NULL,
+              finished_at = CURRENT_TIMESTAMP,
+              last_error = #{quote(error.nil? ? nil : truncate_error(error))},
+              updated_at = CURRENT_TIMESTAMP
+          WHERE target_key = #{quote(target_key)}
+            AND slot = #{slot.to_i}
+            #{drain_slot_owner_guard_sql(worker_id)}
+        SQL
+      end
+
       private
 
       attr_reader :target_key
@@ -571,12 +665,112 @@ module SearchEngine
         end.join(', ')
       end
 
+      def ensure_drain_slots!(targets)
+        targets.each do |target|
+          execute(<<~SQL)
+            INSERT INTO #{quoted_drain_slot_table} (
+              target_key,
+              slot,
+              queue_name,
+              status,
+              created_at,
+              updated_at
+            )
+            SELECT #{quote(target.key)},
+                   slot,
+                   #{quote(target.queue_name)},
+                   'idle',
+                   CURRENT_TIMESTAMP,
+                   CURRENT_TIMESTAMP
+            FROM generate_series(1, #{target.parallelism}) AS slot
+            ON CONFLICT (target_key, slot) DO UPDATE
+            SET queue_name = EXCLUDED.queue_name,
+                updated_at = #{quoted_drain_slot_table}.updated_at
+          SQL
+        end
+      end
+
+      def reset_stale_drain_slots!(targets)
+        execute(<<~SQL)
+          UPDATE #{quoted_drain_slot_table}
+          SET status = 'idle',
+              locked_at = NULL,
+              locked_by = NULL,
+              last_error = NULL,
+              updated_at = CURRENT_TIMESTAMP
+          WHERE target_key IN (#{ids_sql(targets.map(&:key))})
+            AND status IN ('queued', 'processing')
+            AND locked_at < (CURRENT_TIMESTAMP - interval '#{processing_timeout_s} seconds')
+        SQL
+      end
+
+      def acquire_drain_slots_sql(targets)
+        <<~SQL
+          WITH target(target_key, queue_name, parallelism) AS (
+            VALUES #{drain_slot_target_values_sql(targets)}
+          ),
+          available AS (
+            SELECT slots.id
+            FROM #{quoted_drain_slot_table} slots
+            INNER JOIN target
+              ON target.target_key = slots.target_key
+            WHERE slots.status = 'idle'
+              AND slots.slot <= target.parallelism
+            ORDER BY slots.target_key ASC, slots.slot ASC
+            FOR UPDATE SKIP LOCKED
+          ),
+          updated AS (
+            UPDATE #{quoted_drain_slot_table} slots
+            SET status = 'queued',
+                locked_at = CURRENT_TIMESTAMP,
+                locked_by = NULL,
+                enqueued_at = CURRENT_TIMESTAMP,
+                last_error = NULL,
+                updated_at = CURRENT_TIMESTAMP
+            FROM available
+            WHERE slots.id = available.id
+            RETURNING slots.target_key, slots.slot, slots.queue_name
+          )
+          SELECT target_key, slot, queue_name
+          FROM updated
+          ORDER BY target_key ASC, slot ASC
+        SQL
+      end
+
+      def drain_slot_target_values_sql(targets)
+        targets.map do |target|
+          "(#{quote(target.key)}, #{quote(target.queue_name)}, #{target.parallelism})"
+        end.join(', ')
+      end
+
+      def drain_slot_descriptor(row)
+        {
+          target_key: row_value(row, :target_key).to_s,
+          slot: row_value(row, :slot).to_i,
+          queue_name: row_value(row, :queue_name).to_s
+        }
+      end
+
+      def drain_slot_owner_guard_sql(worker_id)
+        return '' if worker_id.nil?
+
+        "AND locked_by = #{quote(worker_id)}"
+      end
+
       def quoted_table
         connection.quote_table_name(SearchEngine.config.postgres_outbox.table_name)
       end
 
       def quoted_delivery_table
         connection.quote_table_name(SearchEngine.config.postgres_outbox.delivery_table_name)
+      end
+
+      def quoted_drain_slot_table
+        connection.quote_table_name(drain_slot_table_name)
+      end
+
+      def drain_slot_table_name
+        SearchEngine.config.postgres_outbox.drain_slot_table_name
       end
 
       def quote(value)

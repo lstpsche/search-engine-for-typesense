@@ -50,6 +50,7 @@ class ConfigDefaultsTest < Minitest::Test
     assert_equal false, h[:enabled]
     assert_equal 'search_engine_outbox_events', h[:table_name]
     assert_equal 'search_engine_outbox_deliveries', h[:delivery_table_name]
+    assert_equal 'search_engine_outbox_drain_slots', h[:drain_slot_table_name]
     assert_equal 'search_engine_outbox', h[:channel]
     assert_equal 'search_engine', h[:queue_name]
     assert_equal 1000, h[:batch_size]
@@ -64,6 +65,9 @@ class ConfigDefaultsTest < Minitest::Test
     assert_equal({}, h[:collection_processors])
     assert_operator h[:retry_backoff].call(1), :>, 0
     assert_equal [], h[:delivery_targets].call
+    assert_equal 1, h[:drain_target_parallelism]
+    assert_equal 1, h[:drain_job_max_batches]
+    assert_nil h[:drain_job_max_runtime_s]
   end
 
   def test_postgres_outbox_config_mutation
@@ -83,6 +87,7 @@ class ConfigDefaultsTest < Minitest::Test
     cfg.postgres_outbox.collection_processors[:products] = processor
     cfg.postgres_outbox.listener_enabled = -> { true }
     cfg.postgres_outbox.delivery_table_name = 'custom_outbox_deliveries'
+    cfg.postgres_outbox.drain_slot_table_name = 'custom_outbox_drain_slots'
     cfg.postgres_outbox.delivery_targets = delivery_targets
 
     h = cfg.to_h.fetch(:postgres_outbox)
@@ -90,9 +95,24 @@ class ConfigDefaultsTest < Minitest::Test
     assert_equal true, h[:enabled]
     assert_equal 'critical_search', h[:queue_name]
     assert_equal 'custom_outbox_deliveries', h[:delivery_table_name]
+    assert_equal 'custom_outbox_drain_slots', h[:drain_slot_table_name]
     assert_same processor, h.dig(:collection_processors, :products)
     assert_equal true, h[:listener_enabled].call
     assert_same delivery_targets, h[:delivery_targets]
+  end
+
+  def test_postgres_outbox_drain_config_mutation
+    cfg = SearchEngine::Config.new
+
+    cfg.postgres_outbox.drain_target_parallelism = 3
+    cfg.postgres_outbox.drain_job_max_batches = 5
+    cfg.postgres_outbox.drain_job_max_runtime_s = 45
+
+    h = cfg.to_h.fetch(:postgres_outbox)
+
+    assert_equal 3, h[:drain_target_parallelism]
+    assert_equal 5, h[:drain_job_max_batches]
+    assert_equal 45, h[:drain_job_max_runtime_s]
   end
 
   def test_configure_yields_and_returns_config

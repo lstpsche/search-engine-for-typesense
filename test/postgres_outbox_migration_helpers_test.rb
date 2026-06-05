@@ -139,6 +139,34 @@ class PostgresOutboxMigrationHelpersTest < Minitest::Test
                      { column: :event_id, on_delete: :cascade }]
   end
 
+  def test_create_search_engine_outbox_drain_slots_creates_columns_and_indexes
+    @migration.create_search_engine_outbox_drain_slots(table_name: :custom_outbox_drain_slots)
+
+    table = @migration.created_tables.fetch(:custom_outbox_drain_slots)
+
+    assert_includes table.columns, [:string, [:target_key], { null: false }]
+    assert_includes table.columns, [:integer, [:slot], { null: false }]
+    assert_includes table.columns, [:string, [:queue_name], { null: false }]
+    assert_includes table.columns, [:string, [:status], { null: false, default: 'idle' }]
+    assert_includes table.columns, [:datetime, [:locked_at], {}]
+    assert_includes table.columns, [:string, [:locked_by], {}]
+    assert_includes table.columns, [:datetime, [:enqueued_at], {}]
+    assert_includes table.columns, [:datetime, [:started_at], {}]
+    assert_includes table.columns, [:datetime, [:finished_at], {}]
+    assert_includes table.columns, [:text, [:last_error], {}]
+    assert_includes table.columns, [:timestamps, [], {}]
+
+    assert_includes @migration.indexes,
+                    [:custom_outbox_drain_slots, %i[target_key slot],
+                     { name: 'idx_se_outbox_drain_slots_unique', unique: true }]
+    assert_includes @migration.indexes,
+                    [:custom_outbox_drain_slots, %i[target_key status slot],
+                     { name: 'idx_se_outbox_drain_slots_target_status' }]
+    assert_includes @migration.indexes,
+                    [:custom_outbox_drain_slots, %i[status locked_at],
+                     { name: 'idx_se_outbox_drain_slots_stale' }]
+  end
+
   def test_create_search_engine_outbox_trigger_generates_idempotent_row_trigger_sql
     @migration.create_search_engine_outbox_trigger(
       :products,
@@ -230,6 +258,7 @@ class PostgresOutboxMigrationHelpersTest < Minitest::Test
     assert_includes table_template, 'include SearchEngine::PostgresOutbox::MigrationHelpers'
     assert_includes table_template, 'create_search_engine_outbox_events'
     assert_includes table_template, 'create_search_engine_outbox_deliveries'
+    assert_includes table_template, 'create_search_engine_outbox_drain_slots'
     assert_includes trigger_template, 'create_search_engine_outbox_trigger'
     assert_includes trigger_template, 'drop_search_engine_outbox_trigger'
     assert_includes trigger_template, 'document_id_sql'

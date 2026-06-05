@@ -5,14 +5,26 @@ require 'search_engine/postgres_outbox/drain_enqueuer'
 
 class PostgresOutboxDrainEnqueuerTest < Minitest::Test
   class FakeRepository
-    attr_reader :materialize_calls
+    attr_reader :materialize_calls, :acquire_calls
 
-    def initialize
+    def initialize(drain_slots_table_exists: false, acquired_slots: [])
+      @drain_slots_table_exists = drain_slots_table_exists
+      @acquired_slots = acquired_slots
       @materialize_calls = []
+      @acquire_calls = []
     end
 
     def materialize_deliveries!(limit: nil)
       @materialize_calls << { limit: limit }
+    end
+
+    def drain_slots_table_exists?
+      @drain_slots_table_exists
+    end
+
+    def acquire_drain_slots!(targets:)
+      @acquire_calls << targets
+      @acquired_slots
     end
   end
 
@@ -79,7 +91,7 @@ class PostgresOutboxDrainEnqueuerTest < Minitest::Test
   end
 
   def test_targets_materialize_once_and_enqueue_one_job_per_target_queue
-    repository = FakeRepository.new
+    repository = FakeRepository.new(drain_slots_table_exists: false)
     drain_job = FakeDrainJob.new
     targets = [
       { key: :target_1, queue_name: :queue_1 },
@@ -104,7 +116,7 @@ class PostgresOutboxDrainEnqueuerTest < Minitest::Test
   end
 
   def test_target_jobs_preserve_explicit_limit
-    repository = FakeRepository.new
+    repository = FakeRepository.new(drain_slots_table_exists: false)
     drain_job = FakeDrainJob.new
 
     enqueuer = SearchEngine::PostgresOutbox::DrainEnqueuer.new(
@@ -119,5 +131,66 @@ class PostgresOutboxDrainEnqueuerTest < Minitest::Test
       [{ queue: 'queue_1', kwargs: { target_key: 'target_1', limit: 10 } }],
       drain_job.calls
     )
+  end
+
+  def test_targets_enqueue_acquired_drain_slots_when_slot_table_exists
+    repository = FakeRepository.new(
+      drain_slots_table_exists: true,
+      acquired_slots: [
+        { target_key: 'target_1', slot: 1, queue_name: 'queue_1' },
+        { target_key: 'target_1', slot: 2, queue_name: 'queue_1' }
+      ]
+    )
+    drain_job = FakeDrainJob.new
+    targets = [{ key: :target_1, queue_name: :queue_1, parallelism: 2 }]
+
+    enqueuer = SearchEngine::PostgresOutbox::DrainEnqueuer.new(
+      repository: repository,
+      drain_job: drain_job,
+      targets_resolver: -> { targets }
+    )
+    enqueuer.enqueue_all(limit: 10)
+
+    assert_equal [{ limit: 10 }], repository.materialize_calls
+    assert_equal 1, repository.acquire_calls.size
+    assert_equal ['target_1'], repository.acquire_calls.first.map(&:key)
+    assert_equal(
+      [
+        { queue: 'queue_1', kwargs: { target_key: 'target_1', drain_slot: 1, limit: 10 } },
+        { queue: 'queue_1', kwargs: { target_key: 'target_1', drain_slot: 2, limit: 10 } }
+      ],
+      drain_job.calls
+    )
+  end
+
+  def test_targets_skip_enqueue_when_all_drain_slots_are_occupied
+    repository = FakeRepository.new(drain_slots_table_exists: true, acquired_slots: [])
+    drain_job = FakeDrainJob.new
+
+    enqueuer = SearchEngine::PostgresOutbox::DrainEnqueuer.new(
+      repository: repository,
+      drain_job: drain_job,
+      targets_resolver: -> { [{ key: :target_1, queue_name: :queue_1, parallelism: 2 }] }
+    )
+    enqueuer.enqueue_all
+
+    assert_equal [{ limit: nil }], repository.materialize_calls
+    assert_equal 1, repository.acquire_calls.size
+    assert_empty drain_job.calls
+  end
+
+  def test_targets_fall_back_to_target_jobs_when_slot_table_is_missing
+    repository = FakeRepository.new(drain_slots_table_exists: false)
+    drain_job = FakeDrainJob.new
+
+    enqueuer = SearchEngine::PostgresOutbox::DrainEnqueuer.new(
+      repository: repository,
+      drain_job: drain_job,
+      targets_resolver: -> { [{ key: :target_1, queue_name: :queue_1, parallelism: 2 }] }
+    )
+    enqueuer.enqueue_all
+
+    assert_empty repository.acquire_calls
+    assert_equal [{ queue: 'queue_1', kwargs: { target_key: 'target_1' } }], drain_job.calls
   end
 end

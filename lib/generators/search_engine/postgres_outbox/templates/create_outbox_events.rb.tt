@@ -6,5 +6,6 @@ class CreateSearchEngineOutboxEvents < ActiveRecord::Migration[<%= ActiveRecord:
   def change
     create_search_engine_outbox_events
     create_search_engine_outbox_deliveries
+    create_search_engine_outbox_drain_slots
   end
 end

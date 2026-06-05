@@ -272,6 +272,8 @@ module SearchEngine
       attr_accessor :table_name
       # @return [String] database table used by host-managed outbox deliveries
       attr_accessor :delivery_table_name
+      # @return [String] database table used by host-managed drain slots
+      attr_accessor :drain_slot_table_name
       # @return [String] PostgreSQL notification channel for wakeups
       attr_accessor :channel
       # @return [String] queue name used by host app job dispatch
@@ -300,11 +302,18 @@ module SearchEngine
       attr_accessor :retry_backoff
       # @return [#call] resolver returning configured delivery targets
       attr_accessor :delivery_targets
+      # @return [Integer] default maximum concurrent drain jobs per delivery target
+      attr_accessor :drain_target_parallelism
+      # @return [Integer] maximum drain batches a slot-aware job may run before yielding
+      attr_accessor :drain_job_max_batches
+      # @return [Integer, nil] optional runtime budget in seconds for slot-aware drain jobs
+      attr_accessor :drain_job_max_runtime_s
 
       def initialize
         @enabled = false
         @table_name = 'search_engine_outbox_events'
         @delivery_table_name = 'search_engine_outbox_deliveries'
+        @drain_slot_table_name = 'search_engine_outbox_drain_slots'
         @channel = 'search_engine_outbox'
         @queue_name = 'search_engine'
         @batch_size = 1000
@@ -319,6 +328,9 @@ module SearchEngine
         @collection_processors = {}
         @retry_backoff = ->(attempt) { [attempt.to_i, 1].max * 5 }
         @delivery_targets = -> { [] }
+        @drain_target_parallelism = 1
+        @drain_job_max_batches = 1
+        @drain_job_max_runtime_s = nil
       end
     end
 
@@ -870,6 +882,7 @@ module SearchEngine
         enabled: postgres_outbox.enabled ? true : false,
         table_name: postgres_outbox.table_name,
         delivery_table_name: postgres_outbox.delivery_table_name,
+        drain_slot_table_name: postgres_outbox.drain_slot_table_name,
         channel: postgres_outbox.channel,
         queue_name: postgres_outbox.queue_name,
         batch_size: postgres_outbox.batch_size,
@@ -883,7 +896,10 @@ module SearchEngine
         listener_enabled: postgres_outbox.listener_enabled,
         collection_processors: postgres_outbox.collection_processors,
         retry_backoff: postgres_outbox.retry_backoff,
-        delivery_targets: postgres_outbox.delivery_targets
+        delivery_targets: postgres_outbox.delivery_targets,
+        drain_target_parallelism: postgres_outbox.drain_target_parallelism,
+        drain_job_max_batches: postgres_outbox.drain_job_max_batches,
+        drain_job_max_runtime_s: postgres_outbox.drain_job_max_runtime_s
       }
     end
 
