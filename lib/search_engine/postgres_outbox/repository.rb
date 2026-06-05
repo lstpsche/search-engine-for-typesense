@@ -22,6 +22,7 @@ module SearchEngine
         connection.transaction do
           rows = select_rows(claim_select_sql(limit.to_i))
           ids = rows.map { |row| row_value(row, :id) }
+          execute(supersede_older_pending_sql(rows)) unless rows.empty?
           execute(claim_update_sql(ids, worker_id)) unless ids.empty?
         end
 
@@ -103,12 +104,30 @@ module SearchEngine
 
       def claim_select_sql(limit)
         <<~SQL
-          SELECT *
-          FROM #{quoted_table}
-          WHERE status = 'pending'
-            AND (next_attempt_at IS NULL OR next_attempt_at <= CURRENT_TIMESTAMP)
-          ORDER BY id ASC
-          LIMIT #{limit}
+          WITH ranked_pending AS (
+            SELECT id,
+                   ROW_NUMBER() OVER (
+                     PARTITION BY collection, document_id
+                     ORDER BY id DESC
+                   ) AS row_number
+            FROM #{quoted_table}
+            WHERE status = 'pending'
+          ),
+          latest_due AS (
+            SELECT outbox.id
+            FROM #{quoted_table} outbox
+            INNER JOIN ranked_pending
+              ON ranked_pending.id = outbox.id
+            WHERE ranked_pending.row_number = 1
+              AND (outbox.next_attempt_at IS NULL OR outbox.next_attempt_at <= CURRENT_TIMESTAMP)
+            ORDER BY outbox.id ASC
+            LIMIT #{limit}
+          )
+          SELECT outbox.*
+          FROM #{quoted_table} outbox
+          INNER JOIN latest_due
+            ON latest_due.id = outbox.id
+          ORDER BY outbox.id ASC
           FOR UPDATE SKIP LOCKED
         SQL
       end
@@ -121,6 +140,24 @@ module SearchEngine
               locked_by = #{quote(worker_id)},
               updated_at = CURRENT_TIMESTAMP
           WHERE id IN (#{ids_sql(ids)})
+        SQL
+      end
+
+      def supersede_older_pending_sql(rows)
+        <<~SQL
+          UPDATE #{quoted_table} older
+          SET status = 'superseded',
+              processed_at = CURRENT_TIMESTAMP,
+              locked_at = NULL,
+              locked_by = NULL,
+              updated_at = CURRENT_TIMESTAMP
+          FROM (
+            VALUES #{coalesce_values_sql(rows)}
+          ) AS latest(collection, document_id, id)
+          WHERE older.status = 'pending'
+            AND older.collection = latest.collection
+            AND older.document_id = latest.document_id
+            AND older.id < latest.id
         SQL
       end
 
@@ -152,6 +189,16 @@ module SearchEngine
 
       def ids_sql(ids)
         ids.map { |id| quote(id) }.join(', ')
+      end
+
+      def coalesce_values_sql(rows)
+        rows.map do |row|
+          collection = row_value(row, :collection)
+          document_id = row_value(row, :document_id)
+          id = row_value(row, :id)
+
+          "(#{quote(collection)}, #{quote(document_id)}, #{quote(id)})"
+        end.join(', ')
       end
 
       def quoted_table

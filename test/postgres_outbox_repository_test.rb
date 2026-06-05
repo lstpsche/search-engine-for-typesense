@@ -57,15 +57,19 @@ class PostgresOutboxRepositoryTest < Minitest::Test
     events = repository.claim_pending(limit: 25, worker_id: 'worker-1')
 
     assert_equal [1, 2], events.map(&:id)
-    assert_includes connection.selected_sql.first, 'FOR UPDATE SKIP LOCKED'
-    assert_includes connection.selected_sql.first, "WHERE status = 'pending'"
-    assert_includes connection.selected_sql.first, 'next_attempt_at <= CURRENT_TIMESTAMP'
-    assert_includes connection.selected_sql.first, 'LIMIT 25'
+    assert_claim_select_sql(connection.selected_sql.first)
+    assert_claim_update_sql(connection.executed_sql)
+  end
 
+  def test_claim_pending_does_not_supersede_when_no_rows_are_claimed
+    connection = FakeConnection.new(rows: [])
+    repository = SearchEngine::PostgresOutbox::Repository.new(connection: connection)
+
+    events = repository.claim_pending(limit: 25, worker_id: 'worker-1')
+
+    assert_empty events
+    assert_equal 1, connection.executed_sql.size
     assert_includes connection.executed_sql.first, "status = 'pending'"
-    assert_includes connection.executed_sql.last, "status = 'processing'"
-    assert_includes connection.executed_sql.last, "locked_by = 'worker-1'"
-    assert_includes connection.executed_sql.last, 'WHERE id IN (\'1\', \'2\')'
   end
 
   def test_mark_methods_are_noops_for_empty_ids
@@ -118,6 +122,33 @@ class PostgresOutboxRepositoryTest < Minitest::Test
   end
 
   private
+
+  def assert_claim_select_sql(sql)
+    assert_includes sql, 'FOR UPDATE SKIP LOCKED'
+    assert_includes sql, "WHERE status = 'pending'"
+    assert_includes sql, 'ROW_NUMBER() OVER'
+    assert_includes sql, 'PARTITION BY collection, document_id'
+    assert_includes sql, 'ranked_pending.row_number = 1'
+    assert_includes sql, 'outbox.next_attempt_at <= CURRENT_TIMESTAMP'
+    assert_includes sql, 'LIMIT 25'
+  end
+
+  def assert_claim_update_sql(executed_sql)
+    assert_includes executed_sql.first, "status = 'pending'"
+    assert_supersede_sql(executed_sql[1])
+    assert_includes executed_sql.last, "status = 'processing'"
+    assert_includes executed_sql.last, "locked_by = 'worker-1'"
+    assert_includes executed_sql.last, 'WHERE id IN (\'1\', \'2\')'
+  end
+
+  def assert_supersede_sql(sql)
+    assert_includes sql, "status = 'superseded'"
+    assert_includes sql, "older.status = 'pending'"
+    assert_includes sql, 'older.collection = latest.collection'
+    assert_includes sql, 'older.document_id = latest.document_id'
+    assert_includes sql, 'older.id < latest.id'
+    assert_includes sql, "('products', '1', '1')"
+  end
 
   def event_row(id:)
     {
