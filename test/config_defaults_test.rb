@@ -44,6 +44,43 @@ class ConfigDefaultsTest < Minitest::Test
     assert_equal :after_commit, h[:syncable_callback_timing]
   end
 
+  def test_postgres_outbox_config_defaults
+    h = SearchEngine::Config.new.to_h.fetch(:postgres_outbox)
+
+    assert_equal false, h[:enabled]
+    assert_equal 'search_engine_outbox_events', h[:table_name]
+    assert_equal 'search_engine_outbox', h[:channel]
+    assert_equal 'search_engine', h[:queue_name]
+    assert_equal 1000, h[:batch_size]
+    assert_equal 10, h[:max_attempts]
+    assert_equal 5, h[:poll_interval_s]
+    assert_equal 30, h[:listener_wait_timeout_s]
+    assert_equal 900, h[:processing_timeout_s]
+    assert_equal 604_800, h[:retention_s]
+    assert_equal false, h[:advisory_lock]
+    assert_nil h[:advisory_lock_key]
+    assert_equal false, h[:listener_enabled].call
+    assert_equal({}, h[:collection_processors])
+    assert_operator h[:retry_backoff].call(1), :>, 0
+  end
+
+  def test_postgres_outbox_config_mutation
+    cfg = SearchEngine::Config.new
+    processor = ->(event) { event }
+
+    cfg.postgres_outbox.enabled = true
+    cfg.postgres_outbox.queue_name = 'critical_search'
+    cfg.postgres_outbox.collection_processors[:products] = processor
+    cfg.postgres_outbox.listener_enabled = -> { true }
+
+    h = cfg.to_h.fetch(:postgres_outbox)
+
+    assert_equal true, h[:enabled]
+    assert_equal 'critical_search', h[:queue_name]
+    assert_same processor, h.dig(:collection_processors, :products)
+    assert_equal true, h[:listener_enabled].call
+  end
+
   def test_configure_yields_and_returns_config
     original = SearchEngine.config
 

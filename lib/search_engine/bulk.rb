@@ -94,19 +94,9 @@ module SearchEngine
         # Fallback to all declared/registered collections when no explicit targets are given.
         input_names = SearchEngine::CollectionResolver.models_map.keys if input_names.empty?
 
-        reverse_graph = SearchEngine::Cascade.build_reverse_graph(client: ts_client)
-        input_set = input_names.to_h { |n| [n, true] }
-
-        # Identify inputs that are referrers of other inputs (skip them in stage 1)
-        internal_referrers = internal_referrers_within_inputs(reverse_graph, input_set)
-
-        stage1_list = input_names.reject { |n| internal_referrers.include?(n) }
-
-        # Collect unique referencers of any input for the final cascade step
-        cascade_candidates = unique_referencers_of_inputs(reverse_graph, input_names)
-
-        # Order cascade candidates among themselves by dependency (referenced first)
-        cascade_order = topo_sort_subset(reverse_graph, cascade_candidates)
+        stages = SearchEngine::DependencyPlanner.bulk_stages(input_names, source: :auto, client: ts_client)
+        stage1_list = stages[:stage_1]
+        cascade_order = stages[:cascade]
 
         stats = {
           inputs: input_names,
@@ -194,89 +184,6 @@ module SearchEngine
         end
         filtered = mapped.reject { |s| s.to_s.strip.empty? }
         filtered.uniq
-      end
-
-      # Compute the subset of inputs that are referrers of other inputs.
-      # reverse_graph: target => [{ referrer, local_key, foreign_key }, ...]
-      # @param reverse_graph [Hash]
-      # @param input_set [Hash{String=>true}]
-      # @return [Set<String>]
-      def internal_referrers_within_inputs(reverse_graph, input_set)
-        require 'set'
-        refs = Set.new
-        reverse_graph.each do |target, edges|
-          next unless input_set[target]
-
-          Array(edges).each do |e|
-            r = (e[:referrer] || e['referrer']).to_s
-            refs.add(r) if input_set[r]
-          end
-        end
-        refs
-      end
-
-      # Unique list of referencers of any input logical name.
-      # @param reverse_graph [Hash]
-      # @param inputs [Array<String>]
-      # @return [Array<String>]
-      def unique_referencers_of_inputs(reverse_graph, inputs)
-        require 'set'
-        seen = Set.new
-        Array(inputs).each do |name|
-          Array(reverse_graph[name]).each do |e|
-            r = (e[:referrer] || e['referrer']).to_s
-            seen.add(r) unless r.strip.empty?
-          end
-        end
-        seen.to_a
-      end
-
-      # Topologically sort a subset of nodes using reverse_graph edges.
-      # Nodes are referencers; for any edge referrer -> target, ensure target comes first when it is in the subset.
-      # @param reverse_graph [Hash]
-      # @param subset [Array<String>]
-      # @return [Array<String>]
-      def topo_sort_subset(reverse_graph, subset)
-        require 'set'
-        nodes = Array(subset).uniq
-        node_set = nodes.to_h { |n| [n, true] }
-
-        # Build forward adjacency among subset nodes and indegree counts
-        adj = Hash.new { |h, k| h[k] = Set.new }
-        indeg = Hash.new(0)
-
-        nodes.each { |n| indeg[n] = 0 }
-
-        reverse_graph.each do |target, edges|
-          Array(edges).each do |e|
-            ref = (e[:referrer] || e['referrer']).to_s
-            tgt = target.to_s
-            next unless node_set[ref] && node_set[tgt]
-
-            # referrer depends on target: target should precede referrer
-            unless adj[tgt].include?(ref)
-              adj[tgt] << ref
-              indeg[ref] += 1
-            end
-          end
-        end
-
-        # Kahn's algorithm (stable by name)
-        queue = nodes.select { |n| indeg[n].to_i <= 0 }.sort
-        order = []
-        until queue.empty?
-          n = queue.shift
-          order << n
-          adj[n].each do |m|
-            indeg[m] -= 1
-            queue << m if indeg[m] <= 0
-          end
-          queue.sort!
-        end
-
-        # Append any remaining nodes (cycles) in stable name order
-        remaining = nodes - order
-        order + remaining.sort
       end
 
       # Resolve a collection model class from a collection name.

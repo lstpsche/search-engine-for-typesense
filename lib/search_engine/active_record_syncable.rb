@@ -5,8 +5,10 @@ require 'active_support/concern'
 module SearchEngine
   # ActiveRecord concern to keep a Typesense collection in sync.
   #
-  # Include into an AR model and call {.search_engine_syncable} to install
-  # lifecycle callbacks that upsert on create/update and delete on destroy.
+  # Include into an AR model and call {.search_engine_syncable} to store sync
+  # metadata. The default callback strategy installs lifecycle callbacks that
+  # upsert on create/update and delete on destroy; the postgres_outbox strategy
+  # stores metadata without installing callbacks.
   #
   # @example
   #   class Product < ApplicationRecord
@@ -21,6 +23,7 @@ module SearchEngine
       #
       # - collection: defaults to the AR class tableized name (snake_case, plural)
       # - on: one or many of :create, :update, :destroy (strings or symbols)
+      # - sync_strategy: :callbacks (default) or :postgres_outbox
       #
       # Validates that either a physical Typesense collection exists for the
       # given name or a SearchEngine model is registered for it. Mapping for
@@ -29,20 +32,23 @@ module SearchEngine
       #
       # @param collection [Symbol, String, nil]
       # @param on [Array<Symbol,String>, Symbol, String, nil]
+      # @param sync_strategy [Symbol, String, nil]
       # @return [Class] self (for macro chaining)
-      def search_engine_syncable(collection: nil, on: nil)
+      def search_engine_syncable(collection: nil, on: nil, sync_strategy: :callbacks)
         effective_actions = on
 
         cfg = SearchEngine::ActiveRecordSyncable.__normalize_config_for(
           self,
           collection: collection,
-          actions: effective_actions
+          actions: effective_actions,
+          sync_strategy: sync_strategy
         )
 
         # Store config on the AR class (used by instance methods)
         instance_variable_set(:@__se_syncable_cfg__, cfg)
 
-        SearchEngine::ActiveRecordSyncable.__register_callbacks_for(self, cfg)
+        SearchEngine::ActiveRecordSyncable.__register_callbacks_for(self, cfg) if cfg[:sync_strategy] == :callbacks
+
         self
       end
     end
@@ -177,12 +183,14 @@ module SearchEngine
     # @param ar_klass [Class]
     # @param collection [String,Symbol,nil]
     # @param actions [Array<String,Symbol>, String, Symbol, nil]
+    # @param sync_strategy [String, Symbol, nil]
     # @return [Hash]
-    def __normalize_config_for(ar_klass, collection:, actions:)
+    def __normalize_config_for(ar_klass, collection:, actions:, sync_strategy: :callbacks)
       require 'active_support/inflector'
 
       logical = (collection || ActiveSupport::Inflector.tableize(ar_klass.name)).to_s
       normalized_actions = __normalize_actions(actions)
+      normalized_sync_strategy = __normalize_sync_strategy(sync_strategy)
 
       # Best-effort resolve SearchEngine model now; fall back to lazy resolution
       se_klass = begin
@@ -200,6 +208,7 @@ module SearchEngine
       {
         logical: logical,
         actions: normalized_actions,
+        sync_strategy: normalized_sync_strategy,
         se_klass: se_klass
       }
     end
@@ -220,6 +229,20 @@ module SearchEngine
       raise ArgumentError, "search_engine_syncable: actions must be within #{allowed.inspect}" unless invalid.empty?
 
       list.uniq
+    end
+
+    # @api private
+    # @param strategy [String, Symbol, nil]
+    # @return [Symbol]
+    def __normalize_sync_strategy(strategy)
+      allowed = %i[callbacks postgres_outbox]
+      normalized = strategy.nil? ? :callbacks : strategy.to_s.downcase.strip.to_sym
+
+      unless allowed.include?(normalized)
+        raise ArgumentError, "search_engine_syncable: sync_strategy must be within #{allowed.inspect}"
+      end
+
+      normalized
     end
 
     # (no-op placeholder kept for backwards compatibility of method table in case of reloads)

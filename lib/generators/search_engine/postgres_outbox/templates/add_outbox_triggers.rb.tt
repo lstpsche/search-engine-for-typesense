@@ -1,0 +1,41 @@
+# frozen_string_literal: true
+
+class AddSearchEngineOutboxTriggers < ActiveRecord::Migration[<%= ActiveRecord::Migration.current_version %>]
+  include SearchEngine::PostgresOutbox::MigrationHelpers
+
+  def up
+    # Add one trigger per source table that should write SearchEngine outbox
+    # events. Triggers fire AFTER INSERT/UPDATE/DELETE by default, insert the
+    # outbox row in the same database transaction as the source change, and call
+    # pg_notify after commit as a non-durable wakeup nudge for the listener.
+    #
+    # Pair triggered source models with:
+    #   search_engine_syncable collection: :collection_name, sync_strategy: :postgres_outbox
+    # so Active Record callbacks do not also sync the same changes.
+    #
+    # record_id_sql and document_id_sql are trusted migration SQL expressions.
+    # They may reference record_data, which is NEW for inserts/updates and OLD
+    # for deletes.
+    #
+    # Simple id example:
+    # create_search_engine_outbox_trigger(
+    #   :products,
+    #   source_model: 'Product',
+    #   collection: 'products'
+    # )
+
+    # Custom document id example:
+    # create_search_engine_outbox_trigger(
+    #   :product_store_entries,
+    #   source_model: 'ProductStoreEntry',
+    #   collection: 'product_store_entries',
+    #   document_id_sql: "record_data.product_id::text || '-' || record_data.store_id::text"
+    # )
+  end
+
+  def down
+    # Drop triggers/functions in reverse order during rollback or teardown.
+    # drop_search_engine_outbox_trigger(:product_store_entries)
+    # drop_search_engine_outbox_trigger(:products)
+  end
+end

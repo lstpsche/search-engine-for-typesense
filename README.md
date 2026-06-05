@@ -188,6 +188,160 @@ Use a shared `Rails.cache` backend, or provide `c.indexer.partition_run_store`, 
 the parent indexing process can see the same run metadata. Size the queue carefully: worker concurrency
 multiplies with any per-partition `max_parallel` setting.
 
+## PostgreSQL outbox sync
+
+Rails callbacks are convenient for ordinary `create`, `update`, and `destroy` flows, but they do not see
+every database write. Bulk SQL imports, database triggers, background functions, and direct maintenance
+scripts can change source tables without instantiating Active Record models. PostgreSQL outbox sync captures
+those writes at the database layer and lets the gem process them through ActiveJob.
+
+The flow is:
+
+1. A row-level PostgreSQL trigger writes a durable outbox row in the same transaction as the source table
+   change.
+2. The trigger calls `pg_notify` as a low-latency nudge after commit.
+3. A host-managed listener receives notifications, or falls back to polling, and enqueues
+   `SearchEngine::PostgresOutbox::DrainJob`.
+4. The drainer claims pending rows, coalesces older rows for the same collection/document pair, orders
+   collection groups with the dependency planner, and processes the resulting upserts/deletes.
+
+`pg_notify` is not durable. Treat notifications only as a wakeup signal; the outbox table is the source of
+truth. Run the listener in a process lifecycle you control, and keep fallback polling enabled so missed
+notifications are drained later.
+
+PostgreSQL outbox sync is disabled by default:
+
+```ruby
+# config/initializers/search_engine.rb
+SearchEngine.configure do |c|
+  c.postgres_outbox.enabled = true
+  c.postgres_outbox.listener_enabled = -> { Rails.env.production? }
+  c.postgres_outbox.table_name = "search_engine_outbox_events"
+  c.postgres_outbox.channel = "search_engine_outbox"
+  c.postgres_outbox.queue_name = "search_engine"
+  c.postgres_outbox.batch_size = 1000
+  c.postgres_outbox.poll_interval_s = 5
+  c.postgres_outbox.retention_s = 7.days.to_i
+
+  # Optional. Leave off when your deployment already guarantees one listener.
+  c.postgres_outbox.advisory_lock = false
+end
+```
+
+Generate and edit the migrations:
+
+```bash
+bin/rails generate search_engine:postgres_outbox:install
+```
+
+The events table migration should include the gem helper:
+
+```ruby
+class CreateSearchEngineOutboxEvents < ActiveRecord::Migration[7.1]
+  include SearchEngine::PostgresOutbox::MigrationHelpers
+
+  def change
+    create_search_engine_outbox_events
+  end
+end
+```
+
+Add one trigger per source table that should write outbox events:
+
+```ruby
+class AddSearchEngineOutboxTriggers < ActiveRecord::Migration[7.1]
+  include SearchEngine::PostgresOutbox::MigrationHelpers
+
+  def up
+    create_search_engine_outbox_trigger(
+      :products,
+      source_model: "Product",
+      collection: "products"
+    )
+
+    create_search_engine_outbox_trigger(
+      :product_variants,
+      source_model: "ProductVariant",
+      collection: "product_variants",
+      record_id_sql: "record_data.id::text",
+      document_id_sql: "record_data.product_id::text || '-' || record_data.id::text"
+    )
+  end
+
+  def down
+    drop_search_engine_outbox_trigger(:product_variants)
+    drop_search_engine_outbox_trigger(:products)
+  end
+end
+```
+
+`record_id_sql` and `document_id_sql` are trusted migration SQL expressions. They may refer to the
+PL/pgSQL `record_data` variable, which is `NEW` for inserts/updates and `OLD` for deletes.
+
+Pair triggered source models with `sync_strategy: :postgres_outbox` so Active Record callbacks do not also
+write to Typesense for the same changes:
+
+```ruby
+class Product < ApplicationRecord
+  include SearchEngine::ActiveRecordSyncable
+
+  search_engine_syncable collection: :products, sync_strategy: :postgres_outbox
+end
+```
+
+The listener lifecycle belongs to the host app. This Sidekiq initializer is one example; any process manager
+or ActiveJob backend can start and stop a listener as long as it can enqueue jobs:
+
+```ruby
+# config/initializers/search_engine_outbox_listener.rb
+if defined?(Sidekiq)
+  Sidekiq.configure_server do |config|
+    listener = nil
+
+    config.on(:startup) do
+      outbox = SearchEngine.config.postgres_outbox
+      next unless outbox.enabled && outbox.listener_enabled.call
+
+      listener = SearchEngine::PostgresOutbox::Listener.new.start
+    end
+
+    config.on(:quiet) { listener&.stop(timeout: 5) }
+    config.on(:shutdown) { listener&.stop(timeout: 5) }
+  end
+end
+```
+
+Custom processors can override the default collection handling. Register processors by collection name and
+return `SearchEngine::PostgresOutbox::ProcessorResult`:
+
+```ruby
+SearchEngine.configure do |c|
+  c.postgres_outbox.collection_processors["products"] = lambda do |events:, context:|
+    document_ids = events.map(&:document_id)
+    ProductSearchSync.call(document_ids: document_ids, worker_id: context[:worker_id])
+
+    SearchEngine::PostgresOutbox::ProcessorResult.success(events.map(&:id))
+  rescue StandardError => error
+    SearchEngine::PostgresOutbox::ProcessorResult.failure(events.map(&:id), error: error)
+  end
+end
+```
+
+When one collection references another, declare those references on the SearchEngine models. The outbox
+drainer uses the same dependency planner direction as bulk cascade planning, so parent/source collections
+are processed before dependent collections in the same drain pass. If a collection group fails, later
+dependent groups are left retryable instead of being processed against stale data.
+
+Enable `c.postgres_outbox.advisory_lock = true` when multiple processes may start listeners and your host
+deployment cannot guarantee exactly one listener. The listener uses `pg_try_advisory_lock` with
+`c.postgres_outbox.advisory_lock_key`, or a stable key derived from the notification channel. If the lock is
+not acquired, that listener sleeps and retries.
+
+Processed and superseded rows are safe to delete after your retention window. Failed rows should be
+inspected before deletion because they contain the last error and retry state. A typical cleanup job deletes
+only rows with `status IN ('processed', 'superseded')` and `processed_at` older than
+`c.postgres_outbox.retention_s`.
+
 ## Example app
 
 See `examples/demo_shop` — demonstrates single/multi search, JOINs, grouping, presets/curation, and DX/observability. Supports offline mode via the stub client (see [Testing](https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/testing)).
