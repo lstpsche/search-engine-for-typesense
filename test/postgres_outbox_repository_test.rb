@@ -586,28 +586,38 @@ class PostgresOutboxRepositoryTest < Minitest::Test
   end
 
   def assert_materialization_delivery_supersede_sql(sql)
-    assert_includes sql, 'WITH updated_deliveries AS ('
+    assert_includes sql, 'updated_deliveries AS ('
+    assert_includes sql, 'older_event_targets AS MATERIALIZED'
     assert_includes sql, 'UPDATE "custom_outbox_deliveries" older_deliveries'
     assert_includes sql, "status = 'superseded'"
+    assert_includes sql, 'FROM latest'
+    assert_includes sql, 'CROSS JOIN target'
     assert_includes sql, "VALUES ('target_1', 'queue_1')"
-    assert_includes sql, 'older_deliveries.target_key = target.target_key'
+    assert_includes sql, 'INNER JOIN "custom_outbox" older_events'
+    assert_includes sql, 'older_deliveries.event_id = older_event_targets.event_id'
+    assert_includes sql, 'older_deliveries.target_key = older_event_targets.target_key'
     assert_includes sql, 'older_events.collection = latest.collection'
     assert_includes sql, 'older_events.document_id = latest.document_id'
     assert_includes sql, 'older_events.id < latest.id'
+    refute_includes sql, 'FROM "custom_outbox" older_events,'
     assert_parent_refresh_sql(sql)
   end
 
   def assert_delivery_supersede_sql(sql)
-    assert_includes sql, 'WITH updated_deliveries AS ('
+    assert_includes sql, 'updated_deliveries AS ('
+    assert_includes sql, 'older_event_targets AS MATERIALIZED'
     assert_includes sql, 'UPDATE "custom_outbox_deliveries" older_deliveries'
     assert_includes sql, "status = 'superseded'"
     assert_includes sql, 'older_deliveries.status = \'pending\''
-    assert_includes sql, 'older_deliveries.target_key = latest.target_key'
+    assert_includes sql, 'INNER JOIN "custom_outbox" older_events'
+    assert_includes sql, 'older_deliveries.event_id = older_event_targets.event_id'
+    assert_includes sql, 'older_deliveries.target_key = older_event_targets.target_key'
     assert_includes sql, 'older_events.collection = latest.collection'
     assert_includes sql, 'older_events.document_id = latest.document_id'
     assert_includes sql, 'older_events.id < latest.event_id'
     assert_includes sql, 'RETURNING older_deliveries.event_id'
     assert_includes sql, "('target_1', 'products', '11', '11', '101')"
+    refute_includes sql, 'FROM "custom_outbox" older_events,'
     assert_parent_refresh_sql(sql)
   end
 

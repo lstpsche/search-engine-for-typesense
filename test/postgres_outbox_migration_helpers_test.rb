@@ -92,6 +92,9 @@ class PostgresOutboxMigrationHelpersTest < Minitest::Test
                     [:custom_outbox_events, %i[collection document_id status id],
                      { name: 'idx_search_engine_outbox_coalescing' }]
     assert_includes @migration.indexes,
+                    [:custom_outbox_events, %i[collection document_id id],
+                     { name: 'idx_search_engine_outbox_coalesce_lookup' }]
+    assert_includes @migration.indexes,
                     [:custom_outbox_events, :locked_at,
                      { name: 'idx_search_engine_outbox_processing', where: "status = 'processing'" }]
     assert_includes @migration.indexes,

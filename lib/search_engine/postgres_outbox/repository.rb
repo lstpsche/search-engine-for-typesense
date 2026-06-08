@@ -470,26 +470,33 @@ module SearchEngine
 
       def materialization_supersede_older_deliveries_sql(rows, targets)
         <<~SQL
-          WITH updated_deliveries AS (
+          WITH latest(collection, document_id, id) AS (
+            VALUES #{coalesce_values_sql(rows)}
+          ),
+          target(target_key, queue_name) AS (
+            VALUES #{delivery_target_values_sql(targets)}
+          ),
+          older_event_targets AS MATERIALIZED (
+            SELECT older_events.id AS event_id,
+                   target.target_key
+            FROM latest
+            CROSS JOIN target
+            INNER JOIN #{quoted_table} older_events
+              ON older_events.collection = latest.collection
+             AND older_events.document_id = latest.document_id
+             AND older_events.id < latest.id
+          ),
+          updated_deliveries AS (
             UPDATE #{quoted_delivery_table} older_deliveries
             SET status = 'superseded',
                 processed_at = CURRENT_TIMESTAMP,
                 locked_at = NULL,
                 locked_by = NULL,
                 updated_at = CURRENT_TIMESTAMP
-            FROM #{quoted_table} older_events,
-                 (
-                   VALUES #{coalesce_values_sql(rows)}
-                 ) AS latest(collection, document_id, id),
-                 (
-                   VALUES #{delivery_target_values_sql(targets)}
-                 ) AS target(target_key, queue_name)
-            WHERE older_deliveries.event_id = older_events.id
+            FROM older_event_targets
+            WHERE older_deliveries.event_id = older_event_targets.event_id
               AND older_deliveries.status = 'pending'
-              AND older_deliveries.target_key = target.target_key
-              AND older_events.collection = latest.collection
-              AND older_events.document_id = latest.document_id
-              AND older_events.id < latest.id
+              AND older_deliveries.target_key = older_event_targets.target_key
             RETURNING older_deliveries.event_id
           ),
           aggregate AS (
@@ -528,23 +535,29 @@ module SearchEngine
 
       def delivery_supersede_older_pending_sql(rows)
         <<~SQL
-          WITH updated_deliveries AS (
+          WITH latest(target_key, collection, document_id, event_id, delivery_id) AS (
+            VALUES #{delivery_coalesce_values_sql(rows)}
+          ),
+          older_event_targets AS MATERIALIZED (
+            SELECT older_events.id AS event_id,
+                   latest.target_key
+            FROM latest
+            INNER JOIN #{quoted_table} older_events
+              ON older_events.collection = latest.collection
+             AND older_events.document_id = latest.document_id
+             AND older_events.id < latest.event_id
+          ),
+          updated_deliveries AS (
             UPDATE #{quoted_delivery_table} older_deliveries
             SET status = 'superseded',
                 processed_at = CURRENT_TIMESTAMP,
                 locked_at = NULL,
                 locked_by = NULL,
                 updated_at = CURRENT_TIMESTAMP
-            FROM #{quoted_table} older_events,
-                 (
-                   VALUES #{delivery_coalesce_values_sql(rows)}
-                 ) AS latest(target_key, collection, document_id, event_id, delivery_id)
-            WHERE older_deliveries.event_id = older_events.id
+            FROM older_event_targets
+            WHERE older_deliveries.event_id = older_event_targets.event_id
               AND older_deliveries.status = 'pending'
-              AND older_deliveries.target_key = latest.target_key
-              AND older_events.collection = latest.collection
-              AND older_events.document_id = latest.document_id
-              AND older_events.id < latest.event_id
+              AND older_deliveries.target_key = older_event_targets.target_key
             RETURNING older_deliveries.event_id
           ),
           aggregate AS (

@@ -43,6 +43,9 @@ module SearchEngine
                   %i[collection document_id status id],
                   name: 'idx_search_engine_outbox_coalescing'
         add_index table_name,
+                  %i[collection document_id id],
+                  name: 'idx_search_engine_outbox_coalesce_lookup'
+        add_index table_name,
                   :locked_at,
                   name: 'idx_search_engine_outbox_processing',
                   where: "status = 'processing'"
