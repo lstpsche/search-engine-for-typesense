@@ -3,5 +3,5 @@
 module SearchEngine
   # Current gem version.
   # @return [String]
-  VERSION = '30.1.8.16'
+  VERSION = '30.1.8.17'
 end
