@@ -151,7 +151,7 @@ class PostgresOutboxRepositoryTest < Minitest::Test
       ]
     end
     connection = FakeConnection.new(rows: [event_row(id: 11)])
-    repository = SearchEngine::PostgresOutbox::Repository.new(connection: connection, target_key: 'target_1')
+    repository = SearchEngine::PostgresOutbox::Repository.new(connection: connection)
 
     rows = repository.materialize_deliveries!(limit: 25)
 
@@ -161,6 +161,24 @@ class PostgresOutboxRepositoryTest < Minitest::Test
     assert_materialization_delivery_supersede_sql(connection.executed_sql[0])
     assert_supersede_sql(connection.executed_sql[1])
     assert_materialization_insert_sql(connection.executed_sql[2])
+  end
+
+  def test_materialize_deliveries_scopes_targets_when_repository_has_target_key
+    SearchEngine.config.postgres_outbox.delivery_targets = lambda do
+      [
+        { key: :target_1, queue_name: :queue_1 },
+        SearchEngine::PostgresOutbox::DeliveryTarget.new(key: 'target_2', queue_name: 'queue_2')
+      ]
+    end
+    connection = FakeConnection.new(rows: [event_row(id: 11)])
+    repository = SearchEngine::PostgresOutbox::Repository.new(connection: connection, target_key: 'target_1')
+
+    repository.materialize_deliveries!(limit: 25)
+
+    assert_includes connection.selected_sql.first, "VALUES ('target_1', 'queue_1')"
+    refute_includes connection.selected_sql.first, "'target_2'"
+    assert_includes connection.executed_sql[2], "VALUES ('target_1', 'queue_1')"
+    refute_includes connection.executed_sql[2], "'target_2'"
   end
 
   def test_materialize_deliveries_noops_when_no_targets_are_configured
@@ -454,7 +472,13 @@ class PostgresOutboxRepositoryTest < Minitest::Test
     assert_includes sql, 'deliveries.target_key = target.target_key'
     assert_includes sql, 'LIMIT 25'
     assert_includes sql, 'FOR UPDATE SKIP LOCKED'
-    assert_includes sql, 'SELECT DISTINCT ON (collection, document_id) *'
+    assert_includes sql, 'candidate_events AS MATERIALIZED'
+    assert_includes sql, 'ROW_NUMBER() OVER'
+    assert_includes sql, 'PARTITION BY collection, document_id'
+    assert_includes sql, 'latest_candidate_ids'
+    assert_includes sql, 'FROM "custom_outbox" outbox'
+    assert_includes sql, 'INNER JOIN latest_candidate_ids'
+    refute_includes sql, 'SELECT DISTINCT ON (collection, document_id) *'
   end
 
   def assert_materialization_insert_sql(sql)

@@ -112,7 +112,7 @@ module SearchEngine
       # Create missing delivery rows for all configured delivery targets.
       # @return [void]
       def materialize_deliveries!(limit: SearchEngine.config.postgres_outbox.batch_size)
-        targets = delivery_targets
+        targets = materialization_delivery_targets
         return if targets.empty?
 
         rows = []
@@ -271,8 +271,10 @@ module SearchEngine
           WITH target(target_key, queue_name) AS (
             VALUES #{delivery_target_values_sql(targets)}
           ),
-          candidate_events AS (
-            SELECT outbox.*
+          candidate_events AS MATERIALIZED (
+            SELECT outbox.id,
+                   outbox.collection,
+                   outbox.document_id
             FROM #{quoted_table} outbox
             WHERE outbox.status IN ('pending', 'processing', 'failed')
               AND (outbox.next_attempt_at IS NULL OR outbox.next_attempt_at <= CURRENT_TIMESTAMP)
@@ -289,10 +291,24 @@ module SearchEngine
             ORDER BY outbox.id ASC
             LIMIT #{limit}
             FOR UPDATE SKIP LOCKED
+          ),
+          latest_candidate_ids AS (
+            SELECT id
+            FROM (
+              SELECT id,
+                     ROW_NUMBER() OVER (
+                       PARTITION BY collection, document_id
+                       ORDER BY id DESC
+                     ) AS row_number
+              FROM candidate_events
+            ) ranked_candidate_events
+            WHERE row_number = 1
           )
-          SELECT DISTINCT ON (collection, document_id) *
-          FROM candidate_events
-          ORDER BY collection, document_id, id DESC
+          SELECT outbox.*
+          FROM #{quoted_table} outbox
+          INNER JOIN latest_candidate_ids
+            ON latest_candidate_ids.id = outbox.id
+          ORDER BY outbox.id ASC
         SQL
       end
 
@@ -817,6 +833,13 @@ module SearchEngine
         configured = SearchEngine.config.postgres_outbox.delivery_targets
         raw_targets = configured.respond_to?(:call) ? configured.call : configured
         Array(raw_targets).map { |target| DeliveryTarget.normalize(target) }
+      end
+
+      def materialization_delivery_targets
+        targets = delivery_targets
+        return targets unless delivery_mode?
+
+        targets.select { |target| target.key == target_key }
       end
 
       def max_attempts
