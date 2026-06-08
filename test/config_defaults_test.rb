@@ -101,6 +101,41 @@ class ConfigDefaultsTest < Minitest::Test
     assert_same delivery_targets, h[:delivery_targets]
   end
 
+  def test_postgres_outbox_collection_batch_size_config
+    cfg = SearchEngine::Config.new
+
+    assert_equal({}, cfg.to_h.dig(:postgres_outbox, :batch_sizes))
+
+    cfg.postgres_outbox.batch_sizes = { products: 250, 'product_barcodes' => 500, brands: 0 }
+
+    h = cfg.to_h.fetch(:postgres_outbox)
+
+    assert_equal({ products: 250, 'product_barcodes' => 500, brands: 0 }, h[:batch_sizes])
+    assert_equal 250, cfg.postgres_outbox.batch_size_for('products')
+    assert_equal 500, cfg.postgres_outbox.batch_size_for(:product_barcodes)
+    assert_equal 1000, cfg.postgres_outbox.batch_size_for(:brands)
+    assert_equal 1000, cfg.postgres_outbox.batch_size_for(:unknown)
+    assert_equal true, cfg.postgres_outbox.collection_batch_sizes?
+  end
+
+  def test_postgres_outbox_collection_batch_sizes_ignore_non_positive_values
+    cfg = SearchEngine::Config.new
+    cfg.postgres_outbox.batch_size = 750
+    cfg.postgres_outbox.batch_sizes = {
+      products: 0,
+      brands: nil,
+      categories: -5,
+      promotions: '300'
+    }
+
+    assert_equal 750, cfg.postgres_outbox.batch_size_for(:products)
+    assert_equal 750, cfg.postgres_outbox.batch_size_for(:brands)
+    assert_equal 750, cfg.postgres_outbox.batch_size_for(:categories)
+    assert_equal 300, cfg.postgres_outbox.batch_size_for(:promotions)
+    assert_equal({ 'promotions' => 300 }, cfg.postgres_outbox.normalized_batch_sizes)
+    assert_equal true, cfg.postgres_outbox.collection_batch_sizes?
+  end
+
   def test_postgres_outbox_drain_config_mutation
     cfg = SearchEngine::Config.new
 

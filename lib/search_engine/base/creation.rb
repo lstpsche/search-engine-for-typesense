@@ -2,8 +2,8 @@
 
 require 'active_support/concern'
 require 'set'
-require 'json'
 require 'search_engine/indexer/batch_planner'
+require 'search_engine/indexer/import_response_parser'
 
 module SearchEngine
   class Base
@@ -531,67 +531,8 @@ module SearchEngine
           result
         end
 
-        def safe_parse_json(str)
-          JSON.parse(str)
-        rescue StandardError
-          nil
-        end
-
         def parse_import_response(raw)
-          return parse_import_response_from_string(raw) if raw.is_a?(String)
-          return parse_import_response_from_array(raw) if raw.is_a?(Array)
-
-          [0, 0, []]
-        end
-
-        def parse_import_response_from_string(str)
-          success = 0
-          failure = 0
-          samples = []
-
-          str.each_line do |line|
-            line = line.strip
-            next if line.empty?
-
-            h = safe_parse_json(line)
-            unless h
-              failure += 1
-              samples << 'invalid-json-line'
-              next
-            end
-
-            if truthy?(h['success'] || h[:success])
-              success += 1
-            else
-              failure += 1
-              msg = h['error'] || h[:error] || h['message'] || h[:message]
-              samples << msg.to_s[0, 200] if msg
-            end
-          end
-
-          [success, failure, samples[0, 5]]
-        end
-
-        def parse_import_response_from_array(arr)
-          success = 0
-          failure = 0
-          samples = []
-
-          arr.each do |h|
-            if h.is_a?(Hash) && truthy?(h['success'] || h[:success])
-              success += 1
-            else
-              failure += 1
-              msg = h.is_a?(Hash) ? (h['error'] || h[:error] || h['message'] || h[:message]) : nil
-              samples << msg.to_s[0, 200] if msg
-            end
-          end
-
-          [success, failure, samples[0, 5]]
-        end
-
-        def truthy?(val)
-          val == true || val.to_s.downcase == 'true'
+          SearchEngine::Indexer::ImportResponseParser.parse(raw)
         end
 
         def normalize_records_input(records)

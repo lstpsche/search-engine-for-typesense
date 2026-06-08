@@ -59,10 +59,12 @@ class PostgresOutboxDrainJobTest < Minitest::Test
     @previous_enabled = SearchEngine.config.postgres_outbox.enabled
     @previous_queue_name = SearchEngine.config.postgres_outbox.queue_name
     @previous_batch_size = SearchEngine.config.postgres_outbox.batch_size
+    @previous_batch_sizes = SearchEngine.config.postgres_outbox.batch_sizes
     @previous_delivery_targets = SearchEngine.config.postgres_outbox.delivery_targets
     @previous_drain_job_max_batches = SearchEngine.config.postgres_outbox.drain_job_max_batches
     @previous_drain_job_max_runtime_s = SearchEngine.config.postgres_outbox.drain_job_max_runtime_s
     SearchEngine.config.postgres_outbox.delivery_targets = -> { [] }
+    SearchEngine.config.postgres_outbox.batch_sizes = {}
   end
 
   def teardown
@@ -70,6 +72,7 @@ class PostgresOutboxDrainJobTest < Minitest::Test
     SearchEngine.config.postgres_outbox.enabled = @previous_enabled
     SearchEngine.config.postgres_outbox.queue_name = @previous_queue_name
     SearchEngine.config.postgres_outbox.batch_size = @previous_batch_size
+    SearchEngine.config.postgres_outbox.batch_sizes = @previous_batch_sizes
     SearchEngine.config.postgres_outbox.delivery_targets = @previous_delivery_targets
     SearchEngine.config.postgres_outbox.drain_job_max_batches = @previous_drain_job_max_batches
     SearchEngine.config.postgres_outbox.drain_job_max_runtime_s = @previous_drain_job_max_runtime_s
@@ -96,6 +99,19 @@ class PostgresOutboxDrainJobTest < Minitest::Test
     end
 
     assert_equal [[[], { limit: 1000 }]], drainer.calls
+  end
+
+  def test_enabled_outbox_preserves_omitted_limit_when_collection_batch_sizes_are_configured
+    SearchEngine.config.postgres_outbox.enabled = true
+    SearchEngine.config.postgres_outbox.batch_size = 1000
+    SearchEngine.config.postgres_outbox.batch_sizes = { products: 25 }
+    drainer = FakeDrainer.new(summary: { claimed: 3, processed: 3, continue: true })
+
+    SearchEngine::PostgresOutbox::Drainer.stub(:new, drainer) do
+      SearchEngine::PostgresOutbox::DrainJob.new.perform
+    end
+
+    assert_equal [[[], { limit: nil }]], drainer.calls
   end
 
   def test_enabled_outbox_passes_explicit_limit

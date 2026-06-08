@@ -222,6 +222,11 @@ SearchEngine.configure do |c|
   c.postgres_outbox.channel = "search_engine_outbox"
   c.postgres_outbox.queue_name = "search_engine"
   c.postgres_outbox.batch_size = 1000
+  c.postgres_outbox.batch_sizes = {
+    product_balances: 10_000,
+    calculated_products: 1_000,
+    products: 2_000
+  }
   c.postgres_outbox.drain_target_parallelism = 1
   c.postgres_outbox.drain_job_max_batches = 1
   c.postgres_outbox.drain_job_max_runtime_s = nil
@@ -240,6 +245,10 @@ SearchEngine.configure do |c|
   end
 end
 ```
+
+`batch_size` is the global fallback for all collections. Use `batch_sizes` when some collections are much
+lighter or heavier than others. Omitted drain limits use the per-collection values; explicit `limit:`
+arguments still override the map and use one global cap for that drain.
 
 Generate and edit the migrations:
 

@@ -49,11 +49,14 @@ class PostgresOutboxDrainerTest < Minitest::Test
 
   def setup
     @previous_processors = SearchEngine.config.postgres_outbox.collection_processors
+    @previous_batch_sizes = SearchEngine.config.postgres_outbox.batch_sizes
     SearchEngine.config.postgres_outbox.collection_processors = {}
+    SearchEngine.config.postgres_outbox.batch_sizes = {}
   end
 
   def teardown
     SearchEngine.config.postgres_outbox.collection_processors = @previous_processors
+    SearchEngine.config.postgres_outbox.batch_sizes = @previous_batch_sizes
   end
 
   def test_returns_empty_summary_without_events
@@ -89,6 +92,24 @@ class PostgresOutboxDrainerTest < Minitest::Test
       refute summary[:continue]
       assert_equal 2, summary[:processed]
       assert_equal 1, summary[:superseded]
+    end
+  end
+
+  def test_nonempty_collection_limited_legacy_batch_sets_continue
+    SearchEngine.config.postgres_outbox.batch_sizes = { products: 1 }
+    repository = FakeRepository.new([event(id: 1, collection: 'products')])
+    processor = RecordingProcessor.new
+    drainer = SearchEngine::PostgresOutbox::Drainer.new(
+      repository: repository,
+      processor: processor,
+      worker_id: 'w1'
+    )
+
+    SearchEngine::DependencyPlanner.stub(:order_events, ->(input) { input }) do
+      summary = drainer.drain_once(limit: nil)
+
+      assert_equal true, summary[:continue]
+      assert_equal [1], repository.processed_ids
     end
   end
 

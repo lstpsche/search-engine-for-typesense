@@ -32,7 +32,15 @@ class ImportResponseParserTest < Minitest::Test
     assert_equal %w[m1 m2], samples
   end
 
-  def test_parse_unknown_shape_returns_zeroes
-    assert_equal [0, 0, []], SearchEngine::Indexer::ImportResponseParser.parse({ ok: true })
+  def test_parse_nil_response_returns_zeroes
+    assert_equal [0, 0, []], SearchEngine::Indexer::ImportResponseParser.parse(nil)
+  end
+
+  def test_parse_unknown_shape_raises
+    error = assert_raises(SearchEngine::Errors::InvalidParams) do
+      SearchEngine::Indexer::ImportResponseParser.parse({ ok: true })
+    end
+
+    assert_equal 'Unsupported Typesense import response shape: Hash', error.message
   end
 end

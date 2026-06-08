@@ -24,7 +24,7 @@ module SearchEngine
         rows = []
 
         connection.transaction do
-          rows = select_rows(claim_select_sql(limit.to_i))
+          rows = select_rows(claim_select_sql(limit))
           ids = rows.map { |row| row_value(row, :id) }
           execute(supersede_older_pending_sql(rows)) unless rows.empty?
           execute(claim_update_sql(ids, worker_id)) unless ids.empty?
@@ -111,13 +111,13 @@ module SearchEngine
 
       # Create missing delivery rows for all configured delivery targets.
       # @return [void]
-      def materialize_deliveries!(limit: SearchEngine.config.postgres_outbox.batch_size)
+      def materialize_deliveries!(limit: nil)
         targets = materialization_delivery_targets
         return if targets.empty?
 
         rows = []
         connection.transaction do
-          rows = select_rows(delivery_materialization_select_sql(limit.to_i, targets))
+          rows = select_rows(delivery_materialization_select_sql(limit, targets))
           next if rows.empty?
 
           execute(materialization_supersede_older_deliveries_sql(rows, targets))
@@ -267,6 +267,9 @@ module SearchEngine
       end
 
       def delivery_materialization_select_sql(limit, targets)
+        return collection_limited_materialization_select_sql(targets) if collection_limited_batch?(limit)
+
+        limit = global_limit_for(limit)
         <<~SQL
           WITH target(target_key, queue_name) AS (
             VALUES #{delivery_target_values_sql(targets)}
@@ -346,7 +349,7 @@ module SearchEngine
         rows = []
 
         connection.transaction do
-          rows = select_rows(delivery_claim_select_sql(limit.to_i))
+          rows = select_rows(delivery_claim_select_sql(limit))
           delivery_ids = rows.map { |row| row_value(row, :delivery_id) }
           execute(delivery_supersede_older_pending_sql(rows)) unless rows.empty?
           execute(delivery_claim_update_sql(delivery_ids, worker_id)) unless delivery_ids.empty?
@@ -369,6 +372,9 @@ module SearchEngine
       end
 
       def claim_select_sql(limit)
+        return collection_limited_claim_select_sql if collection_limited_batch?(limit)
+
+        limit = global_limit_for(limit)
         <<~SQL
           WITH ranked_pending AS (
             SELECT id,
@@ -410,6 +416,9 @@ module SearchEngine
       end
 
       def delivery_claim_select_sql(limit)
+        return collection_limited_delivery_claim_select_sql if collection_limited_batch?(limit)
+
+        limit = global_limit_for(limit)
         <<~SQL
           WITH ranked_pending AS (
             SELECT deliveries.id AS delivery_id,
@@ -862,6 +871,200 @@ module SearchEngine
         backoff = SearchEngine.config.postgres_outbox.retry_backoff
         delay = backoff.respond_to?(:call) ? backoff.call(attempt) : backoff
         [delay.to_i, 0].max
+      end
+
+      def collection_limited_claim_select_sql
+        <<~SQL
+          WITH #{collection_limits_cte_sql},
+          ranked_pending AS (
+            SELECT id,
+                   ROW_NUMBER() OVER (
+                     PARTITION BY collection, document_id
+                     ORDER BY id DESC
+                   ) AS row_number
+            FROM #{quoted_table}
+            WHERE status = 'pending'
+          ),
+          latest_due AS (
+            SELECT outbox.id,
+                   outbox.collection
+            FROM #{quoted_table} outbox
+            INNER JOIN ranked_pending
+              ON ranked_pending.id = outbox.id
+            WHERE ranked_pending.row_number = 1
+              AND (outbox.next_attempt_at IS NULL OR outbox.next_attempt_at <= CURRENT_TIMESTAMP)
+            ORDER BY outbox.id ASC
+            LIMIT #{collection_limited_candidate_limit}
+          ),
+          ranked_by_collection AS (
+            SELECT latest_due.id,
+                   ROW_NUMBER() OVER (
+                     PARTITION BY latest_due.collection
+                     ORDER BY latest_due.id ASC
+                   ) AS collection_row_number,
+                   COALESCE(collection_limits.batch_size, #{global_limit_for(nil)}) AS collection_batch_size
+            FROM latest_due
+            LEFT JOIN collection_limits
+              ON collection_limits.collection = latest_due.collection
+          ),
+          selected_due AS (
+            SELECT id
+            FROM ranked_by_collection
+            WHERE collection_row_number <= collection_batch_size
+          )
+          SELECT outbox.*
+          FROM #{quoted_table} outbox
+          INNER JOIN selected_due
+            ON selected_due.id = outbox.id
+          ORDER BY outbox.id ASC
+          FOR UPDATE SKIP LOCKED
+        SQL
+      end
+
+      def collection_limited_materialization_select_sql(targets)
+        <<~SQL
+          WITH target(target_key, queue_name) AS (
+            VALUES #{delivery_target_values_sql(targets)}
+          ),
+          #{collection_limits_cte_sql},
+          candidate_events AS MATERIALIZED (
+            SELECT outbox.id,
+                   outbox.collection,
+                   outbox.document_id
+            FROM #{quoted_table} outbox
+            WHERE outbox.status IN ('pending', 'processing', 'failed')
+              AND (outbox.next_attempt_at IS NULL OR outbox.next_attempt_at <= CURRENT_TIMESTAMP)
+              AND EXISTS (
+                SELECT 1
+                FROM target
+                WHERE NOT EXISTS (
+                  SELECT 1
+                  FROM #{quoted_delivery_table} deliveries
+                  WHERE deliveries.event_id = outbox.id
+                    AND deliveries.target_key = target.target_key
+                )
+            )
+            ORDER BY outbox.id ASC
+            LIMIT #{collection_limited_candidate_limit}
+            FOR UPDATE SKIP LOCKED
+          ),
+          latest_candidate_ids AS (
+            SELECT id,
+                   collection
+            FROM (
+              SELECT id,
+                     collection,
+                     ROW_NUMBER() OVER (
+                       PARTITION BY collection, document_id
+                       ORDER BY id DESC
+                     ) AS row_number
+              FROM candidate_events
+            ) ranked_candidate_events
+            WHERE row_number = 1
+          ),
+          ranked_by_collection AS (
+            SELECT latest_candidate_ids.id,
+                   ROW_NUMBER() OVER (
+                     PARTITION BY latest_candidate_ids.collection
+                     ORDER BY latest_candidate_ids.id ASC
+                   ) AS collection_row_number,
+                   COALESCE(collection_limits.batch_size, #{global_limit_for(nil)}) AS collection_batch_size
+            FROM latest_candidate_ids
+            LEFT JOIN collection_limits
+              ON collection_limits.collection = latest_candidate_ids.collection
+          ),
+          selected_candidate_ids AS (
+            SELECT id
+            FROM ranked_by_collection
+            WHERE collection_row_number <= collection_batch_size
+          )
+          SELECT outbox.*
+          FROM #{quoted_table} outbox
+          INNER JOIN selected_candidate_ids
+            ON selected_candidate_ids.id = outbox.id
+          ORDER BY outbox.id ASC
+        SQL
+      end
+
+      def collection_limited_delivery_claim_select_sql
+        <<~SQL
+          WITH #{collection_limits_cte_sql},
+          ranked_pending AS (
+            SELECT deliveries.id AS delivery_id,
+                   events.id AS event_id,
+                   events.collection,
+                   ROW_NUMBER() OVER (
+                     PARTITION BY deliveries.target_key, events.collection, events.document_id
+                     ORDER BY events.id DESC, deliveries.id DESC
+                   ) AS row_number
+            FROM #{quoted_delivery_table} deliveries
+            INNER JOIN #{quoted_table} events
+              ON events.id = deliveries.event_id
+            WHERE deliveries.target_key = #{quote(target_key)}
+              AND deliveries.status = 'pending'
+          ),
+          latest_due AS (
+            SELECT deliveries.id,
+                   ranked_pending.collection
+            FROM #{quoted_delivery_table} deliveries
+            INNER JOIN ranked_pending
+              ON ranked_pending.delivery_id = deliveries.id
+            WHERE ranked_pending.row_number = 1
+              AND (deliveries.next_attempt_at IS NULL OR deliveries.next_attempt_at <= CURRENT_TIMESTAMP)
+            ORDER BY deliveries.id ASC
+            LIMIT #{collection_limited_candidate_limit}
+          ),
+          ranked_by_collection AS (
+            SELECT latest_due.id,
+                   ROW_NUMBER() OVER (
+                     PARTITION BY latest_due.collection
+                     ORDER BY latest_due.id ASC
+                   ) AS collection_row_number,
+                   COALESCE(collection_limits.batch_size, #{global_limit_for(nil)}) AS collection_batch_size
+            FROM latest_due
+            LEFT JOIN collection_limits
+              ON collection_limits.collection = latest_due.collection
+          ),
+          selected_due AS (
+            SELECT id
+            FROM ranked_by_collection
+            WHERE collection_row_number <= collection_batch_size
+          )
+          SELECT events.*,
+                 deliveries.id AS delivery_id,
+                 deliveries.target_key,
+                 deliveries.attempts AS delivery_attempts
+          FROM #{quoted_delivery_table} deliveries
+          INNER JOIN #{quoted_table} events
+            ON events.id = deliveries.event_id
+          INNER JOIN selected_due
+            ON selected_due.id = deliveries.id
+          ORDER BY deliveries.id ASC
+          FOR UPDATE SKIP LOCKED
+        SQL
+      end
+
+      def collection_limited_batch?(limit)
+        limit.nil? && SearchEngine.config.postgres_outbox.collection_batch_sizes?
+      end
+
+      def global_limit_for(limit)
+        (limit || SearchEngine.config.postgres_outbox.batch_size).to_i
+      end
+
+      def collection_limited_candidate_limit
+        batch_size_sum = SearchEngine.config.postgres_outbox.normalized_batch_sizes.values.sum
+        [global_limit_for(nil), 1].max + batch_size_sum
+      end
+
+      def collection_limits_cte_sql
+        "collection_limits(collection, batch_size) AS (VALUES #{collection_batch_size_values_sql})"
+      end
+
+      def collection_batch_size_values_sql
+        SearchEngine.config.postgres_outbox.normalized_batch_sizes.sort.map do |collection, size|
+          "(#{quote(collection)}, #{size})"
+        end.join(', ')
       end
 
       def truncate_error(error)

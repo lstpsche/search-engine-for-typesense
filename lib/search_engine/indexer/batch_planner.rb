@@ -28,7 +28,7 @@ module SearchEngine
         docs.each_with_index do |raw, idx|
           doc = ensure_hash_document(raw)
           ensure_id!(doc)
-          doc[:doc_updated_at] = now_i if doc.is_a?(Hash)
+          assign_doc_updated_at!(doc, now_i)
           buffer << JSON.generate(doc)
           buffer << "\n" if idx < (size - 1)
           count += 1
@@ -64,6 +64,15 @@ module SearchEngine
         def ensure_id!(doc)
           has_id = doc.key?(:id) || doc.key?('id')
           raise SearchEngine::Errors::InvalidParams, 'document is missing required id' unless has_id
+        end
+
+        def assign_doc_updated_at!(doc, timestamp)
+          if doc.key?('doc_updated_at')
+            doc.delete(:doc_updated_at)
+            doc['doc_updated_at'] = timestamp
+          else
+            doc[:doc_updated_at] = timestamp
+          end
         end
       end
     end

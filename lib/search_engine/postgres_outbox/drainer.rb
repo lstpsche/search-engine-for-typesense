@@ -22,7 +22,7 @@ module SearchEngine
       # Claim, coalesce, order, process, and mark one batch.
       # @param limit [Integer]
       # @return [Hash]
-      def drain_once(limit: SearchEngine.config.postgres_outbox.batch_size)
+      def drain_once(limit: nil)
         SearchEngine::Instrumentation.instrument(
           'search_engine.postgres_outbox.drain',
           drain_payload(limit)
@@ -31,7 +31,7 @@ module SearchEngine
           summary = empty_summary(events)
           next summary if events.empty?
 
-          summary[:continue] = true if continue_after_nonempty_target_batch?
+          summary[:continue] = true if continue_after_nonempty_batch?
 
           kept, superseded_ids = coalesce(events)
           repository.mark_superseded!(superseded_ids)
@@ -61,8 +61,8 @@ module SearchEngine
         summary
       end
 
-      def continue_after_nonempty_target_batch?
-        !target_key.nil?
+      def continue_after_nonempty_batch?
+        !target_key.nil? || SearchEngine.config.postgres_outbox.collection_batch_sizes?
       end
 
       def coalesce(events)

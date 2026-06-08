@@ -24,8 +24,10 @@ module SearchEngine
       def parse(raw)
         return parse_from_string(raw) if raw.is_a?(String)
         return parse_from_array(raw) if raw.is_a?(Array)
+        return [0, 0, []] if raw.nil?
 
-        [0, 0, []]
+        raise SearchEngine::Errors::InvalidParams,
+              "Unsupported Typesense import response shape: #{raw.class.name}"
       end
 
       def parse_from_string(str)

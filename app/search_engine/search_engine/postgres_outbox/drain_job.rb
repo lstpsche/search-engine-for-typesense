@@ -22,7 +22,7 @@ module SearchEngine
           return perform_with_drain_slot(limit: limit, target_key: target_key, drain_slot: drain_slot)
         end
 
-        effective_limit = limit || SearchEngine.config.postgres_outbox.batch_size
+        effective_limit = drain_limit(limit)
         drainer = drainer_for(target_key)
         summary = drainer.drain_once(limit: effective_limit)
         enqueue_continuation(limit: limit, target_key: target_key) if continue_draining?(summary, effective_limit)
@@ -40,7 +40,7 @@ module SearchEngine
       def perform_with_drain_slot(limit:, target_key:, drain_slot:)
         target = delivery_target_for!(target_key)
         slot = drain_slot.to_i
-        effective_limit = limit || SearchEngine.config.postgres_outbox.batch_size
+        effective_limit = drain_limit(limit)
         repository = repository_for_slot
         slot_requeued = false
         return stale_slot_summary(target.key, slot) unless repository.start_drain_slot!(
@@ -100,7 +100,7 @@ module SearchEngine
       end
 
       def continue_draining?(summary, effective_limit)
-        summary[:continue] || summary[:claimed].to_i >= effective_limit.to_i
+        summary[:continue] || (!effective_limit.nil? && summary[:claimed].to_i >= effective_limit.to_i)
       end
 
       def drainer_for(target_key)
@@ -182,6 +182,13 @@ module SearchEngine
 
       def drain_job_max_batches
         [SearchEngine.config.postgres_outbox.drain_job_max_batches.to_i, 1].max
+      end
+
+      def drain_limit(limit)
+        return limit unless limit.nil?
+        return nil if SearchEngine.config.postgres_outbox.collection_batch_sizes?
+
+        SearchEngine.config.postgres_outbox.batch_size
       end
 
       def runtime_budget_exhausted?

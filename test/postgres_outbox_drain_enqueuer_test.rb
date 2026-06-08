@@ -5,13 +5,14 @@ require 'search_engine/postgres_outbox/drain_enqueuer'
 
 class PostgresOutboxDrainEnqueuerTest < Minitest::Test
   class FakeRepository
-    attr_reader :materialize_calls, :acquire_calls
+    attr_reader :materialize_calls, :acquire_calls, :released_requeued_slots
 
     def initialize(drain_slots_table_exists: false, acquired_slots: [])
       @drain_slots_table_exists = drain_slots_table_exists
       @acquired_slots = acquired_slots
       @materialize_calls = []
       @acquire_calls = []
+      @released_requeued_slots = []
     end
 
     def materialize_deliveries!(limit: nil)
@@ -26,6 +27,10 @@ class PostgresOutboxDrainEnqueuerTest < Minitest::Test
       @acquire_calls << targets
       @acquired_slots
     end
+
+    def release_requeued_drain_slot!(target_key:, slot:, error: nil)
+      released_requeued_slots << { target_key: target_key, slot: slot, error: error }
+    end
   end
 
   class FakeDrainJob
@@ -33,10 +38,19 @@ class PostgresOutboxDrainEnqueuerTest < Minitest::Test
 
     def initialize
       @calls = []
+      @error = nil
     end
 
     def perform_later(**kwargs)
       calls << { queue: nil, kwargs: kwargs }
+    end
+
+    def raise_on_enqueue!(error)
+      @error = error
+    end
+
+    def enqueue_error
+      @error
     end
 
     def set(queue:)
@@ -51,6 +65,8 @@ class PostgresOutboxDrainEnqueuerTest < Minitest::Test
     end
 
     def perform_later(**kwargs)
+      raise @job.enqueue_error if @job.enqueue_error
+
       @job.calls << { queue: @queue, kwargs: kwargs }
     end
   end
@@ -161,6 +177,34 @@ class PostgresOutboxDrainEnqueuerTest < Minitest::Test
       ],
       drain_job.calls
     )
+  end
+
+  def test_targets_release_acquired_drain_slot_when_enqueue_fails
+    repository = FakeRepository.new(
+      drain_slots_table_exists: true,
+      acquired_slots: [
+        { target_key: 'target_1', slot: 1, queue_name: 'queue_1' }
+      ]
+    )
+    error = RuntimeError.new('queue down')
+    drain_job = FakeDrainJob.new
+    drain_job.raise_on_enqueue!(error)
+    targets = [{ key: :target_1, queue_name: :queue_1, parallelism: 1 }]
+
+    enqueuer = SearchEngine::PostgresOutbox::DrainEnqueuer.new(
+      repository: repository,
+      drain_job: drain_job,
+      targets_resolver: -> { targets }
+    )
+
+    raised = assert_raises(RuntimeError) { enqueuer.enqueue_all(limit: 10) }
+
+    assert_same error, raised
+    assert_equal(
+      [{ target_key: 'target_1', slot: 1, error: error }],
+      repository.released_requeued_slots
+    )
+    assert_empty drain_job.calls
   end
 
   def test_targets_skip_enqueue_when_all_drain_slots_are_occupied

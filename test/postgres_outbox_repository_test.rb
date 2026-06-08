@@ -45,31 +45,12 @@ class PostgresOutboxRepositoryTest < Minitest::Test
   end
 
   def setup
-    @previous_table = SearchEngine.config.postgres_outbox.table_name
-    @previous_delivery_table = SearchEngine.config.postgres_outbox.delivery_table_name
-    @previous_drain_slot_table = SearchEngine.config.postgres_outbox.drain_slot_table_name
-    @previous_delivery_targets = SearchEngine.config.postgres_outbox.delivery_targets
-    @previous_attempts = SearchEngine.config.postgres_outbox.max_attempts
-    @previous_backoff = SearchEngine.config.postgres_outbox.retry_backoff
-    @previous_processing_timeout = SearchEngine.config.postgres_outbox.processing_timeout_s
-
-    SearchEngine.config.postgres_outbox.table_name = 'custom_outbox'
-    SearchEngine.config.postgres_outbox.delivery_table_name = 'custom_outbox_deliveries'
-    SearchEngine.config.postgres_outbox.drain_slot_table_name = 'custom_outbox_drain_slots'
-    SearchEngine.config.postgres_outbox.delivery_targets = -> { [] }
-    SearchEngine.config.postgres_outbox.max_attempts = 3
-    SearchEngine.config.postgres_outbox.retry_backoff = ->(_attempt) { 12 }
-    SearchEngine.config.postgres_outbox.processing_timeout_s = 30
+    store_previous_outbox_config
+    configure_test_outbox
   end
 
   def teardown
-    SearchEngine.config.postgres_outbox.table_name = @previous_table
-    SearchEngine.config.postgres_outbox.delivery_table_name = @previous_delivery_table
-    SearchEngine.config.postgres_outbox.drain_slot_table_name = @previous_drain_slot_table
-    SearchEngine.config.postgres_outbox.delivery_targets = @previous_delivery_targets
-    SearchEngine.config.postgres_outbox.max_attempts = @previous_attempts
-    SearchEngine.config.postgres_outbox.retry_backoff = @previous_backoff
-    SearchEngine.config.postgres_outbox.processing_timeout_s = @previous_processing_timeout
+    restore_previous_outbox_config
   end
 
   def test_claim_pending_locks_pending_rows_with_skip_locked
@@ -80,6 +61,18 @@ class PostgresOutboxRepositoryTest < Minitest::Test
 
     assert_equal [1, 2], events.map(&:id)
     assert_claim_select_sql(connection.selected_sql.first)
+    assert_claim_update_sql(connection.executed_sql)
+  end
+
+  def test_claim_pending_uses_collection_batch_limits_when_limit_is_omitted
+    SearchEngine.config.postgres_outbox.batch_sizes = { products: 2, brands: 1 }
+    connection = FakeConnection.new(rows: [event_row(id: 1), event_row(id: 2)])
+    repository = SearchEngine::PostgresOutbox::Repository.new(connection: connection)
+
+    events = repository.claim_pending(limit: nil, worker_id: 'worker-1')
+
+    assert_equal [1, 2], events.map(&:id)
+    assert_collection_limited_claim_sql(connection.selected_sql.first)
     assert_claim_update_sql(connection.executed_sql)
   end
 
@@ -163,6 +156,22 @@ class PostgresOutboxRepositoryTest < Minitest::Test
     assert_materialization_insert_sql(connection.executed_sql[2])
   end
 
+  def test_materialize_deliveries_uses_collection_batch_limits_when_limit_is_omitted
+    SearchEngine.config.postgres_outbox.batch_sizes = { products: 2, brands: 1 }
+    SearchEngine.config.postgres_outbox.delivery_targets = lambda do
+      [{ key: :target_1, queue_name: :queue_1 }]
+    end
+    connection = FakeConnection.new(rows: [event_row(id: 11)])
+    repository = SearchEngine::PostgresOutbox::Repository.new(connection: connection)
+
+    repository.materialize_deliveries!
+
+    assert_collection_limited_materialization_sql(connection.selected_sql.first)
+    assert_materialization_delivery_supersede_sql(connection.executed_sql[0])
+    assert_supersede_sql(connection.executed_sql[1])
+    assert_materialization_insert_sql(connection.executed_sql[2])
+  end
+
   def test_materialize_deliveries_scopes_targets_when_repository_has_target_key
     SearchEngine.config.postgres_outbox.delivery_targets = lambda do
       [
@@ -203,6 +212,20 @@ class PostgresOutboxRepositoryTest < Minitest::Test
     assert_equal ['target_1'], events.map(&:target_key)
     assert_equal 1, connection.selected_sql.size
     assert_delivery_claim_select_sql(connection.selected_sql.first)
+    assert_delivery_claim_update_sql(connection.executed_sql)
+  end
+
+  def test_delivery_claim_uses_collection_batch_limits_when_limit_is_omitted
+    SearchEngine.config.postgres_outbox.batch_sizes = { products: 2, brands: 1 }
+    SearchEngine.config.postgres_outbox.delivery_targets = -> { [{ key: 'target_1', queue_name: 'queue_1' }] }
+    rows = [event_row(id: 11).merge('delivery_id' => 101, 'target_key' => 'target_1')]
+    connection = FakeConnection.new(rows: rows)
+    repository = SearchEngine::PostgresOutbox::Repository.new(connection: connection, target_key: 'target_1')
+
+    events = repository.claim_pending(limit: nil, worker_id: 'worker-1')
+
+    assert_equal [11], events.map(&:id)
+    assert_collection_limited_delivery_claim_sql(connection.selected_sql.first)
     assert_delivery_claim_update_sql(connection.executed_sql)
   end
 
@@ -413,6 +436,39 @@ class PostgresOutboxRepositoryTest < Minitest::Test
 
   private
 
+  def store_previous_outbox_config
+    cfg = SearchEngine.config.postgres_outbox
+    @previous_outbox_config = {
+      table_name: cfg.table_name,
+      delivery_table_name: cfg.delivery_table_name,
+      drain_slot_table_name: cfg.drain_slot_table_name,
+      delivery_targets: cfg.delivery_targets,
+      batch_sizes: cfg.batch_sizes,
+      max_attempts: cfg.max_attempts,
+      retry_backoff: cfg.retry_backoff,
+      processing_timeout_s: cfg.processing_timeout_s
+    }
+  end
+
+  def configure_test_outbox
+    cfg = SearchEngine.config.postgres_outbox
+    cfg.table_name = 'custom_outbox'
+    cfg.delivery_table_name = 'custom_outbox_deliveries'
+    cfg.drain_slot_table_name = 'custom_outbox_drain_slots'
+    cfg.delivery_targets = -> { [] }
+    cfg.batch_sizes = {}
+    cfg.max_attempts = 3
+    cfg.retry_backoff = ->(_attempt) { 12 }
+    cfg.processing_timeout_s = 30
+  end
+
+  def restore_previous_outbox_config
+    cfg = SearchEngine.config.postgres_outbox
+    @previous_outbox_config.each do |key, value|
+      cfg.public_send("#{key}=", value)
+    end
+  end
+
   def assert_claim_select_sql(sql)
     assert_includes sql, 'FOR UPDATE SKIP LOCKED'
     assert_includes sql, "WHERE status = 'pending'"
@@ -421,6 +477,18 @@ class PostgresOutboxRepositoryTest < Minitest::Test
     assert_includes sql, 'ranked_pending.row_number = 1'
     assert_includes sql, 'outbox.next_attempt_at <= CURRENT_TIMESTAMP'
     assert_includes sql, 'LIMIT 25'
+  end
+
+  def assert_collection_limited_claim_sql(sql)
+    assert_includes sql, 'collection_limits(collection, batch_size) AS'
+    assert_includes sql, "('brands', 1)"
+    assert_includes sql, "('products', 2)"
+    assert_includes sql, 'PARTITION BY latest_due.collection'
+    assert_includes sql, 'collection_row_number <= collection_batch_size'
+    assert_includes sql, 'COALESCE(collection_limits.batch_size, 1000)'
+    assert_includes sql, 'LIMIT 1003'
+    assert_includes sql, 'FOR UPDATE SKIP LOCKED'
+    refute_includes sql, 'LIMIT 25'
   end
 
   def assert_claim_update_sql(executed_sql)
@@ -454,6 +522,19 @@ class PostgresOutboxRepositoryTest < Minitest::Test
     assert_includes sql, 'deliveries.target_key'
   end
 
+  def assert_collection_limited_delivery_claim_sql(sql)
+    assert_includes sql, 'collection_limits(collection, batch_size) AS'
+    assert_includes sql, "('brands', 1)"
+    assert_includes sql, "('products', 2)"
+    assert_includes sql, 'PARTITION BY latest_due.collection'
+    assert_includes sql, 'collection_row_number <= collection_batch_size'
+    assert_includes sql, 'COALESCE(collection_limits.batch_size, 1000)'
+    assert_includes sql, 'deliveries.id AS delivery_id'
+    assert_includes sql, 'LIMIT 1003'
+    assert_includes sql, 'FOR UPDATE SKIP LOCKED'
+    refute_includes sql, 'LIMIT 25'
+  end
+
   def assert_delivery_claim_update_sql(executed_sql)
     assert_includes executed_sql[0], 'UPDATE "custom_outbox_deliveries"'
     assert_includes executed_sql[0], "target_key = 'target_1'"
@@ -479,6 +560,21 @@ class PostgresOutboxRepositoryTest < Minitest::Test
     assert_includes sql, 'FROM "custom_outbox" outbox'
     assert_includes sql, 'INNER JOIN latest_candidate_ids'
     refute_includes sql, 'SELECT DISTINCT ON (collection, document_id) *'
+  end
+
+  def assert_collection_limited_materialization_sql(sql)
+    assert_includes sql, 'WITH target(target_key, queue_name) AS ('
+    assert_includes sql, 'collection_limits(collection, batch_size) AS'
+    assert_includes sql, "('brands', 1)"
+    assert_includes sql, "('products', 2)"
+    assert_includes sql, 'candidate_events AS MATERIALIZED'
+    assert_includes sql, 'latest_candidate_ids'
+    assert_includes sql, 'PARTITION BY latest_candidate_ids.collection'
+    assert_includes sql, 'collection_row_number <= collection_batch_size'
+    assert_includes sql, 'COALESCE(collection_limits.batch_size, 1000)'
+    assert_includes sql, 'LIMIT 1003'
+    assert_includes sql, 'FOR UPDATE SKIP LOCKED'
+    refute_includes sql, 'LIMIT 25'
   end
 
   def assert_materialization_insert_sql(sql)

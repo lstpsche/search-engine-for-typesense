@@ -27,4 +27,41 @@ class BatchPlannerTest < Minitest::Test
       SearchEngine::Indexer::BatchPlanner.encode_jsonl!(docs, buffer)
     end
   end
+
+  def test_encode_jsonl_updates_existing_string_doc_updated_at_without_duplicate_key
+    docs = [{ 'id' => '1', 'doc_updated_at' => 123, 'name' => 'a' }]
+    buffer = +''
+
+    SearchEngine::Indexer::BatchPlanner.encode_jsonl!(docs, buffer)
+
+    line = buffer.lines.first
+    parsed = JSON.parse(line)
+    assert_equal 1, line.scan('"doc_updated_at"').size
+    assert_operator parsed.fetch('doc_updated_at'), :>, 123
+  end
+
+  def test_encode_jsonl_updates_existing_symbol_doc_updated_at_without_duplicate_key
+    docs = [{ id: '1', doc_updated_at: 123, name: 'a' }]
+    buffer = +''
+
+    SearchEngine::Indexer::BatchPlanner.encode_jsonl!(docs, buffer)
+
+    line = buffer.lines.first
+    parsed = JSON.parse(line)
+    assert_equal 1, line.scan('"doc_updated_at"').size
+    assert_operator parsed.fetch('doc_updated_at'), :>, 123
+  end
+
+  def test_encode_jsonl_prefers_existing_string_doc_updated_at_key_when_both_forms_are_present
+    docs = [{ 'id' => '1', 'doc_updated_at' => 123, doc_updated_at: 456 }]
+    buffer = +''
+
+    SearchEngine::Indexer::BatchPlanner.encode_jsonl!(docs, buffer)
+
+    line = buffer.lines.first
+    parsed = JSON.parse(line)
+    assert_equal 1, line.scan('"doc_updated_at"').size
+    assert_operator parsed.fetch('doc_updated_at'), :>, 456
+    refute docs.first.key?(:doc_updated_at)
+  end
 end

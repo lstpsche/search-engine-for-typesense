@@ -67,4 +67,25 @@ class ImportDispatcherTest < Minitest::Test
     assert_equal 1, stats[:failure_count]
     assert_equal 2, stats[:attempts]
   end
+
+  def test_unknown_import_response_shape_raises
+    client = FakeClient.new(calls: [], responses: [{ ok: true }])
+    policy = SearchEngine::Indexer::RetryPolicy.from_config(attempts: 1, base: 0.0, max: 0.0, jitter_fraction: 0.0)
+
+    error = assert_raises(SearchEngine::Errors::InvalidParams) do
+      SearchEngine::Indexer::ImportDispatcher.import_batch(
+        client: client,
+        collection: 'products',
+        action: :upsert,
+        jsonl: "{\"id\":1}\n",
+        docs_count: 1,
+        bytes_sent: 10,
+        batch_index: 0,
+        retry_policy: policy,
+        dry_run: false
+      )
+    end
+
+    assert_equal 'Unsupported Typesense import response shape: Hash', error.message
+  end
 end

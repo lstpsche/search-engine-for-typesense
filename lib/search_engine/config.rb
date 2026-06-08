@@ -280,6 +280,8 @@ module SearchEngine
       attr_accessor :queue_name
       # @return [Integer] maximum events to claim per processing batch
       attr_accessor :batch_size
+      # @return [Hash] optional per-collection processing batch sizes
+      attr_accessor :batch_sizes
       # @return [Integer] maximum processing attempts before leaving an event failed
       attr_accessor :max_attempts
       # @return [Integer] polling interval in seconds
@@ -317,6 +319,7 @@ module SearchEngine
         @channel = 'search_engine_outbox'
         @queue_name = 'search_engine'
         @batch_size = 1000
+        @batch_sizes = {}
         @max_attempts = 10
         @poll_interval_s = 5
         @listener_wait_timeout_s = 30
@@ -331,6 +334,34 @@ module SearchEngine
         @drain_target_parallelism = 1
         @drain_job_max_batches = 1
         @drain_job_max_runtime_s = nil
+      end
+
+      # Resolve the processing batch size for a collection.
+      #
+      # @param collection [String, Symbol, nil] collection name
+      # @return [Integer] positive per-collection batch size or global fallback
+      def batch_size_for(collection)
+        configured = normalized_batch_sizes[collection.to_s]
+        return configured if configured&.positive?
+
+        batch_size.to_i
+      end
+
+      # Whether any positive per-collection batch sizes are configured.
+      #
+      # @return [Boolean]
+      def collection_batch_sizes?
+        normalized_batch_sizes.any?
+      end
+
+      # Normalized positive per-collection batch sizes keyed by collection name.
+      #
+      # @return [Hash<String, Integer>]
+      def normalized_batch_sizes
+        Hash(batch_sizes).each_with_object({}) do |(key, value), result|
+          size = value.to_i
+          result[key.to_s] = size if size.positive?
+        end
       end
     end
 
@@ -886,6 +917,7 @@ module SearchEngine
         channel: postgres_outbox.channel,
         queue_name: postgres_outbox.queue_name,
         batch_size: postgres_outbox.batch_size,
+        batch_sizes: postgres_outbox.batch_sizes,
         max_attempts: postgres_outbox.max_attempts,
         poll_interval_s: postgres_outbox.poll_interval_s,
         listener_wait_timeout_s: postgres_outbox.listener_wait_timeout_s,

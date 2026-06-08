@@ -69,6 +69,13 @@ module SearchEngine
         kwargs = { target_key: slot.fetch(:target_key), drain_slot: slot.fetch(:slot) }
         kwargs[:limit] = limit unless limit.nil?
         job.perform_later(**kwargs)
+      rescue StandardError => error
+        repository.release_requeued_drain_slot!(
+          target_key: slot.fetch(:target_key),
+          slot: slot.fetch(:slot),
+          error: error
+        )
+        raise
       end
 
       def delivery_targets
