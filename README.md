@@ -405,6 +405,11 @@ inspected before deletion because they contain the last error and retry state. A
 only rows with `status IN ('processed', 'superseded')` and `processed_at` older than
 `c.postgres_outbox.retention_s`.
 
+In delivery-target mode, cleanup can first call
+`SearchEngine::PostgresOutbox::Repository#refresh_terminal_delivery_event_statuses!`. This bounded helper
+repairs parent events whose delivery rows are all terminal but whose parent status is still non-terminal,
+then normal retention cleanup can delete the repaired parent rows and cascade their deliveries.
+
 ## Example app
 
 See `examples/demo_shop` — demonstrates single/multi search, JOINs, grouping, presets/curation, and DX/observability. Supports offline mode via the stub client (see [Testing](https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/testing)).

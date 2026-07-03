@@ -4,22 +4,31 @@ require 'test_helper'
 
 class PostgresOutboxRepositoryTest < Minitest::Test
   class FakeConnection
-    attr_reader :executed_sql, :selected_sql
+    attr_reader :executed_sql, :selected_sql, :transaction_events
 
-    def initialize(rows: [], row_sets: nil, data_source_exists: true)
+    def initialize(rows: [], row_sets: nil, data_source_exists: true, data_sources: nil)
       @rows = rows
       @row_sets = row_sets
       @data_source_exists = data_source_exists
+      @data_sources = data_sources
       @executed_sql = []
       @selected_sql = []
+      @transaction_events = []
+      @transaction_depth = 0
     end
 
     def transaction
+      transaction_events << [:begin]
+      @transaction_depth += 1
       yield
+    ensure
+      @transaction_depth -= 1
+      transaction_events << [:commit]
     end
 
     def select_all(sql)
       selected_sql << sql
+      transaction_events << [:select, sql] if @transaction_depth.positive?
       return @row_sets.shift if @row_sets
 
       @rows
@@ -27,6 +36,7 @@ class PostgresOutboxRepositoryTest < Minitest::Test
 
     def execute(sql)
       executed_sql << sql
+      transaction_events << [:execute, sql] if @transaction_depth.positive?
     end
 
     def quote(value)
@@ -40,7 +50,9 @@ class PostgresOutboxRepositoryTest < Minitest::Test
     end
 
     def data_source_exists?(value)
-      value.to_s == 'custom_outbox_drain_slots' && @data_source_exists
+      return @data_sources.include?(value.to_s) unless @data_sources.nil?
+
+      %w[custom_outbox_deliveries custom_outbox_drain_slots].include?(value.to_s) && @data_source_exists
     end
   end
 
@@ -264,6 +276,15 @@ class PostgresOutboxRepositoryTest < Minitest::Test
     assert_includes connection.executed_sql.first, 'UPDATE "custom_outbox_deliveries"'
   end
 
+  def test_delivery_claim_reset_stale_processing_refreshes_parent_statuses
+    connection = FakeConnection.new(rows: [])
+    repository = SearchEngine::PostgresOutbox::Repository.new(connection: connection, target_key: 'target_1')
+
+    repository.claim_pending(limit: 25, worker_id: 'worker-1')
+
+    assert_stale_delivery_reset_refresh_sql(connection.executed_sql.first)
+  end
+
   def test_delivery_mark_processed_updates_target_delivery_and_refreshes_parent
     connection = FakeConnection.new
     repository = SearchEngine::PostgresOutbox::Repository.new(connection: connection, target_key: 'target_1')
@@ -275,6 +296,7 @@ class PostgresOutboxRepositoryTest < Minitest::Test
     assert_includes connection.executed_sql[0], "WHERE target_key = 'target_1'"
     assert_includes connection.executed_sql[0], "event_id IN ('11')"
     assert_parent_refresh_sql(connection.executed_sql[1])
+    assert_delivery_status_refresh_transaction(connection)
   end
 
   def test_delivery_mark_retryable_updates_target_delivery_and_refreshes_parent
@@ -289,6 +311,7 @@ class PostgresOutboxRepositoryTest < Minitest::Test
     assert_includes connection.executed_sql[0], "WHERE target_key = 'target_1'"
     assert_includes connection.executed_sql[0], "last_error = 'temporary'"
     assert_parent_refresh_sql(connection.executed_sql[1])
+    assert_delivery_status_refresh_transaction(connection)
   end
 
   def test_delivery_mark_failed_updates_target_delivery_and_refreshes_parent
@@ -302,6 +325,37 @@ class PostgresOutboxRepositoryTest < Minitest::Test
     assert_includes connection.executed_sql[0], "WHERE target_key = 'target_1'"
     assert_includes connection.executed_sql[0], "last_error = 'hard failure'"
     assert_parent_refresh_sql(connection.executed_sql[1])
+    assert_delivery_status_refresh_transaction(connection)
+  end
+
+  def test_refresh_terminal_delivery_event_statuses_noops_without_delivery_table
+    connection = FakeConnection.new(data_sources: ['custom_outbox_drain_slots'])
+    repository = SearchEngine::PostgresOutbox::Repository.new(connection: connection)
+
+    refreshed = repository.refresh_terminal_delivery_event_statuses!(retention_s: 3600)
+
+    assert_equal 0, refreshed
+    assert_empty connection.selected_sql
+    assert_empty connection.executed_sql
+  end
+
+  def test_refresh_terminal_delivery_event_statuses_refreshes_bounded_terminal_parents
+    connection = FakeConnection.new(rows: [{ 'id' => 11 }, { 'id' => 12 }])
+    repository = SearchEngine::PostgresOutbox::Repository.new(connection: connection)
+
+    refreshed = repository.refresh_terminal_delivery_event_statuses!(retention_s: 3600, limit: 50)
+
+    assert_equal 2, refreshed
+    assert_terminal_delivery_refresh_sql(connection.selected_sql.first, limit: 50, retention_s: 3600)
+  end
+
+  def test_refresh_terminal_delivery_event_statuses_uses_default_batch_limit
+    connection = FakeConnection.new(rows: [])
+    repository = SearchEngine::PostgresOutbox::Repository.new(connection: connection)
+
+    repository.refresh_terminal_delivery_event_statuses!(retention_s: 60)
+
+    assert_terminal_delivery_refresh_sql(connection.selected_sql.first, limit: 1000, retention_s: 60)
   end
 
   def test_drain_slots_table_exists_checks_configured_table
@@ -621,6 +675,45 @@ class PostgresOutboxRepositoryTest < Minitest::Test
     assert_parent_refresh_sql(sql)
   end
 
+  def assert_stale_delivery_reset_refresh_sql(sql)
+    assert_includes sql, 'WITH reset_deliveries AS ('
+    assert_includes sql, 'UPDATE "custom_outbox_deliveries"'
+    assert_includes sql, "status = 'pending'"
+    assert_includes sql, "target_key = 'target_1'"
+    assert_includes sql, "status = 'processing'"
+    assert_includes sql, "interval '30 seconds'"
+    assert_includes sql, 'RETURNING event_id'
+    assert_parent_refresh_sql(sql)
+  end
+
+  def assert_delivery_status_refresh_transaction(connection)
+    assert_equal(
+      %i[begin execute execute commit],
+      connection.transaction_events.map(&:first)
+    )
+    transaction_sql = connection.transaction_events.select { |event| event.first == :execute }.map(&:last)
+    assert_equal connection.executed_sql, transaction_sql
+  end
+
+  def assert_terminal_delivery_refresh_sql(sql, limit:, retention_s:)
+    assert_includes sql, 'WITH candidate_events AS MATERIALIZED'
+    assert_includes sql, 'FROM "custom_outbox" events'
+    assert_includes sql, "events.status NOT IN ('processed', 'superseded')"
+    assert_includes sql, 'EXISTS ('
+    assert_includes sql, 'NOT EXISTS ('
+    assert_includes sql, "deliveries.status IN ('pending', 'processing', 'failed')"
+    assert_includes sql, "LIMIT #{limit}"
+    assert_includes sql, 'FOR UPDATE SKIP LOCKED'
+    assert_includes sql, 'eligible_events AS ('
+    assert_includes sql, 'SELECT MAX(deliveries.processed_at)'
+    assert_includes sql, "deliveries.status IN ('processed', 'superseded')"
+    assert_includes sql, "interval '#{retention_s} seconds'"
+    assert_includes sql, 'event_id IN (SELECT id FROM eligible_events)'
+    assert_includes sql, 'updated_events AS ('
+    assert_includes sql, 'RETURNING events.id'
+    assert_parent_refresh_sql(sql)
+  end
+
   def assert_parent_refresh_sql(sql)
     assert_includes sql, 'UPDATE "custom_outbox" events'
     assert_includes sql, 'FROM "custom_outbox_deliveries"'
@@ -628,7 +721,12 @@ class PostgresOutboxRepositoryTest < Minitest::Test
     assert_includes sql, "WHEN COUNT(*) FILTER (WHERE status IN ('pending', 'processing')) > 0 THEN 'pending'"
     assert_includes sql, "WHEN COUNT(*) FILTER (WHERE status = 'superseded') = COUNT(*) THEN 'superseded'"
     assert_includes sql, "WHEN COUNT(*) FILTER (WHERE status = 'processed') > 0 THEN 'processed'"
-    assert_includes sql, "WHEN aggregate.status IN ('processed', 'superseded') THEN CURRENT_TIMESTAMP"
+    assert_includes(
+      sql,
+      "MAX(processed_at) FILTER (WHERE status IN ('processed', 'superseded')) AS terminal_processed_at"
+    )
+    assert_includes sql, 'THEN COALESCE(aggregate.terminal_processed_at, CURRENT_TIMESTAMP)'
+    refute_includes sql, "THEN CURRENT_TIMESTAMP\n                ELSE NULL"
   end
 
   def assert_drain_slot_insert_sql(sql)

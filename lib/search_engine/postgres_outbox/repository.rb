@@ -128,6 +128,24 @@ module SearchEngine
         rows
       end
 
+      # Refresh cleanup-eligible parent event statuses from terminal delivery rows.
+      #
+      # This repairs historical residue where every delivery row for an event is
+      # terminal but the parent event still has a non-terminal status. The
+      # candidate set is bounded before aggregate work to keep cleanup safe on
+      # large outbox tables.
+      #
+      # @param retention_s [Integer] retention window in seconds
+      # @param limit [Integer, nil] maximum parent events to refresh
+      # @return [Integer] refreshed parent event count
+      def refresh_terminal_delivery_event_statuses!(retention_s:, limit: nil)
+        return 0 unless delivery_table_exists?
+
+        rows = select_rows(terminal_delivery_event_status_refresh_sql(retention_s: retention_s, limit: limit))
+
+        rows.size
+      end
+
       # Check whether the optional drain slot table exists.
       #
       # @return [Boolean]
@@ -360,14 +378,27 @@ module SearchEngine
 
       def reset_stale_delivery_processing!
         execute(<<~SQL)
-          UPDATE #{quoted_delivery_table}
-          SET status = 'pending',
-              locked_at = NULL,
-              locked_by = NULL,
+          WITH reset_deliveries AS (
+            UPDATE #{quoted_delivery_table}
+            SET status = 'pending',
+                locked_at = NULL,
+                locked_by = NULL,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE target_key = #{quote(target_key)}
+              AND status = 'processing'
+              AND locked_at < (CURRENT_TIMESTAMP - interval '#{processing_timeout_s} seconds')
+            RETURNING event_id
+          ),
+          aggregate AS (
+            #{event_status_aggregate_sql('SELECT event_id FROM reset_deliveries')}
+          )
+          UPDATE #{quoted_table} events
+          SET status = aggregate.status,
+              processed_at = #{aggregate_processed_at_sql},
+              last_error = aggregate.last_error,
               updated_at = CURRENT_TIMESTAMP
-          WHERE target_key = #{quote(target_key)}
-            AND status = 'processing'
-            AND locked_at < (CURRENT_TIMESTAMP - interval '#{processing_timeout_s} seconds')
+          FROM aggregate
+          WHERE events.id = aggregate.event_id
         SQL
       end
 
@@ -504,10 +535,7 @@ module SearchEngine
           )
           UPDATE #{quoted_table} events
           SET status = aggregate.status,
-              processed_at = CASE
-                WHEN aggregate.status IN ('processed', 'superseded') THEN CURRENT_TIMESTAMP
-                ELSE NULL
-              END,
+              processed_at = #{aggregate_processed_at_sql},
               last_error = aggregate.last_error,
               updated_at = CURRENT_TIMESTAMP
           FROM aggregate
@@ -565,10 +593,7 @@ module SearchEngine
           )
           UPDATE #{quoted_table} events
           SET status = aggregate.status,
-              processed_at = CASE
-                WHEN aggregate.status IN ('processed', 'superseded') THEN CURRENT_TIMESTAMP
-                ELSE NULL
-              END,
+              processed_at = #{aggregate_processed_at_sql},
               last_error = aggregate.last_error,
               updated_at = CURRENT_TIMESTAMP
           FROM aggregate
@@ -595,47 +620,60 @@ module SearchEngine
         ids = Array(event_ids).compact
         return if ids.empty?
 
-        execute(<<~SQL)
-          UPDATE #{quoted_delivery_table}
-          SET status = #{quote(status)},
-              #{extra},
-              locked_at = NULL,
-              locked_by = NULL,
-              updated_at = CURRENT_TIMESTAMP
-          WHERE target_key = #{quote(target_key)}
-            AND event_id IN (#{ids_sql(ids)})
-        SQL
-        refresh_event_statuses!(ids)
+        with_delivery_status_refresh(ids) do
+          execute(<<~SQL)
+            UPDATE #{quoted_delivery_table}
+            SET status = #{quote(status)},
+                #{extra},
+                locked_at = NULL,
+                locked_by = NULL,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE target_key = #{quote(target_key)}
+              AND event_id IN (#{ids_sql(ids)})
+          SQL
+        end
       end
 
       def mark_delivery_retryable!(event_ids, error:)
-        execute(<<~SQL)
-          UPDATE #{quoted_delivery_table}
-          SET attempts = attempts + 1,
-              status = CASE WHEN attempts + 1 >= #{max_attempts} THEN 'failed' ELSE 'pending' END,
-              next_attempt_at = CURRENT_TIMESTAMP + #{retry_interval_case_sql},
-              locked_at = NULL,
-              locked_by = NULL,
-              last_error = #{quote(truncate_error(error))},
-              updated_at = CURRENT_TIMESTAMP
-          WHERE target_key = #{quote(target_key)}
-            AND event_id IN (#{ids_sql(event_ids)})
-        SQL
-        refresh_event_statuses!(event_ids)
+        with_delivery_status_refresh(event_ids) do
+          execute(<<~SQL)
+            UPDATE #{quoted_delivery_table}
+            SET attempts = attempts + 1,
+                status = CASE WHEN attempts + 1 >= #{max_attempts} THEN 'failed' ELSE 'pending' END,
+                next_attempt_at = CURRENT_TIMESTAMP + #{retry_interval_case_sql},
+                locked_at = NULL,
+                locked_by = NULL,
+                last_error = #{quote(truncate_error(error))},
+                updated_at = CURRENT_TIMESTAMP
+            WHERE target_key = #{quote(target_key)}
+              AND event_id IN (#{ids_sql(event_ids)})
+          SQL
+        end
       end
 
       def mark_delivery_failed!(event_ids, error:)
-        execute(<<~SQL)
-          UPDATE #{quoted_delivery_table}
-          SET status = 'failed',
-              locked_at = NULL,
-              locked_by = NULL,
-              last_error = #{quote(truncate_error(error))},
-              updated_at = CURRENT_TIMESTAMP
-          WHERE target_key = #{quote(target_key)}
-            AND event_id IN (#{ids_sql(event_ids)})
-        SQL
-        refresh_event_statuses!(event_ids)
+        with_delivery_status_refresh(event_ids) do
+          execute(<<~SQL)
+            UPDATE #{quoted_delivery_table}
+            SET status = 'failed',
+                locked_at = NULL,
+                locked_by = NULL,
+                last_error = #{quote(truncate_error(error))},
+                updated_at = CURRENT_TIMESTAMP
+            WHERE target_key = #{quote(target_key)}
+              AND event_id IN (#{ids_sql(event_ids)})
+          SQL
+        end
+      end
+
+      def with_delivery_status_refresh(event_ids)
+        ids = Array(event_ids).compact
+        return if ids.empty?
+
+        connection.transaction do
+          yield
+          refresh_event_statuses!(ids)
+        end
       end
 
       def refresh_event_statuses!(event_ids)
@@ -645,10 +683,7 @@ module SearchEngine
         execute(<<~SQL)
           UPDATE #{quoted_table} events
           SET status = aggregate.status,
-              processed_at = CASE
-                WHEN aggregate.status IN ('processed', 'superseded') THEN CURRENT_TIMESTAMP
-                ELSE NULL
-              END,
+              processed_at = #{aggregate_processed_at_sql},
               last_error = aggregate.last_error,
               updated_at = CURRENT_TIMESTAMP
           FROM (
@@ -668,11 +703,69 @@ module SearchEngine
                    WHEN COUNT(*) FILTER (WHERE status = 'processed') > 0 THEN 'processed'
                    ELSE 'pending'
                  END AS status,
+                 MAX(processed_at) FILTER (WHERE status IN ('processed', 'superseded')) AS terminal_processed_at,
                  (ARRAY_AGG(last_error ORDER BY updated_at DESC) FILTER (WHERE last_error IS NOT NULL))[1] AS last_error
           FROM #{quoted_delivery_table}
           WHERE event_id IN (#{event_ids_sql})
           GROUP BY event_id
         SQL
+      end
+
+      def terminal_delivery_event_status_refresh_sql(retention_s:, limit:)
+        retention_seconds = [retention_s.to_i, 0].max
+        batch_limit = global_limit_for(limit)
+
+        <<~SQL
+          WITH candidate_events AS MATERIALIZED (
+            SELECT events.id
+            FROM #{quoted_table} events
+            WHERE events.status NOT IN ('processed', 'superseded')
+              AND EXISTS (
+                SELECT 1
+                FROM #{quoted_delivery_table} deliveries
+                WHERE deliveries.event_id = events.id
+              )
+              AND NOT EXISTS (
+                SELECT 1
+                FROM #{quoted_delivery_table} deliveries
+                WHERE deliveries.event_id = events.id
+                  AND deliveries.status IN ('pending', 'processing', 'failed')
+              )
+            ORDER BY events.id ASC
+            LIMIT #{batch_limit}
+            FOR UPDATE SKIP LOCKED
+          ),
+          eligible_events AS (
+            SELECT candidate_events.id
+            FROM candidate_events
+            WHERE (
+              SELECT MAX(deliveries.processed_at)
+              FROM #{quoted_delivery_table} deliveries
+              WHERE deliveries.event_id = candidate_events.id
+                AND deliveries.status IN ('processed', 'superseded')
+            ) < (CURRENT_TIMESTAMP - interval '#{retention_seconds} seconds')
+          ),
+          aggregate AS (
+            #{event_status_aggregate_sql('SELECT id FROM eligible_events')}
+          ),
+          updated_events AS (
+            UPDATE #{quoted_table} events
+            SET status = aggregate.status,
+                processed_at = #{aggregate_processed_at_sql},
+                last_error = aggregate.last_error,
+                updated_at = CURRENT_TIMESTAMP
+            FROM aggregate
+            WHERE events.id = aggregate.event_id
+            RETURNING events.id
+          )
+          SELECT id
+          FROM updated_events
+        SQL
+      end
+
+      def aggregate_processed_at_sql
+        "CASE WHEN aggregate.status IN ('processed', 'superseded') " \
+          'THEN COALESCE(aggregate.terminal_processed_at, CURRENT_TIMESTAMP) ELSE NULL END'
       end
 
       def select_rows(sql)
@@ -830,6 +923,15 @@ module SearchEngine
 
       def drain_slot_table_name
         SearchEngine.config.postgres_outbox.drain_slot_table_name
+      end
+
+      def delivery_table_exists?
+        table_name = SearchEngine.config.postgres_outbox.delivery_table_name
+        if connection.respond_to?(:data_source_exists?)
+          connection.data_source_exists?(table_name)
+        else
+          connection.table_exists?(table_name)
+        end
       end
 
       def quote(value)
