@@ -3,6 +3,10 @@
 module SearchEngine
   # Resolver and interface contract for async partition indexing run stores.
   module IndexingRunStore
+    # Raised by run stores when a coordinated partition job belongs to a run
+    # that should no longer execute.
+    class StaleRun < StandardError; end
+
     module_function
 
     # Resolve a configured store or the Rails.cache-backed default.

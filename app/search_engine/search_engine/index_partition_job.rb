@@ -38,10 +38,10 @@ module SearchEngine
     # @return [void]
     def perform(collection_class_name, partition, into: nil, metadata: {}, run_id: nil, partition_key: nil)
       payload = nil
-      klass = constantize_collection!(collection_class_name)
-      payload = base_payload(klass, partition: partition, into: into)
       run_store = indexing_run_store(run_id)
       partition_key ||= SearchEngine::IndexingRun.partition_key(partition) if run_id
+      klass = constantize_collection!(collection_class_name)
+      payload = base_payload(klass, partition: partition, into: into)
       run_store&.mark_started(run_id: run_id, partition_key: partition_key, job_id: job_id)
       instrument_event('search_engine.dispatcher.job_started',
                        payload.merge(queue: queue_name, job_id: job_id, metadata: metadata)
@@ -62,10 +62,26 @@ module SearchEngine
         )
       )
       nil
+    rescue SearchEngine::IndexingRunStore::StaleRun => error
+      safe_payload = payload || error_payload(error)
+      instrument_stale_run(error, payload: safe_payload.merge(metadata: metadata || {}), run_id: run_id,
+                           partition_key: partition_key)
+      nil
     rescue StandardError => error
       safe_payload = payload || error_payload(error)
-      run_store&.mark_failed(run_id: run_id, partition_key: partition_key, error: error) unless retryable_error?(error)
-      instrument_error(error, payload: safe_payload.merge(metadata: metadata || {}))
+      safe_payload = safe_payload.merge(metadata: metadata || {})
+      if retryable_error?(error)
+        instrument_error(error, payload: safe_payload)
+        raise
+      end
+
+      if run_id && run_store
+        mark_failed_for_run(run_store, run_id, partition_key, error, payload: safe_payload)
+        instrument_error(error, payload: safe_payload)
+        return nil
+      end
+
+      instrument_error(error, payload: safe_payload)
       raise
     end
 
@@ -147,6 +163,19 @@ module SearchEngine
                               message_truncated: error.message.to_s[0, 200]
         )
       )
+    end
+
+    def instrument_stale_run(error, payload:, run_id:, partition_key:)
+      instrument_error(
+        error,
+        payload: payload.merge(discarded: true, run_id: run_id, partition_key: partition_key)
+      )
+    end
+
+    def mark_failed_for_run(run_store, run_id, partition_key, error, payload:)
+      run_store.mark_failed(run_id: run_id, partition_key: partition_key, error: error)
+    rescue SearchEngine::IndexingRunStore::StaleRun => stale_error
+      instrument_stale_run(stale_error, payload: payload, run_id: run_id, partition_key: partition_key)
     end
 
     def instrument_event(event, payload)

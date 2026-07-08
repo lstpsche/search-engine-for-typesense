@@ -11,20 +11,33 @@ class IndexPartitionJobTest < Minitest::Test
   class FakeRunStore
     attr_reader :calls
 
-    def initialize
+    def initialize(stale_on: nil)
       @calls = []
+      @stale_on = stale_on
     end
 
     def mark_started(run_id:, partition_key:, job_id: nil)
+      raise_stale!(:started) if @stale_on == :started
+
       @calls << [:started, run_id, partition_key, job_id]
     end
 
     def mark_succeeded(run_id:, partition_key:, summary:)
+      raise_stale!(:succeeded) if @stale_on == :succeeded
+
       @calls << [:succeeded, run_id, partition_key, summary]
     end
 
     def mark_failed(run_id:, partition_key:, error:)
+      raise_stale!(:failed) if @stale_on == :failed
+
       @calls << [:failed, run_id, partition_key, error]
+    end
+
+    private
+
+    def raise_stale!(transition)
+      raise SearchEngine::IndexingRunStore::StaleRun, "stale #{transition}"
     end
   end
 
@@ -90,17 +103,14 @@ class IndexPartitionJobTest < Minitest::Test
     assert_equal 'custom-key', store.calls[1][2]
   end
 
-  def test_perform_marks_failed_for_terminal_error
+  def test_perform_marks_failed_for_terminal_error_and_does_not_retry_coordinated_run
     job = SearchEngine::IndexPartitionJob.new
     store = FakeRunStore.new
     error = SearchEngine::Errors::InvalidParams.new('broken mapper')
 
     SearchEngine::IndexingRunStore.stub(:resolve, store) do
       SearchEngine::Indexer.stub(:rebuild_partition!, ->(*) { raise error }) do
-        raised = assert_raises(SearchEngine::Errors::InvalidParams) do
-          job.perform('SearchEngine::Author', { shard: 1 }, run_id: 'run-1', partition_key: 'p1')
-        end
-        assert_same error, raised
+        assert_nil job.perform('SearchEngine::Author', { shard: 1 }, run_id: 'run-1', partition_key: 'p1')
       end
     end
 
@@ -108,6 +118,18 @@ class IndexPartitionJobTest < Minitest::Test
     assert_equal 'run-1', store.calls.last[1]
     assert_equal 'p1', store.calls.last[2]
     assert_same error, store.calls.last[3]
+  end
+
+  def test_perform_without_run_id_raises_terminal_error
+    job = SearchEngine::IndexPartitionJob.new
+    error = SearchEngine::Errors::InvalidParams.new('broken mapper')
+
+    SearchEngine::Indexer.stub(:rebuild_partition!, ->(*) { raise error }) do
+      raised = assert_raises(SearchEngine::Errors::InvalidParams) do
+        job.perform('SearchEngine::Author', { shard: 1 })
+      end
+      assert_same error, raised
+    end
   end
 
   def test_perform_does_not_mark_failed_for_retryable_error_before_attempts_are_exhausted
@@ -126,7 +148,7 @@ class IndexPartitionJobTest < Minitest::Test
     refute(store.calls.any? { |call| call.first == :failed })
   end
 
-  def test_perform_marks_failed_for_retryable_error_after_attempts_are_exhausted
+  def test_perform_marks_failed_for_retryable_error_after_attempts_are_exhausted_and_does_not_retry_coordinated_run
     job = SearchEngine::IndexPartitionJob.new
     job.define_singleton_method(:executions) { SearchEngine::Indexer::RetryPolicy.from_config(nil).attempts }
     store = FakeRunStore.new
@@ -134,14 +156,54 @@ class IndexPartitionJobTest < Minitest::Test
 
     SearchEngine::IndexingRunStore.stub(:resolve, store) do
       SearchEngine::Indexer.stub(:rebuild_partition!, ->(*) { raise error }) do
-        assert_raises(SearchEngine::Errors::Timeout) do
-          job.perform('SearchEngine::Author', { shard: 1 }, run_id: 'run-1', partition_key: 'p1')
-        end
+        assert_nil job.perform('SearchEngine::Author', { shard: 1 }, run_id: 'run-1', partition_key: 'p1')
       end
     end
 
     assert_equal :failed, store.calls.last[0]
     assert_same error, store.calls.last[3]
+  end
+
+  def test_perform_discards_stale_run_without_rebuilding_or_retrying
+    job = SearchEngine::IndexPartitionJob.new
+    store = FakeRunStore.new(stale_on: :started)
+    rebuilt = false
+
+    events = SearchEngine::Test.capture_events('search_engine.dispatcher.job_error') do
+      SearchEngine::IndexingRunStore.stub(:resolve, store) do
+        SearchEngine::Indexer.stub(:rebuild_partition!, ->(*) { rebuilt = true }) do
+          assert_nil job.perform('SearchEngine::Author', { shard: 1 }, run_id: 'run-stale', partition_key: 'p1')
+        end
+      end
+    end
+
+    refute rebuilt
+    assert_empty store.calls
+    assert_equal 1, events.length
+    payload = events.first[:payload]
+    assert_equal true, payload[:discarded]
+    assert_equal 'run-stale', payload[:run_id]
+    assert_equal 'p1', payload[:partition_key]
+    assert_equal 'SearchEngine::IndexingRunStore::StaleRun', payload[:error_class]
+  end
+
+  def test_perform_discards_when_mark_failed_finds_stale_run
+    job = SearchEngine::IndexPartitionJob.new
+    store = FakeRunStore.new(stale_on: :failed)
+    error = SearchEngine::Errors::InvalidParams.new('broken mapper')
+
+    events = SearchEngine::Test.capture_events('search_engine.dispatcher.job_error') do
+      SearchEngine::IndexingRunStore.stub(:resolve, store) do
+        SearchEngine::Indexer.stub(:rebuild_partition!, ->(*) { raise error }) do
+          assert_nil job.perform('SearchEngine::Author', { shard: 1 }, run_id: 'run-stale', partition_key: 'p1')
+        end
+      end
+    end
+
+    stale_payload = events.map { |event| event[:payload] }.find { |payload| payload[:discarded] }
+    refute_nil stale_payload
+    assert_equal 'run-stale', stale_payload[:run_id]
+    assert_equal 'p1', stale_payload[:partition_key]
   end
 
   def test_dispatcher_active_job_remains_fire_and_forget_for_direct_callers

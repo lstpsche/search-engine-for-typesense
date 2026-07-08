@@ -146,7 +146,7 @@ class IndexingRunStoreTest < Minitest::Test
   end
 
   def test_missing_run_and_partition_fail_loudly
-    assert_raises(KeyError) do
+    assert_raises(SearchEngine::IndexingRunStore::StaleRun) do
       @store.mark_started(run_id: 'missing', partition_key: 'p-missing')
     end
 
@@ -159,8 +159,31 @@ class IndexingRunStoreTest < Minitest::Test
       ttl_s: 60
     )
 
-    assert_raises(KeyError) do
+    assert_raises(SearchEngine::IndexingRunStore::StaleRun) do
       @store.mark_started(run_id: 'run-4', partition_key: 'p-missing')
+    end
+  end
+
+  def test_missing_partition_cache_entry_is_stale_for_mutations
+    snapshot = @store.create_run(
+      run_id: 'run-missing-mutation-partition',
+      collection: 'products',
+      collection_class_name: 'SearchEngine::Product',
+      into: 'products_20260604',
+      partitions: [1],
+      ttl_s: 60
+    )
+    partition_key = snapshot[:partitions].keys.first
+    @store.instance_variable_get(:@cache).delete(
+      "search_engine:indexing_run:run-missing-mutation-partition:partition:#{partition_key}"
+    )
+
+    assert_raises(SearchEngine::IndexingRunStore::StaleRun) do
+      @store.mark_succeeded(
+        run_id: 'run-missing-mutation-partition',
+        partition_key: partition_key,
+        summary: { docs_total: 1, success_total: 1, failed_total: 0 }
+      )
     end
   end
 

@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'search_engine/indexing_run'
+require 'search_engine/indexing_run_store'
 
 module SearchEngine
   module IndexingRunStore
@@ -139,15 +140,15 @@ module SearchEngine
 
       def update_partition(run_id, partition_key)
         meta = symbolize_meta(@cache.read(meta_cache_key(run_id)))
-        raise KeyError, "indexing run not found: #{run_id}" unless meta
+        raise StaleRun, "indexing run not found: #{run_id}" unless meta
 
         partition_key = partition_key.to_s
         unless Array(meta[:partition_keys]).map(&:to_s).include?(partition_key)
-          raise KeyError, "indexing run partition not found: #{partition_key}"
+          raise StaleRun, "indexing run partition not found: #{partition_key}"
         end
 
         entry = @cache.read(partition_cache_key(run_id, partition_key))
-        raise KeyError, "indexing run partition not found: #{partition_key}" unless entry
+        raise StaleRun, "indexing run partition not found: #{partition_key}" unless entry
 
         entry = deep_symbolize(entry)
         yield entry
