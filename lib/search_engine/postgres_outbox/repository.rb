@@ -4,6 +4,8 @@ module SearchEngine
   module PostgresOutbox
     # Raw SQL repository for host-managed PostgreSQL outbox rows.
     class Repository
+      # Keep expensive duplicate-key ranking bounded while leaving headroom for hot keys.
+      CLAIM_CANDIDATE_OVERSAMPLE = 4
       ERROR_LIMIT = 1000
 
       # @param connection [Object, nil] ActiveRecord-compatible connection
@@ -407,23 +409,34 @@ module SearchEngine
 
         limit = global_limit_for(limit)
         <<~SQL
-          WITH ranked_pending AS (
+          WITH candidate_events AS MATERIALIZED (
+            SELECT outbox.id,
+                   outbox.collection,
+                   outbox.document_id
+            FROM #{quoted_table} outbox
+            WHERE outbox.status = 'pending'
+              AND (outbox.next_attempt_at IS NULL OR outbox.next_attempt_at <= CURRENT_TIMESTAMP)
+            ORDER BY outbox.id ASC
+            LIMIT #{claim_candidate_limit(limit)}
+            FOR UPDATE SKIP LOCKED
+          ),
+          ranked_candidate_events AS (
             SELECT id,
+                   collection,
+                   document_id,
                    ROW_NUMBER() OVER (
                      PARTITION BY collection, document_id
                      ORDER BY id DESC
                    ) AS row_number
-            FROM #{quoted_table}
-            WHERE status = 'pending'
+            FROM candidate_events
           ),
           latest_due AS (
-            SELECT outbox.id
-            FROM #{quoted_table} outbox
-            INNER JOIN ranked_pending
-              ON ranked_pending.id = outbox.id
-            WHERE ranked_pending.row_number = 1
-              AND (outbox.next_attempt_at IS NULL OR outbox.next_attempt_at <= CURRENT_TIMESTAMP)
-            ORDER BY outbox.id ASC
+            SELECT latest_event.id
+            FROM ranked_candidate_events
+            #{latest_pending_event_lateral_sql('ranked_candidate_events')}
+            WHERE ranked_candidate_events.row_number = 1
+              AND (latest_event.next_attempt_at IS NULL OR latest_event.next_attempt_at <= CURRENT_TIMESTAMP)
+            ORDER BY ranked_candidate_events.id ASC
             LIMIT #{limit}
           )
           SELECT outbox.*
@@ -431,7 +444,7 @@ module SearchEngine
           INNER JOIN latest_due
             ON latest_due.id = outbox.id
           ORDER BY outbox.id ASC
-          FOR UPDATE SKIP LOCKED
+          FOR UPDATE OF outbox SKIP LOCKED
         SQL
       end
 
@@ -451,27 +464,41 @@ module SearchEngine
 
         limit = global_limit_for(limit)
         <<~SQL
-          WITH ranked_pending AS (
+          WITH candidate_deliveries AS MATERIALIZED (
             SELECT deliveries.id AS delivery_id,
                    events.id AS event_id,
-                   ROW_NUMBER() OVER (
-                     PARTITION BY deliveries.target_key, events.collection, events.document_id
-                     ORDER BY events.id DESC, deliveries.id DESC
-                   ) AS row_number
+                   deliveries.target_key,
+                   events.collection,
+                   events.document_id
             FROM #{quoted_delivery_table} deliveries
             INNER JOIN #{quoted_table} events
               ON events.id = deliveries.event_id
             WHERE deliveries.target_key = #{quote(target_key)}
               AND deliveries.status = 'pending'
-          ),
-          latest_due AS (
-            SELECT deliveries.id
-            FROM #{quoted_delivery_table} deliveries
-            INNER JOIN ranked_pending
-              ON ranked_pending.delivery_id = deliveries.id
-            WHERE ranked_pending.row_number = 1
               AND (deliveries.next_attempt_at IS NULL OR deliveries.next_attempt_at <= CURRENT_TIMESTAMP)
             ORDER BY deliveries.id ASC
+            LIMIT #{claim_candidate_limit(limit)}
+            FOR UPDATE OF deliveries SKIP LOCKED
+          ),
+          ranked_candidate_deliveries AS (
+            SELECT delivery_id,
+                   event_id,
+                   target_key,
+                   collection,
+                   document_id,
+                   ROW_NUMBER() OVER (
+                     PARTITION BY target_key, collection, document_id
+                     ORDER BY event_id DESC, delivery_id DESC
+                   ) AS row_number
+            FROM candidate_deliveries
+          ),
+          latest_due AS (
+            SELECT latest_delivery.id
+            FROM ranked_candidate_deliveries
+            #{latest_pending_delivery_lateral_sql('ranked_candidate_deliveries')}
+            WHERE ranked_candidate_deliveries.row_number = 1
+              AND (latest_delivery.next_attempt_at IS NULL OR latest_delivery.next_attempt_at <= CURRENT_TIMESTAMP)
+            ORDER BY ranked_candidate_deliveries.delivery_id ASC
             LIMIT #{limit}
           )
           SELECT events.*,
@@ -484,7 +511,7 @@ module SearchEngine
           INNER JOIN latest_due
             ON latest_due.id = deliveries.id
           ORDER BY deliveries.id ASC
-          FOR UPDATE SKIP LOCKED
+          FOR UPDATE OF deliveries SKIP LOCKED
         SQL
       end
 
@@ -991,25 +1018,34 @@ module SearchEngine
       def collection_limited_claim_select_sql
         <<~SQL
           WITH #{collection_limits_cte_sql},
-          ranked_pending AS (
+          candidate_events AS MATERIALIZED (
+            SELECT outbox.id,
+                   outbox.collection,
+                   outbox.document_id
+            FROM #{quoted_table} outbox
+            WHERE outbox.status = 'pending'
+              AND (outbox.next_attempt_at IS NULL OR outbox.next_attempt_at <= CURRENT_TIMESTAMP)
+            ORDER BY outbox.id ASC
+            LIMIT #{claim_candidate_limit(collection_limited_candidate_limit)}
+            FOR UPDATE SKIP LOCKED
+          ),
+          ranked_candidate_events AS (
             SELECT id,
+                   collection,
+                   document_id,
                    ROW_NUMBER() OVER (
                      PARTITION BY collection, document_id
                      ORDER BY id DESC
                    ) AS row_number
-            FROM #{quoted_table}
-            WHERE status = 'pending'
+            FROM candidate_events
           ),
           latest_due AS (
-            SELECT outbox.id,
-                   outbox.collection
-            FROM #{quoted_table} outbox
-            INNER JOIN ranked_pending
-              ON ranked_pending.id = outbox.id
-            WHERE ranked_pending.row_number = 1
-              AND (outbox.next_attempt_at IS NULL OR outbox.next_attempt_at <= CURRENT_TIMESTAMP)
-            ORDER BY outbox.id ASC
-            LIMIT #{collection_limited_candidate_limit}
+            SELECT latest_event.id,
+                   ranked_candidate_events.collection
+            FROM ranked_candidate_events
+            #{latest_pending_event_lateral_sql('ranked_candidate_events')}
+            WHERE ranked_candidate_events.row_number = 1
+              AND (latest_event.next_attempt_at IS NULL OR latest_event.next_attempt_at <= CURRENT_TIMESTAMP)
           ),
           ranked_by_collection AS (
             SELECT latest_due.id,
@@ -1026,13 +1062,15 @@ module SearchEngine
             SELECT id
             FROM ranked_by_collection
             WHERE collection_row_number <= collection_batch_size
+            ORDER BY id ASC
+            LIMIT #{collection_limited_candidate_limit}
           )
           SELECT outbox.*
           FROM #{quoted_table} outbox
           INNER JOIN selected_due
             ON selected_due.id = outbox.id
           ORDER BY outbox.id ASC
-          FOR UPDATE SKIP LOCKED
+          FOR UPDATE OF outbox SKIP LOCKED
         SQL
       end
 
@@ -1104,30 +1142,41 @@ module SearchEngine
       def collection_limited_delivery_claim_select_sql
         <<~SQL
           WITH #{collection_limits_cte_sql},
-          ranked_pending AS (
+          candidate_deliveries AS MATERIALIZED (
             SELECT deliveries.id AS delivery_id,
                    events.id AS event_id,
+                   deliveries.target_key,
                    events.collection,
-                   ROW_NUMBER() OVER (
-                     PARTITION BY deliveries.target_key, events.collection, events.document_id
-                     ORDER BY events.id DESC, deliveries.id DESC
-                   ) AS row_number
+                   events.document_id
             FROM #{quoted_delivery_table} deliveries
             INNER JOIN #{quoted_table} events
               ON events.id = deliveries.event_id
             WHERE deliveries.target_key = #{quote(target_key)}
               AND deliveries.status = 'pending'
-          ),
-          latest_due AS (
-            SELECT deliveries.id,
-                   ranked_pending.collection
-            FROM #{quoted_delivery_table} deliveries
-            INNER JOIN ranked_pending
-              ON ranked_pending.delivery_id = deliveries.id
-            WHERE ranked_pending.row_number = 1
               AND (deliveries.next_attempt_at IS NULL OR deliveries.next_attempt_at <= CURRENT_TIMESTAMP)
             ORDER BY deliveries.id ASC
-            LIMIT #{collection_limited_candidate_limit}
+            LIMIT #{claim_candidate_limit(collection_limited_candidate_limit)}
+            FOR UPDATE OF deliveries SKIP LOCKED
+          ),
+          ranked_candidate_deliveries AS (
+            SELECT delivery_id,
+                   event_id,
+                   target_key,
+                   collection,
+                   document_id,
+                   ROW_NUMBER() OVER (
+                     PARTITION BY target_key, collection, document_id
+                     ORDER BY event_id DESC, delivery_id DESC
+                   ) AS row_number
+            FROM candidate_deliveries
+          ),
+          latest_due AS (
+            SELECT latest_delivery.id,
+                   ranked_candidate_deliveries.collection
+            FROM ranked_candidate_deliveries
+            #{latest_pending_delivery_lateral_sql('ranked_candidate_deliveries')}
+            WHERE ranked_candidate_deliveries.row_number = 1
+              AND (latest_delivery.next_attempt_at IS NULL OR latest_delivery.next_attempt_at <= CURRENT_TIMESTAMP)
           ),
           ranked_by_collection AS (
             SELECT latest_due.id,
@@ -1144,6 +1193,8 @@ module SearchEngine
             SELECT id
             FROM ranked_by_collection
             WHERE collection_row_number <= collection_batch_size
+            ORDER BY id ASC
+            LIMIT #{collection_limited_candidate_limit}
           )
           SELECT events.*,
                  deliveries.id AS delivery_id,
@@ -1155,7 +1206,7 @@ module SearchEngine
           INNER JOIN selected_due
             ON selected_due.id = deliveries.id
           ORDER BY deliveries.id ASC
-          FOR UPDATE SKIP LOCKED
+          FOR UPDATE OF deliveries SKIP LOCKED
         SQL
       end
 
@@ -1170,6 +1221,46 @@ module SearchEngine
       def collection_limited_candidate_limit
         batch_size_sum = SearchEngine.config.postgres_outbox.normalized_batch_sizes.values.sum
         [global_limit_for(nil), 1].max + batch_size_sum
+      end
+
+      def claim_candidate_limit(limit)
+        [limit.to_i, 0].max * CLAIM_CANDIDATE_OVERSAMPLE
+      end
+
+      # Resolve a bounded candidate key to its globally latest pending event. Without this lookup,
+      # a hot key whose newest row falls outside the candidate pool can be claimed out of order or stall forever.
+      def latest_pending_event_lateral_sql(candidate_relation)
+        <<~SQL.chomp
+          CROSS JOIN LATERAL (
+            SELECT latest_pending.id,
+                   latest_pending.next_attempt_at
+            FROM #{quoted_table} latest_pending
+            WHERE latest_pending.collection = #{candidate_relation}.collection
+              AND latest_pending.document_id = #{candidate_relation}.document_id
+              AND latest_pending.status = 'pending'
+            ORDER BY latest_pending.id DESC
+            LIMIT 1
+          ) latest_event
+        SQL
+      end
+
+      # Delivery rows are ordered by their parent event id so every target resolves the same latest document version.
+      def latest_pending_delivery_lateral_sql(candidate_relation)
+        <<~SQL.chomp
+          CROSS JOIN LATERAL (
+            SELECT latest_deliveries.id,
+                   latest_deliveries.next_attempt_at
+            FROM #{quoted_table} latest_events
+            INNER JOIN #{quoted_delivery_table} latest_deliveries
+              ON latest_deliveries.event_id = latest_events.id
+            WHERE latest_deliveries.target_key = #{candidate_relation}.target_key
+              AND latest_deliveries.status = 'pending'
+              AND latest_events.collection = #{candidate_relation}.collection
+              AND latest_events.document_id = #{candidate_relation}.document_id
+            ORDER BY latest_events.id DESC, latest_deliveries.id DESC
+            LIMIT 1
+          ) latest_delivery
+        SQL
       end
 
       def collection_limits_cte_sql

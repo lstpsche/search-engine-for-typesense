@@ -524,12 +524,16 @@ class PostgresOutboxRepositoryTest < Minitest::Test
   end
 
   def assert_claim_select_sql(sql)
+    assert_includes sql, 'candidate_events AS MATERIALIZED'
     assert_includes sql, 'FOR UPDATE SKIP LOCKED'
-    assert_includes sql, "WHERE status = 'pending'"
+    assert_includes sql, "outbox.status = 'pending'"
     assert_includes sql, 'ROW_NUMBER() OVER'
     assert_includes sql, 'PARTITION BY collection, document_id'
-    assert_includes sql, 'ranked_pending.row_number = 1'
+    assert_includes sql, 'FROM candidate_events'
+    assert_includes sql, 'ranked_candidate_events.row_number = 1'
     assert_includes sql, 'outbox.next_attempt_at <= CURRENT_TIMESTAMP'
+    assert_latest_parent_event_lookup_sql(sql)
+    assert_bounded_candidate_sql(sql, candidate_limit: 100, selected_limit: 25)
     assert_includes sql, 'LIMIT 25'
   end
 
@@ -540,6 +544,9 @@ class PostgresOutboxRepositoryTest < Minitest::Test
     assert_includes sql, 'PARTITION BY latest_due.collection'
     assert_includes sql, 'collection_row_number <= collection_batch_size'
     assert_includes sql, 'COALESCE(collection_limits.batch_size, 1000)'
+    assert_latest_parent_event_lookup_sql(sql)
+    assert_bounded_candidate_sql(sql, candidate_limit: 4012, selected_limit: 1003)
+    assert_includes sql, 'LIMIT 4012'
     assert_includes sql, 'LIMIT 1003'
     assert_includes sql, 'FOR UPDATE SKIP LOCKED'
     refute_includes sql, 'LIMIT 25'
@@ -563,14 +570,18 @@ class PostgresOutboxRepositoryTest < Minitest::Test
   end
 
   def assert_delivery_claim_select_sql(sql)
-    assert_includes sql, 'FOR UPDATE SKIP LOCKED'
+    assert_includes sql, 'candidate_deliveries AS MATERIALIZED'
+    assert_includes sql, 'FOR UPDATE OF deliveries SKIP LOCKED'
     assert_includes sql, 'FROM "custom_outbox_deliveries" deliveries'
     assert_includes sql, 'INNER JOIN "custom_outbox" events'
     assert_includes sql, "deliveries.target_key = 'target_1'"
     assert_includes sql, "deliveries.status = 'pending'"
-    assert_includes sql, 'PARTITION BY deliveries.target_key, events.collection, events.document_id'
-    assert_includes sql, 'ranked_pending.row_number = 1'
+    assert_includes sql, 'PARTITION BY target_key, collection, document_id'
+    assert_includes sql, 'FROM candidate_deliveries'
+    assert_includes sql, 'ranked_candidate_deliveries.row_number = 1'
     assert_includes sql, 'deliveries.next_attempt_at <= CURRENT_TIMESTAMP'
+    assert_latest_delivery_lookup_sql(sql)
+    assert_bounded_candidate_sql(sql, candidate_limit: 100, selected_limit: 25)
     assert_includes sql, 'LIMIT 25'
     assert_includes sql, 'deliveries.id AS delivery_id'
     assert_includes sql, 'deliveries.target_key'
@@ -584,9 +595,50 @@ class PostgresOutboxRepositoryTest < Minitest::Test
     assert_includes sql, 'collection_row_number <= collection_batch_size'
     assert_includes sql, 'COALESCE(collection_limits.batch_size, 1000)'
     assert_includes sql, 'deliveries.id AS delivery_id'
+    assert_latest_delivery_lookup_sql(sql)
+    assert_bounded_candidate_sql(sql, candidate_limit: 4012, selected_limit: 1003)
+    assert_includes sql, 'LIMIT 4012'
     assert_includes sql, 'LIMIT 1003'
-    assert_includes sql, 'FOR UPDATE SKIP LOCKED'
+    assert_includes sql, 'FOR UPDATE OF deliveries SKIP LOCKED'
     refute_includes sql, 'LIMIT 25'
+  end
+
+  def assert_bounded_candidate_sql(sql, candidate_limit:, selected_limit:)
+    candidate_limit_position = sql.index("LIMIT #{candidate_limit}")
+    lock_position = sql.index('SKIP LOCKED')
+    ranking_position = sql.index('ROW_NUMBER() OVER')
+    selected_limit_position = sql.rindex("LIMIT #{selected_limit}")
+
+    refute_nil candidate_limit_position
+    refute_nil lock_position
+    refute_nil ranking_position
+    refute_nil selected_limit_position
+    assert_operator candidate_limit_position, :<, ranking_position
+    assert_operator lock_position, :<, ranking_position
+    assert_operator ranking_position, :<, selected_limit_position
+  end
+
+  def assert_latest_parent_event_lookup_sql(sql)
+    assert_includes sql, 'CROSS JOIN LATERAL'
+    assert_includes sql, 'FROM "custom_outbox" latest_pending'
+    assert_includes sql, 'latest_pending.collection = ranked_candidate_events.collection'
+    assert_includes sql, 'latest_pending.document_id = ranked_candidate_events.document_id'
+    assert_includes sql, "latest_pending.status = 'pending'"
+    assert_includes sql, 'ORDER BY latest_pending.id DESC'
+    assert_includes sql, 'latest_event.next_attempt_at <= CURRENT_TIMESTAMP'
+    assert_includes sql, 'FOR UPDATE OF outbox SKIP LOCKED'
+  end
+
+  def assert_latest_delivery_lookup_sql(sql)
+    assert_includes sql, 'CROSS JOIN LATERAL'
+    assert_includes sql, 'FROM "custom_outbox" latest_events'
+    assert_includes sql, 'INNER JOIN "custom_outbox_deliveries" latest_deliveries'
+    assert_includes sql, 'latest_deliveries.target_key = ranked_candidate_deliveries.target_key'
+    assert_includes sql, 'latest_events.collection = ranked_candidate_deliveries.collection'
+    assert_includes sql, 'latest_events.document_id = ranked_candidate_deliveries.document_id'
+    assert_includes sql, 'ORDER BY latest_events.id DESC, latest_deliveries.id DESC'
+    assert_includes sql, 'latest_delivery.next_attempt_at <= CURRENT_TIMESTAMP'
+    assert_includes sql, 'FOR UPDATE OF deliveries SKIP LOCKED'
   end
 
   def assert_delivery_claim_update_sql(executed_sql)
