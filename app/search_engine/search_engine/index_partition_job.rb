@@ -19,6 +19,7 @@ module SearchEngine
     # Handle transient errors with exponential backoff based on Indexer config.
     rescue_from(SearchEngine::Errors::Timeout) { |error| retry_if_possible(error) }
     rescue_from(SearchEngine::Errors::Connection) { |error| retry_if_possible(error) }
+    rescue_from(SearchEngine::Errors::PartitionImportFailed) { |error| retry_if_possible(error) }
     rescue_from(SearchEngine::Errors::Api) do |error|
       if SearchEngine::Indexer::RetryPolicy.transient_status?(error.status.to_i)
         retry_if_possible(error)
@@ -52,6 +53,7 @@ module SearchEngine
       SearchEngine::Instrumentation.with_context(dispatch_mode: :active_job, job_id: job_id) do
         summary = SearchEngine::Indexer.rebuild_partition!(klass, partition: partition, into: into)
       end
+      raise_for_failed_summary!(summary, run_store, run_id, partition_key)
       duration = (monotonic_ms - started).round(1)
       run_store&.mark_succeeded(run_id: run_id, partition_key: partition_key, summary: summary)
 
@@ -64,13 +66,23 @@ module SearchEngine
       nil
     rescue SearchEngine::IndexingRunStore::StaleRun => error
       safe_payload = payload || error_payload(error)
-      instrument_stale_run(error, payload: safe_payload.merge(metadata: metadata || {}), run_id: run_id,
-                           partition_key: partition_key)
+      instrument_stale_run(
+        error,
+        payload: safe_payload.merge(metadata: metadata || {}),
+        run_id: run_id,
+        partition_key: partition_key
+      )
       nil
     rescue StandardError => error
       safe_payload = payload || error_payload(error)
       safe_payload = safe_payload.merge(metadata: metadata || {})
       if retryable_error?(error)
+        instrument_error(error, payload: safe_payload)
+        raise
+      end
+
+      if error.is_a?(SearchEngine::Errors::PartitionImportFailed)
+        mark_failed_for_run(run_store, run_id, partition_key, error, payload: safe_payload) if run_id && run_store
         instrument_error(error, payload: safe_payload)
         raise
       end
@@ -131,7 +143,8 @@ module SearchEngine
     end
 
     def retryable_error?(error)
-      transient_error?(error) && executions.to_i < retry_policy.attempts
+      (transient_error?(error) || error.is_a?(SearchEngine::Errors::PartitionImportFailed)) &&
+        executions.to_i < retry_policy.attempts
     end
 
     def transient_error?(error)
@@ -140,6 +153,28 @@ module SearchEngine
 
       error.is_a?(SearchEngine::Errors::Api) &&
         SearchEngine::Indexer::RetryPolicy.transient_status?(error.status.to_i)
+    end
+
+    def summary_failed?(summary)
+      value = if summary.respond_to?(:failed_total)
+                summary.failed_total
+              elsif summary.is_a?(Hash)
+                summary[:failed_total] || summary['failed_total']
+              end
+      value.to_i.positive?
+    end
+
+    def raise_for_failed_summary!(summary, run_store, run_id, partition_key)
+      return unless summary_failed?(summary)
+
+      error = SearchEngine::Errors::PartitionImportFailed.new(summary)
+      run_store&.record_attempt(
+        run_id: run_id,
+        partition_key: partition_key,
+        summary: summary,
+        error: error
+      )
+      raise error
     end
 
     def error_payload(error)
@@ -174,8 +209,8 @@ module SearchEngine
 
     def mark_failed_for_run(run_store, run_id, partition_key, error, payload:)
       run_store.mark_failed(run_id: run_id, partition_key: partition_key, error: error)
-    rescue SearchEngine::IndexingRunStore::StaleRun => stale_error
-      instrument_stale_run(stale_error, payload: payload, run_id: run_id, partition_key: partition_key)
+    rescue SearchEngine::IndexingRunStore::StaleRun => error
+      instrument_stale_run(error, payload: payload, run_id: run_id, partition_key: partition_key)
     end
 
     def instrument_event(event, payload)

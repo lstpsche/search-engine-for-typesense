@@ -117,6 +117,11 @@ SearchEngine::Product.upsert_bulk(records: Product.limit(2))
 # Bulk upsert mapped payloads
 SearchEngine::Product.upsert_bulk(data: [mapped])
 
+# Inspect row-level failures without repeating the import request
+result = SearchEngine::Product.upsert_bulk(data: [mapped], on_failure: :return)
+failed_rows = result[:row_results].reject { |row| row[:success] }
+failed_rows.first # => { index: 0, success: false, status: 404, error: "..." }
+
 # Geo search
 class SearchEngine::Venue < SearchEngine::Base
   collection :venues
@@ -147,6 +152,15 @@ SearchEngine::Venue
 result = SearchEngine::Venue.all.order_geo(:location, from: { lat: 54.69, lng: 25.28 }).execute
 result.hits.first.geo_distance_meters # => { "location" => 1234 }
 ```
+
+`upsert_bulk` defaults to `on_failure: :raise`. Use the exact symbol `:return` when the caller needs to
+handle valid Typesense row failures itself. Malformed responses and response/document count mismatches always
+raise in either mode; the gem never guesses which submitted document a missing response row belongs to.
+
+Since `30.1.8.21`, bulk results intentionally do not expose the raw Typesense `response` because import
+responses may contain submitted documents. Use the ordered, frozen `row_results` entries (`index`, `success`,
+`status`, `error`) and aggregate counters instead. This is a safety-related result-shape change for callers
+that previously read `result[:response]`.
 
 ## Documentation
 
@@ -187,6 +201,28 @@ alias target remains active.
 Use a shared `Rails.cache` backend, or provide `c.indexer.partition_run_store`, so worker processes and
 the parent indexing process can see the same run metadata. Size the queue carefully: worker concurrency
 multiplies with any per-partition `max_parallel` setting.
+
+A custom partition run store must implement:
+
+```ruby
+create_run(run_id:, collection:, collection_class_name:, into:, partitions:, ttl_s:)
+mark_started(run_id:, partition_key:, job_id: nil)
+record_attempt(run_id:, partition_key:, summary:, error:)
+mark_succeeded(run_id:, partition_key:, summary:)
+mark_failed(run_id:, partition_key:, error:)
+snapshot(run_id:)
+expire(run_id:)
+```
+
+`record_attempt` is non-terminal: it must persist that partition's partial summary and representative error
+while leaving the partition `running`, without changing sibling partitions. Row-level import failures raise
+from `IndexPartitionJob`, so ActiveJob retries the partition. Replaying successful upserts is expected and
+safe. Only retry exhaustion terminalizes the partition as failed.
+
+Only `:inline` and `:active_job` (or their exact String equivalents) are supported for
+`c.indexer.dispatch` and `c.indexer.partition_execution`. Unknown values such as `:sidekiq` fail configuration
+validation instead of silently running inline. Explicit `:active_job` dispatch also fails if ActiveJob is not
+available.
 
 ## PostgreSQL outbox sync
 
@@ -340,6 +376,36 @@ hosts add the optional drain slot table.
 
 Processors still receive event objects and return event IDs; the parent event status is refreshed from the
 aggregate delivery states.
+
+### Retiring a delivery target
+
+Removing a target from `delivery_targets` does not infer permission to discard its persisted backlog. Remove
+the target from configuration first, keep process configuration stable, then explicitly dry-run and apply
+retirement:
+
+```ruby
+repository = SearchEngine::PostgresOutbox::Repository.new
+
+preview = repository.retire_delivery_target!(
+  target_key: "mirror_a",
+  dry_run: true,
+  reason: "mirror_a was decommissioned"
+)
+
+result = repository.retire_delivery_target!(
+  target_key: "mirror_a",
+  dry_run: false,
+  reason: "mirror_a was decommissioned",
+  operator: "deploy-2026-07-11"
+)
+```
+
+Both calls reject a target that is still configured. Apply supersedes only that exact target's `pending`,
+`processing`, and `failed` deliveries, clears leases, stores a complete JSON audit record in `last_error`, and
+refreshes parent event status under parent-first locks. It is idempotent; a second apply reports zero rows.
+Drain slots are scheduler bookkeeping and are deliberately not changed. Configuration is rechecked directly
+before each database mutation, but Ruby configuration and PostgreSQL cannot share an atomic lock, so do not
+change delivery-target configuration concurrently with retirement.
 
 Pair triggered source models with `sync_strategy: :postgres_outbox` so Active Record callbacks do not also
 write to Typesense for the same changes:

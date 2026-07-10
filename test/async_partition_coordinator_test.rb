@@ -51,6 +51,16 @@ class AsyncPartitionCoordinatorTest < Minitest::Test
       end
     end
 
+    def record_attempt(run_id:, partition_key:, summary:, error:)
+      update_partition(run_id, partition_key) do |entry|
+        entry[:status] = 'running'
+        entry[:docs_total] = summary.docs_total
+        entry[:success_total] = summary.success_total
+        entry[:failed_total] = summary.failed_total
+        entry[:sample_error] = summary.sample_error || error.to_s
+      end
+    end
+
     def mark_failed(run_id:, partition_key:, error:)
       update_partition(run_id, partition_key) do |entry|
         entry[:status] = 'failed'
@@ -110,6 +120,17 @@ class AsyncPartitionCoordinatorTest < Minitest::Test
       else
         @store.mark_succeeded(run_id: run_id, partition_key: partition_key, summary: @summary)
       end
+    end
+  end
+
+  class RacingTimeoutStore < FakeRunStore
+    def mark_failed(run_id:, partition_key:, error:) # rubocop:disable Lint/UnusedMethodArgument
+      mark_succeeded(
+        run_id: run_id,
+        partition_key: partition_key,
+        summary: Summary.new(docs_total: 1, success_total: 1, failed_total: 0, sample_error: nil)
+      )
+      raise SearchEngine::IndexingRunStore::StaleRun, 'partition completed during timeout transition'
     end
   end
 
@@ -239,6 +260,31 @@ class AsyncPartitionCoordinatorTest < Minitest::Test
     statuses = store.snapshot(run_id: 'run-timeout')[:partitions].values.map { |entry| entry[:status] }
     assert_equal %w[failed failed], statuses
     assert_equal 2, enqueued.size
+  end
+
+  def test_timeout_race_preserves_partition_that_completed_before_terminal_transition
+    store = RacingTimeoutStore.new
+    jobs = Object.new
+    jobs.define_singleton_method(:set) { |**_kwargs| self }
+    jobs.define_singleton_method(:perform_later) { |*_args, **_kwargs| nil }
+
+    result = SearchEngine::IndexingRun.stub(:generate_id, 'run-timeout-race') do
+      SearchEngine::IndexPartitionJob.stub(:set, ->(queue:) { jobs.set(queue: queue) }) do
+        SearchEngine::AsyncPartitionCoordinator.call(
+          klass: SearchEngine::Author,
+          partitions: [1],
+          into: 'authors_20260604',
+          timeout_s: 0,
+          poll_interval_s: 0,
+          store: store
+        )
+      end
+    end
+
+    assert_equal :ok, result[:status]
+    assert_equal 1, result[:success_total]
+    assert_equal 0, result[:failed_total]
+    assert_nil result[:sample_error]
   end
 
   def test_call_returns_failed_result_when_run_snapshot_disappears

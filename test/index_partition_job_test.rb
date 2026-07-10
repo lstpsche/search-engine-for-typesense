@@ -6,7 +6,7 @@ require 'ostruct'
 require_relative '../app/search_engine/search_engine/index_partition_job'
 
 class IndexPartitionJobTest < Minitest::Test
-  Summary = Struct.new(:status, :docs_total, :success_total, :failed_total, keyword_init: true)
+  Summary = Struct.new(:status, :docs_total, :success_total, :failed_total, :sample_error, keyword_init: true)
 
   class FakeRunStore
     attr_reader :calls
@@ -26,6 +26,12 @@ class IndexPartitionJobTest < Minitest::Test
       raise_stale!(:succeeded) if @stale_on == :succeeded
 
       @calls << [:succeeded, run_id, partition_key, summary]
+    end
+
+    def record_attempt(run_id:, partition_key:, summary:, error:)
+      raise_stale!(:attempt) if @stale_on == :attempt
+
+      @calls << [:attempt, run_id, partition_key, summary, error]
     end
 
     def mark_failed(run_id:, partition_key:, error:)
@@ -164,6 +170,57 @@ class IndexPartitionJobTest < Minitest::Test
     assert_same error, store.calls.last[3]
   end
 
+  def test_partial_import_records_nonterminal_attempt_and_raises_for_retry
+    job = SearchEngine::IndexPartitionJob.new
+    store = FakeRunStore.new
+    summary = Summary.new(
+      status: :partial,
+      docs_total: 3,
+      success_total: 2,
+      failed_total: 1,
+      sample_error: 'invalid field'
+    )
+
+    error = SearchEngine::IndexingRunStore.stub(:resolve, store) do
+      SearchEngine::Indexer.stub(:rebuild_partition!, summary) do
+        assert_raises(SearchEngine::Errors::PartitionImportFailed) do
+          job.perform('SearchEngine::Author', { shard: 1 }, run_id: 'run-1', partition_key: 'p1')
+        end
+      end
+    end
+
+    assert_equal %i[started attempt], store.calls.map(&:first)
+    assert_same summary, store.calls.last[3]
+    assert_same error, store.calls.last[4]
+    refute(store.calls.any? { |call| call.first == :failed })
+  end
+
+  def test_exhausted_partial_import_retains_attempt_marks_failed_and_raises
+    job = SearchEngine::IndexPartitionJob.new
+    job.define_singleton_method(:executions) { SearchEngine::Indexer::RetryPolicy.from_config(nil).attempts }
+    store = FakeRunStore.new
+    summary = Summary.new(
+      status: :partial,
+      docs_total: 3,
+      success_total: 2,
+      failed_total: 1,
+      sample_error: 'invalid field'
+    )
+
+    error = assert_raises(SearchEngine::Errors::PartitionImportFailed) do
+      SearchEngine::IndexingRunStore.stub(:resolve, store) do
+        SearchEngine::Indexer.stub(:rebuild_partition!, summary) do
+          job.perform('SearchEngine::Author', { shard: 1 }, run_id: 'run-1', partition_key: 'p1')
+        end
+      end
+    end
+
+    assert_equal %i[started attempt failed], store.calls.map(&:first)
+    assert_same summary, store.calls[1][3]
+    assert_same error, store.calls[2][3]
+    assert_match(/invalid field/, error.message)
+  end
+
   def test_perform_discards_stale_run_without_rebuilding_or_retrying
     job = SearchEngine::IndexPartitionJob.new
     store = FakeRunStore.new(stale_on: :started)
@@ -238,6 +295,33 @@ class IndexPartitionJobTest < Minitest::Test
     assert_equal({ into: 'authors_v2', metadata: { caller: 'direct' } }, enqueued.first[:kwargs])
   ensure
     SearchEngine.config.indexer.dispatch = :inline
+  end
+
+  def test_dispatcher_rejects_unknown_override_instead_of_falling_back_inline
+    error = assert_raises(SearchEngine::Errors::InvalidParams) do
+      SearchEngine::Dispatcher.dispatch!(
+        SearchEngine::Author,
+        partition: { shard: 1 },
+        mode: :sidekiq
+      )
+    end
+
+    assert_equal 'dispatch mode must be :active_job or :inline', error.message
+    assert_equal 'sidekiq', error.details[:provided]
+  end
+
+  def test_dispatcher_rejects_active_job_mode_when_active_job_is_unavailable
+    error = SearchEngine::Dispatcher.stub(:active_job_available?, false) do
+      assert_raises(SearchEngine::Errors::ConfigurationError) do
+        SearchEngine::Dispatcher.dispatch!(
+          SearchEngine::Author,
+          partition: { shard: 1 },
+          mode: :active_job
+        )
+      end
+    end
+
+    assert_equal 'dispatch mode :active_job requires ActiveJob', error.message
   end
 
   def test_perform_later_uses_active_job_instrumentation_without_name_collision

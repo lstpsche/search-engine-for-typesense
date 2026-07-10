@@ -175,7 +175,8 @@ SearchEngine.configure do |c|
   # Gzip JSONL payloads during import. Default: false
   # c.indexer.gzip = false
 
-  # Dispatch mode for import jobs (:active_job or :inline). Default depends on ActiveJob presence
+  # Dispatch mode for import jobs (:active_job or :inline). Default depends on ActiveJob presence.
+  # Unsupported values fail configuration validation; :active_job requires ActiveJob.
   # c.indexer.dispatch = :active_job
 
   # Queue name for ActiveJob dispatch. Default: 'search_index'
@@ -196,6 +197,8 @@ SearchEngine.configure do |c|
 
   # Operational metadata for async partition runs. Defaults shown.
   # Use shared Rails.cache or provide a custom store visible to workers and parent.
+  # Custom stores must implement the IndexingRunStore contract, including the
+  # non-terminal `record_attempt(run_id:, partition_key:, summary:, error:)` transition.
   # c.indexer.partition_run_store = nil
   # c.indexer.partition_run_ttl_s = 86_400
 

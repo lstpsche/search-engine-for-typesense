@@ -82,7 +82,7 @@ module SearchEngine
                                                                                     )
             SearchEngine::Instrumentation.instrument('search_engine.indexer.batch_import', se_payload) do |ctx|
               raw = client.import_documents(collection: collection, jsonl: jsonl, action: action)
-              success_count, failure_count, error_sample = parse_import_response(raw)
+              success_count, failure_count, error_sample = parse_import_response(raw, docs_count)
               http_status = 200
               ctx[:success_count] = success_count
               ctx[:failure_count] = failure_count
@@ -90,7 +90,7 @@ module SearchEngine
             end
           else
             raw = client.import_documents(collection: collection, jsonl: jsonl, action: action)
-            success_count, failure_count, error_sample = parse_import_response(raw)
+            success_count, failure_count, error_sample = parse_import_response(raw, docs_count)
           end
 
           duration = monotonic_ms - start
@@ -131,8 +131,22 @@ module SearchEngine
           }
         end
 
-        def parse_import_response(raw)
-          SearchEngine::Indexer::ImportResponseParser.parse(raw)
+        def parse_import_response(raw, docs_count)
+          rows = SearchEngine::Indexer::ImportResponseParser.parse_rows(raw)
+          validate_response_count!(rows, docs_count)
+          success_count = rows.count { |row| row[:success] }
+          failure_count = rows.length - success_count
+          errors = rows.filter_map { |row| row[:error] unless row[:success] }
+          [success_count, failure_count, errors.first(5)]
+        end
+
+        def validate_response_count!(rows, docs_count)
+          return if rows.length == docs_count
+
+          raise SearchEngine::Errors::InvalidParams.new(
+            "Typesense import response row count mismatch: expected #{docs_count}, got #{rows.length}",
+            details: { submitted_count: docs_count, response_count: rows.length }
+          )
         end
 
         def monotonic_ms

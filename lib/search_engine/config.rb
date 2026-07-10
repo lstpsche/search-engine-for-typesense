@@ -775,6 +775,15 @@ module SearchEngine
       errors.concat(SearchEngine::Config::Validators.validate_protocol(protocol))
       errors.concat(SearchEngine::Config::Validators.validate_host(host))
       errors.concat(SearchEngine::Config::Validators.validate_port(port))
+      errors.concat(
+        SearchEngine::Config::Validators.validate_dispatch_mode(indexer.dispatch, name: 'indexer.dispatch')
+      )
+      errors.concat(
+        SearchEngine::Config::Validators.validate_dispatch_mode(
+          indexer.partition_execution,
+          name: 'indexer.partition_execution'
+        )
+      )
       raise ArgumentError, errors.join(', ') unless errors.empty?
 
       true

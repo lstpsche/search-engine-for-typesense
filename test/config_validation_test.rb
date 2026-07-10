@@ -45,6 +45,28 @@ class ConfigValidationTest < Minitest::Test
                  error.message
   end
 
+  def test_validate_rejects_unknown_dispatch_modes
+    cfg = SearchEngine::Config.new
+    cfg.indexer.dispatch = :sidekiq
+    cfg.indexer.partition_execution = :background
+
+    error = assert_raises(ArgumentError) { cfg.validate! }
+
+    assert_equal(
+      'indexer.dispatch must be :active_job or :inline, ' \
+      'indexer.partition_execution must be :active_job or :inline',
+      error.message
+    )
+  end
+
+  def test_validate_accepts_exact_string_dispatch_modes
+    cfg = SearchEngine::Config.new
+    cfg.indexer.dispatch = 'active_job'
+    cfg.indexer.partition_execution = 'inline'
+
+    assert_equal true, cfg.validate!
+  end
+
   def test_configure_runs_validation
     # Force invalid and ensure configure triggers validation
     assert_raises(ArgumentError) do

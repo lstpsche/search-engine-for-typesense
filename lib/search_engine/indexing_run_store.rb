@@ -40,7 +40,7 @@ module SearchEngine
 
     # @return [Array<Symbol>]
     def required_methods
-      %i[create_run mark_started mark_succeeded mark_failed snapshot expire]
+      %i[create_run mark_started record_attempt mark_succeeded mark_failed snapshot expire]
     end
 
     def configured_store(config)

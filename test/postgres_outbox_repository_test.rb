@@ -162,6 +162,222 @@ class PostgresOutboxRepositoryTest < Minitest::Test
     assert_includes sql, "last_error = 'hard failure'"
   end
 
+  def test_retire_delivery_target_dry_run_counts_without_mutation
+    connection = FakeConnection.new(
+      rows: [{ 'matched_nonterminal_deliveries' => 3, 'affected_parent_events' => 2 }]
+    )
+    repository = SearchEngine::PostgresOutbox::Repository.new(connection: connection)
+
+    result = repository.retire_delivery_target!(
+      target_key: 'retired_target',
+      dry_run: true,
+      reason: 'target removed from topology'
+    )
+
+    assert_equal(
+      {
+        target_key: 'retired_target',
+        dry_run: true,
+        matched_nonterminal_deliveries: 3,
+        superseded_deliveries: 0,
+        affected_parent_events: 2
+      },
+      result
+    )
+    assert_equal 1, connection.selected_sql.size
+    assert_includes connection.selected_sql.first, "target_key = 'retired_target'"
+    assert_includes connection.selected_sql.first, "status IN ('pending', 'processing', 'failed')"
+    assert_empty connection.executed_sql
+    assert_empty connection.transaction_events
+  end
+
+  def test_retire_delivery_target_reports_actual_race_safe_counts_and_applies_parent_first
+    connection = FakeConnection.new(
+      row_sets: [
+        [{ 'matched_nonterminal_deliveries' => 3, 'affected_parent_events' => 2 }],
+        [{ 'id' => 10 }, { 'id' => 11 }],
+        [{ 'id' => 100, 'event_id' => 10 }, { 'id' => 101, 'event_id' => 11 }],
+        [{ 'event_id' => 10 }, { 'event_id' => 11 }],
+        []
+      ]
+    )
+    repository = SearchEngine::PostgresOutbox::Repository.new(connection: connection)
+
+    result = repository.retire_delivery_target!(
+      target_key: 'retired_target',
+      dry_run: false,
+      reason: 'target removed from topology',
+      operator: 'deploy-42'
+    )
+
+    assert_equal 2, result[:matched_nonterminal_deliveries]
+    assert_equal 2, result[:superseded_deliveries]
+    assert_equal 2, result[:affected_parent_events]
+    assert_equal result[:matched_nonterminal_deliveries], result[:superseded_deliveries]
+    assert_event_row_lock_sql(connection.executed_sql[0], event_ids: [10, 11])
+    assert_delivery_row_lock_sql(connection.executed_sql[1], delivery_ids: [100, 101])
+    update_sql = connection.selected_sql[3]
+    assert_includes update_sql, "status = 'superseded'"
+    assert_includes update_sql, 'processed_at = CURRENT_TIMESTAMP'
+    assert_includes update_sql, 'next_attempt_at = NULL'
+    assert_includes update_sql, 'locked_at = NULL'
+    assert_includes update_sql, 'locked_by = NULL'
+    assert_includes update_sql, '"reason":"target removed from topology"'
+    assert_includes update_sql, '"operator":"deploy-42"'
+    assert_parent_refresh_sql(connection.executed_sql[2])
+    assert_equal(
+      %i[begin select execute select execute select execute commit begin select commit],
+      connection.transaction_events.map(&:first)
+    )
+    all_sql = (connection.selected_sql + connection.executed_sql).join("\n")
+    refute_includes all_sql, 'custom_outbox_drain_slots'
+  end
+
+  def test_retire_delivery_target_rejects_still_configured_target_before_sql
+    SearchEngine.config.postgres_outbox.delivery_targets = lambda do
+      [{ key: 'active_target', queue_name: 'active_queue' }]
+    end
+    connection = FakeConnection.new
+    repository = SearchEngine::PostgresOutbox::Repository.new(connection: connection)
+
+    [true, false].each do |dry_run|
+      error = assert_raises(ArgumentError) do
+        repository.retire_delivery_target!(
+          target_key: 'active_target',
+          dry_run: dry_run,
+          reason: 'should not retire',
+          operator: 'deploy-42'
+        )
+      end
+      assert_match(/still configured/, error.message)
+    end
+
+    assert_empty connection.selected_sql
+    assert_empty connection.executed_sql
+  end
+
+  def test_retire_delivery_target_rechecks_configuration_immediately_before_update
+    checks = 0
+    SearchEngine.config.postgres_outbox.delivery_targets = lambda do
+      checks += 1
+      if checks >= 3
+        [{ key: 'retired_target', queue_name: 'queue' }]
+      else
+        []
+      end
+    end
+    connection = FakeConnection.new(
+      row_sets: [
+        [{ 'matched_nonterminal_deliveries' => 1, 'affected_parent_events' => 1 }],
+        [{ 'id' => 10 }],
+        [{ 'id' => 100, 'event_id' => 10 }]
+      ]
+    )
+    repository = SearchEngine::PostgresOutbox::Repository.new(connection: connection)
+
+    error = assert_raises(ArgumentError) do
+      repository.retire_delivery_target!(
+        target_key: 'retired_target',
+        dry_run: false,
+        reason: 'target removed',
+        operator: 'deploy-42'
+      )
+    end
+
+    assert_match(/still configured/, error.message)
+    assert_equal 3, checks
+    refute(connection.selected_sql.any? { |sql| sql.include?("SET status = 'superseded'") })
+  end
+
+  def test_retire_delivery_target_rejects_ambiguous_or_unsafe_text_inputs
+    connection = FakeConnection.new
+    repository = SearchEngine::PostgresOutbox::Repository.new(connection: connection)
+    invalid_calls = [
+      -> { repository.retire_delivery_target!(target_key: :target, dry_run: true, reason: 'removed') },
+      -> { repository.retire_delivery_target!(target_key: Object.new, dry_run: true, reason: 'removed') },
+      -> { repository.retire_delivery_target!(target_key: ' target', dry_run: true, reason: 'removed') },
+      -> { repository.retire_delivery_target!(target_key: 'target ', dry_run: true, reason: 'removed') },
+      -> { repository.retire_delivery_target!(target_key: "target\n", dry_run: true, reason: 'removed') },
+      -> { repository.retire_delivery_target!(target_key: 'target', dry_run: true, reason: "bad\treason") },
+      lambda do
+        repository.retire_delivery_target!(
+          target_key: 'target',
+          dry_run: false,
+          reason: 'removed',
+          operator: "bad\noperator"
+        )
+      end
+    ]
+
+    invalid_calls.each { |call| assert_raises(ArgumentError, &call) }
+    assert_empty connection.selected_sql
+    assert_empty connection.executed_sql
+  end
+
+  def test_retire_delivery_target_strips_audit_text_and_persists_all_max_bound_values
+    target = 't' * 255
+    reason = 'r' * 500
+    operator = 'o' * 255
+    connection = FakeConnection.new(
+      row_sets: [
+        [{ 'matched_nonterminal_deliveries' => 1, 'affected_parent_events' => 1 }],
+        [{ 'id' => 10 }],
+        [{ 'id' => 100, 'event_id' => 10 }],
+        [{ 'event_id' => 10 }],
+        []
+      ]
+    )
+    repository = SearchEngine::PostgresOutbox::Repository.new(connection: connection)
+
+    result = repository.retire_delivery_target!(
+      target_key: target,
+      dry_run: false,
+      reason: "  #{reason}  ",
+      operator: "  #{operator}  "
+    )
+
+    assert_equal 1, result[:matched_nonterminal_deliveries]
+    update_sql = connection.selected_sql[3]
+    assert_includes update_sql, target
+    assert_includes update_sql, reason
+    assert_includes update_sql, operator
+    assert_operator update_sql.length, :>, SearchEngine::PostgresOutbox::Repository::ERROR_LIMIT
+  end
+
+  def test_retire_delivery_target_validates_explicit_bounded_audit_arguments
+    connection = FakeConnection.new
+    repository = SearchEngine::PostgresOutbox::Repository.new(connection: connection)
+
+    missing_operator = assert_raises(ArgumentError) do
+      repository.retire_delivery_target!(target_key: 'target', dry_run: false, reason: 'removed')
+    end
+    invalid_dry_run = assert_raises(ArgumentError) do
+      repository.retire_delivery_target!(target_key: 'target', dry_run: nil, reason: 'removed')
+    end
+    long_target = assert_raises(ArgumentError) do
+      repository.retire_delivery_target!(target_key: 't' * 256, dry_run: true, reason: 'removed')
+    end
+    long_reason = assert_raises(ArgumentError) do
+      repository.retire_delivery_target!(target_key: 'target', dry_run: true, reason: 'r' * 501)
+    end
+    long_operator = assert_raises(ArgumentError) do
+      repository.retire_delivery_target!(
+        target_key: 'target',
+        dry_run: false,
+        reason: 'removed',
+        operator: 'o' * 256
+      )
+    end
+
+    assert_equal 'operator must be present', missing_operator.message
+    assert_equal 'dry_run must be true or false', invalid_dry_run.message
+    assert_equal 'target_key must be at most 255 characters', long_target.message
+    assert_equal 'reason must be at most 500 characters', long_reason.message
+    assert_equal 'operator must be at most 255 characters', long_operator.message
+    assert_empty connection.selected_sql
+    assert_empty connection.executed_sql
+  end
+
   def test_materialize_deliveries_inserts_missing_rows_for_configured_targets
     SearchEngine.config.postgres_outbox.delivery_targets = lambda do
       [

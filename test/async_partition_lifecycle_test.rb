@@ -102,6 +102,16 @@ class AsyncPartitionLifecycleTest < Minitest::Test
       end
     end
 
+    def record_attempt(run_id:, partition_key:, summary:, error:)
+      update_partition(run_id, partition_key) do |entry|
+        entry[:status] = 'running'
+        entry[:docs_total] = summary.docs_total
+        entry[:success_total] = summary.success_total
+        entry[:failed_total] = summary.failed_total
+        entry[:sample_error] = summary.sample_error || error.to_s
+      end
+    end
+
     def mark_failed(run_id:, partition_key:, error:)
       update_partition(run_id, partition_key) do |entry|
         entry[:status] = 'failed'

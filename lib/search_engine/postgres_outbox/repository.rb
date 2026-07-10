@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require 'json'
+
 module SearchEngine
   module PostgresOutbox
     # Raw SQL repository for host-managed PostgreSQL outbox rows.
@@ -8,6 +10,11 @@ module SearchEngine
       CLAIM_CANDIDATE_OVERSAMPLE = 4
       ERROR_LIMIT = 1000
       PROCESSED_AT_ASSIGNMENT = 'processed_at = CURRENT_TIMESTAMP'
+      RETIREMENT_BATCH_SIZE = 1000
+      RETIREMENT_TARGET_LIMIT = 255
+      RETIREMENT_REASON_LIMIT = 500
+      RETIREMENT_OPERATOR_LIMIT = 255
+      NON_TERMINAL_DELIVERY_STATUSES = %w[pending processing failed].freeze
 
       # @param connection [Object, nil] ActiveRecord-compatible connection
       # @param target_key [String, Symbol, nil] optional delivery target scope
@@ -178,6 +185,57 @@ module SearchEngine
         rows = select_rows(terminal_delivery_event_status_refresh_sql(retention_s: retention_s, limit: limit))
 
         rows.size
+      end
+
+      # Explicitly supersede persisted non-terminal deliveries for a removed target.
+      #
+      # The target must already be absent from configured delivery targets. This
+      # prevents normal materialization from recreating rows while retirement is
+      # running. Configuration is checked again immediately before each mutation,
+      # though callers must still avoid changing process configuration concurrently
+      # because Ruby configuration and PostgreSQL cannot share an atomic lock.
+      #
+      # @param target_key [String] exact, case-sensitive persisted target key
+      # @param dry_run [Boolean] true to count only, false to mutate
+      # @param reason [String] required audit reason, at most 500 characters
+      # @param operator [String, nil] required for apply, defaults to "unspecified" for dry-run
+      # @return [Hash] matched, superseded, and affected-parent counters
+      def retire_delivery_target!(target_key:, dry_run:, reason:, operator: nil)
+        target = normalize_retirement_argument(target_key, 'target_key', RETIREMENT_TARGET_LIMIT)
+        audit_reason = normalize_retirement_argument(reason, 'reason', RETIREMENT_REASON_LIMIT)
+        dry_run = normalize_retirement_dry_run(dry_run)
+        audit_operator = normalize_retirement_operator(operator, dry_run: dry_run)
+        ensure_target_not_configured!(target)
+
+        return retirement_result(target, dry_run, 0, 0, 0) unless delivery_table_exists?
+
+        preview = delivery_retirement_preview(target)
+        if dry_run || preview[:matched_nonterminal_deliveries].zero?
+          return retirement_result(
+            target,
+            dry_run,
+            preview[:matched_nonterminal_deliveries],
+            0,
+            preview[:affected_parent_events]
+          )
+        end
+
+        superseded_deliveries = 0
+        audit = delivery_retirement_audit(target, audit_reason, audit_operator)
+        loop do
+          batch = retire_delivery_target_batch!(target, audit: audit)
+          break unless batch[:candidate_found]
+
+          superseded_deliveries += batch[:event_ids].size
+        end
+
+        retirement_result(
+          target,
+          false,
+          superseded_deliveries,
+          superseded_deliveries,
+          superseded_deliveries
+        )
       end
 
       # Check whether the optional drain slot table exists.
@@ -448,6 +506,140 @@ module SearchEngine
             AND status = 'processing'
             AND locked_at < (CURRENT_TIMESTAMP - interval '#{processing_timeout_s} seconds')
         SQL
+      end
+
+      def retire_delivery_target_batch!(target, audit:)
+        result = { candidate_found: false, event_ids: [] }
+        connection.transaction do
+          ensure_target_not_configured!(target)
+          parent_rows = select_rows(delivery_retirement_parent_candidates_sql(target))
+          next if parent_rows.empty?
+
+          result[:candidate_found] = true
+          parent_ids = parent_rows.map { |row| row_value(row, :id) }
+          lock_event_rows!(parent_ids)
+          delivery_rows = select_rows(delivery_retirement_candidates_sql(target, parent_ids))
+          next if delivery_rows.empty?
+
+          delivery_ids = delivery_rows.map { |row| row_value(row, :id) }
+          lock_delivery_rows!(delivery_ids)
+          ensure_target_not_configured!(target)
+          updated_rows = select_rows(delivery_retirement_update_sql(target, delivery_ids, audit))
+          event_ids = updated_rows.map { |row| row_value(row, :event_id) }.compact
+          refresh_event_statuses!(event_ids) if event_ids.any?
+          result[:event_ids] = event_ids
+        end
+        result
+      end
+
+      def delivery_retirement_preview(target)
+        row = select_rows(<<~SQL).first || {}
+          SELECT COUNT(*) AS matched_nonterminal_deliveries,
+                 COUNT(DISTINCT event_id) AS affected_parent_events
+          FROM #{quoted_delivery_table}
+          WHERE target_key = #{quote(target)}
+            AND status IN (#{delivery_non_terminal_statuses_sql})
+        SQL
+        {
+          matched_nonterminal_deliveries: row_value(row, :matched_nonterminal_deliveries).to_i,
+          affected_parent_events: row_value(row, :affected_parent_events).to_i
+        }
+      end
+
+      def delivery_retirement_parent_candidates_sql(target)
+        <<~SQL
+          SELECT DISTINCT event_id AS id
+          FROM #{quoted_delivery_table}
+          WHERE target_key = #{quote(target)}
+            AND status IN (#{delivery_non_terminal_statuses_sql})
+          ORDER BY event_id ASC
+          LIMIT #{RETIREMENT_BATCH_SIZE}
+        SQL
+      end
+
+      def delivery_retirement_candidates_sql(target, parent_ids)
+        <<~SQL
+          SELECT id, event_id
+          FROM #{quoted_delivery_table}
+          WHERE target_key = #{quote(target)}
+            AND event_id IN (#{ids_sql(parent_ids)})
+            AND status IN (#{delivery_non_terminal_statuses_sql})
+          ORDER BY id ASC
+        SQL
+      end
+
+      def delivery_retirement_update_sql(target, delivery_ids, audit)
+        <<~SQL
+          UPDATE #{quoted_delivery_table}
+          SET status = 'superseded',
+              processed_at = CURRENT_TIMESTAMP,
+              next_attempt_at = NULL,
+              locked_at = NULL,
+              locked_by = NULL,
+              last_error = #{quote(audit)},
+              updated_at = CURRENT_TIMESTAMP
+          WHERE id IN (#{ids_sql(delivery_ids)})
+            AND target_key = #{quote(target)}
+            AND status IN (#{delivery_non_terminal_statuses_sql})
+          RETURNING event_id
+        SQL
+      end
+
+      def delivery_non_terminal_statuses_sql
+        ids_sql(NON_TERMINAL_DELIVERY_STATUSES)
+      end
+
+      def ensure_target_not_configured!(target)
+        return unless delivery_targets.any? { |configured_target| configured_target.key == target }
+
+        raise ArgumentError,
+              "delivery target #{target.inspect} is still configured; remove it before retirement"
+      end
+
+      def normalize_retirement_argument(value, name, max_length)
+        raise ArgumentError, "#{name} must be a String" unless value.is_a?(String)
+        raise ArgumentError, "#{name} must not contain control characters" if value.match?(/[[:cntrl:]]/)
+
+        normalized = name == 'target_key' ? value : value.strip
+        raise ArgumentError, "#{name} must be present" if normalized.empty?
+        if name == 'target_key' && normalized != normalized.strip
+          raise ArgumentError, 'target_key must not contain surrounding whitespace'
+        end
+        raise ArgumentError, "#{name} must be at most #{max_length} characters" if normalized.length > max_length
+
+        normalized
+      end
+
+      def normalize_retirement_operator(operator, dry_run:)
+        return 'unspecified' if dry_run && operator.nil?
+        raise ArgumentError, 'operator must be present' if operator.nil?
+
+        normalize_retirement_argument(operator, 'operator', RETIREMENT_OPERATOR_LIMIT)
+      end
+
+      def normalize_retirement_dry_run(value)
+        return value if [true, false].include?(value)
+
+        raise ArgumentError, 'dry_run must be true or false'
+      end
+
+      def delivery_retirement_audit(target, reason, operator)
+        JSON.generate(
+          action: 'delivery_target_retired',
+          target_key: target,
+          reason: reason,
+          operator: operator
+        )
+      end
+
+      def retirement_result(target, dry_run, matched, superseded, affected_parents)
+        {
+          target_key: target,
+          dry_run: dry_run,
+          matched_nonterminal_deliveries: matched,
+          superseded_deliveries: superseded,
+          affected_parent_events: affected_parents
+        }
       end
 
       def claim_select_sql(limit)

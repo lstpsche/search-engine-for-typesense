@@ -88,4 +88,49 @@ class ImportDispatcherTest < Minitest::Test
 
     assert_equal 'Unsupported Typesense import response shape: Hash', error.message
   end
+
+  def test_short_import_response_raises_instead_of_reporting_partial_stats
+    client = FakeClient.new(calls: [], responses: ["{\"success\":true}\n"])
+    policy = SearchEngine::Indexer::RetryPolicy.from_config(attempts: 1, base: 0.0, max: 0.0, jitter_fraction: 0.0)
+
+    error = assert_raises(SearchEngine::Errors::InvalidParams) do
+      SearchEngine::Indexer::ImportDispatcher.import_batch(
+        client: client,
+        collection: 'products',
+        action: :upsert,
+        jsonl: "{\"id\":1}\n{\"id\":2}\n",
+        docs_count: 2,
+        bytes_sent: 24,
+        batch_index: 0,
+        retry_policy: policy,
+        dry_run: false
+      )
+    end
+
+    assert_equal 'Typesense import response row count mismatch: expected 2, got 1', error.message
+    assert_equal({ submitted_count: 2, response_count: 1 }, error.details)
+    assert_equal 1, client.calls.size
+  end
+
+  def test_malformed_response_row_raises_without_echoing_payload
+    client = FakeClient.new(calls: [], responses: ['{"secret":"do-not-echo"'])
+    policy = SearchEngine::Indexer::RetryPolicy.from_config(attempts: 1, base: 0.0, max: 0.0, jitter_fraction: 0.0)
+
+    error = assert_raises(SearchEngine::Errors::InvalidParams) do
+      SearchEngine::Indexer::ImportDispatcher.import_batch(
+        client: client,
+        collection: 'products',
+        action: :upsert,
+        jsonl: "{\"id\":1}\n",
+        docs_count: 1,
+        bytes_sent: 10,
+        batch_index: 0,
+        retry_policy: policy,
+        dry_run: false
+      )
+    end
+
+    assert_equal 'Invalid JSON in Typesense import response row 0', error.message
+    refute_includes error.message, 'secret'
+  end
 end

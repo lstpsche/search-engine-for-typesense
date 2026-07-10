@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require 'search_engine/observability'
+
 module SearchEngine
   # Public error hierarchy for the SearchEngine client wrapper.
   #
@@ -77,10 +79,10 @@ module SearchEngine
 
         if defined?(SearchEngine::Observability)
           begin
-            red = SearchEngine::Observability.redact(obj)
+            red = SearchEngine::Observability.redact_details(obj)
             return jsonable(red)
           rescue StandardError
-            return jsonable(obj)
+            return nil
           end
         end
 
@@ -126,6 +128,34 @@ module SearchEngine
     # The pool kills remaining queued/running tasks after the timeout,
     # leaving those partitions unindexed.
     class PartitionTimeout < Error; end
+
+    # Raised when a partition import completes its request but Typesense reports
+    # one or more row-level failures. The summary is retained so coordinated
+    # async runs can record partial progress before ActiveJob retries the batch.
+    class PartitionImportFailed < Error
+      # @return [Object] indexer summary for the failed attempt
+      attr_reader :summary
+
+      # @param summary [Object]
+      def initialize(summary)
+        @summary = summary
+        failed_total = summary_value(:failed_total).to_i
+        sample = SearchEngine::Observability.truncate_message(summary_value(:sample_error), 200)
+        message = "Partition import reported #{failed_total} failed document(s)"
+        message = "#{message}: #{sample}" unless sample.empty?
+        super(message)
+      end
+
+      private
+
+      def summary_value(key)
+        return summary.public_send(key) if summary.respond_to?(key)
+        return summary[key] if summary.is_a?(Hash) && summary.key?(key)
+        return summary[key.to_s] if summary.is_a?(Hash) && summary.key?(key.to_s)
+
+        nil
+      end
+    end
 
     # Raised inside a {SearchEngine::Schema.apply!} block when indexation
     # returns a non-ok status. Aborting the block prevents the alias swap,

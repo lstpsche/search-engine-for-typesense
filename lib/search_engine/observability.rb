@@ -21,6 +21,13 @@ module SearchEngine
 
     # Maximum length for `q` values before truncation.
     MAX_Q_LENGTH = 128
+    MAX_DETAIL_STRING_LENGTH = 500
+    MAX_DETAIL_ARRAY_LENGTH = 50
+    MAX_DETAIL_HASH_LENGTH = 50
+    MAX_DETAIL_DEPTH = 6
+    DETAIL_SENSITIVE_KEY_PATTERN =
+      /(?:\A|_)(?:api_?key|access_?key|private_?key|token|secret|password|authorization|credential)s?(?:\z|_)/i
+    DETAIL_PAYLOAD_KEY_PATTERN = /\A(?:body|data|document|documents|jsonl|payload|raw|record|records|response)\z/i
 
     # Redact a value producing a new structure without mutating the input.
     #
@@ -43,6 +50,20 @@ module SearchEngine
       else
         value
       end
+    end
+
+    # Redact structured error metadata while preserving safe diagnostic fields.
+    #
+    # Unlike {.redact}, which intentionally whitelists Typesense search params,
+    # this method preserves arbitrary metadata keys such as +missing_required+
+    # and +expected+. Sensitive and payload-bearing keys are always replaced.
+    # Collections and strings are bounded so exceptions cannot retain large
+    # request payloads accidentally.
+    #
+    # @param value [Object]
+    # @return [Object]
+    def self.redact_details(value)
+      redact_detail_value(value, depth: 0)
     end
 
     # Internal: Redact a Hash presumed to be Typesense search params.
@@ -129,6 +150,46 @@ module SearchEngine
       end
     end
 
+    def self.redact_detail_value(value, depth:)
+      return '[TRUNCATED]' if depth >= MAX_DETAIL_DEPTH
+
+      case value
+      when Hash
+        redact_detail_hash(value, depth: depth)
+      when Array
+        value.first(MAX_DETAIL_ARRAY_LENGTH).map do |item|
+          redact_detail_value(item, depth: depth + 1)
+        end
+      when String
+        truncate_message(value, MAX_DETAIL_STRING_LENGTH)
+      when Symbol
+        value.to_s
+      when Numeric, TrueClass, FalseClass, NilClass
+        value
+      else
+        "[#{value.class.name}]"
+      end
+    end
+
+    def self.redact_detail_hash(value, depth:)
+      value.first(MAX_DETAIL_HASH_LENGTH).each_with_object({}) do |(key, item), result|
+        normalized_key = key.to_s
+        result[key] = if sensitive_detail_key?(normalized_key) || payload_detail_key?(normalized_key)
+                        '[REDACTED]'
+                      else
+                        redact_detail_value(item, depth: depth + 1)
+                      end
+      end
+    end
+
+    def self.sensitive_detail_key?(key)
+      key.match?(DETAIL_SENSITIVE_KEY_PATTERN)
+    end
+
+    def self.payload_detail_key?(key)
+      key.match?(DETAIL_PAYLOAD_KEY_PATTERN)
+    end
+
     # Build a filtered URL/common options hash for payloads.
     # @param url_opts [Hash]
     # @return [Hash]
@@ -180,6 +241,8 @@ module SearchEngine
     end
 
     private_class_method :redact_params_hash, :redact_simple_value, :truncate_q,
-                         :redact_string, :redact_filter_by, :redact_vector_query
+                         :redact_string, :redact_filter_by, :redact_vector_query,
+                         :redact_detail_value, :redact_detail_hash, :sensitive_detail_key?,
+                         :payload_detail_key?
   end
 end

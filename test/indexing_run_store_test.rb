@@ -94,6 +94,113 @@ class IndexingRunStoreTest < Minitest::Test
     )
   end
 
+  def test_record_attempt_keeps_partition_running_and_does_not_fail_siblings
+    partitions = [1, 2]
+    snapshot = @store.create_run(
+      run_id: 'run-retry',
+      collection: 'products',
+      collection_class_name: 'SearchEngine::Product',
+      into: 'products_20260604',
+      partitions: partitions,
+      ttl_s: 60
+    )
+    first_key, second_key = snapshot[:partitions].keys
+    summary = Summary.new(docs_total: 3, success_total: 2, failed_total: 1, sample_error: 'bad row')
+
+    @store.mark_started(run_id: 'run-retry', partition_key: first_key, job_id: 'job-1')
+    attempt_snapshot = @store.record_attempt(
+      run_id: 'run-retry',
+      partition_key: first_key,
+      summary: summary,
+      error: SearchEngine::Errors::PartitionImportFailed.new(summary)
+    )
+
+    first = attempt_snapshot[:partitions][first_key]
+    second = attempt_snapshot[:partitions][second_key]
+    assert_equal 'running', attempt_snapshot[:status]
+    assert_equal 'running', first[:status]
+    assert_equal 1, first[:attempts]
+    assert_equal 3, first[:docs_total]
+    assert_equal 2, first[:success_total]
+    assert_equal 1, first[:failed_total]
+    assert_equal 'bad row', first[:sample_error]
+    assert_equal 'pending', second[:status]
+    assert_equal 0, second[:failed_total]
+  end
+
+  def test_retry_can_overwrite_partial_attempt_with_success
+    snapshot = @store.create_run(
+      run_id: 'run-retry-success',
+      collection: 'products',
+      collection_class_name: 'SearchEngine::Product',
+      into: 'products_20260604',
+      partitions: [1],
+      ttl_s: 60
+    )
+    key = snapshot[:partitions].keys.first
+    partial = Summary.new(docs_total: 3, success_total: 2, failed_total: 1, sample_error: 'bad row')
+
+    @store.mark_started(run_id: 'run-retry-success', partition_key: key, job_id: 'job-1')
+    @store.record_attempt(
+      run_id: 'run-retry-success',
+      partition_key: key,
+      summary: partial,
+      error: SearchEngine::Errors::PartitionImportFailed.new(partial)
+    )
+    @store.mark_started(run_id: 'run-retry-success', partition_key: key, job_id: 'job-1')
+    succeeded = @store.mark_succeeded(
+      run_id: 'run-retry-success',
+      partition_key: key,
+      summary: Summary.new(docs_total: 3, success_total: 3, failed_total: 0, sample_error: nil)
+    )
+
+    entry = succeeded[:partitions][key]
+    assert_equal 'succeeded', succeeded[:status]
+    assert_equal 2, entry[:attempts]
+    assert_equal 3, entry[:success_total]
+    assert_equal 0, entry[:failed_total]
+    assert_nil entry[:sample_error]
+  end
+
+  def test_terminal_partitions_reject_late_or_duplicate_job_transitions
+    snapshot = @store.create_run(
+      run_id: 'run-terminal',
+      collection: 'products',
+      collection_class_name: 'SearchEngine::Product',
+      into: 'products_20260604',
+      partitions: [1, 2],
+      ttl_s: 60
+    )
+    succeeded_key, failed_key = snapshot[:partitions].keys
+    success = Summary.new(docs_total: 1, success_total: 1, failed_total: 0, sample_error: nil)
+    partial = Summary.new(docs_total: 1, success_total: 0, failed_total: 1, sample_error: 'bad row')
+    partial_error = SearchEngine::Errors::PartitionImportFailed.new(partial)
+
+    @store.mark_succeeded(run_id: 'run-terminal', partition_key: succeeded_key, summary: success)
+    @store.mark_failed(run_id: 'run-terminal', partition_key: failed_key, error: 'terminal failure')
+
+    assert_raises(SearchEngine::IndexingRunStore::StaleRun) do
+      @store.mark_started(run_id: 'run-terminal', partition_key: succeeded_key, job_id: 'late-job')
+    end
+    assert_raises(SearchEngine::IndexingRunStore::StaleRun) do
+      @store.mark_failed(run_id: 'run-terminal', partition_key: succeeded_key, error: 'late failure')
+    end
+    assert_raises(SearchEngine::IndexingRunStore::StaleRun) do
+      @store.mark_started(run_id: 'run-terminal', partition_key: failed_key, job_id: 'retry-job')
+    end
+    assert_raises(SearchEngine::IndexingRunStore::StaleRun) do
+      @store.record_attempt(
+        run_id: 'run-terminal',
+        partition_key: failed_key,
+        summary: partial,
+        error: partial_error
+      )
+    end
+    assert_raises(SearchEngine::IndexingRunStore::StaleRun) do
+      @store.mark_succeeded(run_id: 'run-terminal', partition_key: failed_key, summary: success)
+    end
+  end
+
   def test_concurrent_partition_updates_preserve_all_statuses
     partitions = (1..10).to_a
     @store.create_run(

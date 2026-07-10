@@ -113,9 +113,12 @@ module SearchEngine
     def timeout_result(store, run_id, snapshot)
       mark_non_terminal_failed(store, run_id, snapshot)
       snapshot = store.snapshot(run_id: run_id) || snapshot
+      current_result = SearchEngine::IndexingRun.aggregate_result(snapshot)
+      return finish_success(snapshot, current_result) if current_result[:status] == :ok
+
       result = failed_result(
         snapshot,
-        SearchEngine::IndexingRun.aggregate_result(snapshot),
+        current_result,
         sample_error: "SearchEngine async partition indexing timed out for run #{run_id}"
       )
       instrument('search_engine.indexing_run.failed', event_payload(snapshot, result: result))
@@ -136,6 +139,9 @@ module SearchEngine
           partition_key: partition_key,
           error: 'partition did not finish before timeout'
         )
+      rescue SearchEngine::IndexingRunStore::StaleRun
+        # The partition completed between the snapshot and terminal transition.
+        # Re-read the run after this pass instead of overwriting terminal success.
       end
     end
     private_class_method :mark_non_terminal_failed

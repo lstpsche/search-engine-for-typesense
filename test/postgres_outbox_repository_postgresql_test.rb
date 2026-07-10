@@ -98,7 +98,7 @@ class PostgresOutboxRepositoryPostgresqlTest < Minitest::Test
 
     def select_all(sql)
       invoke_hook(sql)
-      json = @session.run(<<~SQL).last
+      json = @session.run(<<~SQL).join
         WITH __search_engine_result AS MATERIALIZED (
           #{sql.rstrip.delete_suffix(';')}
         )
@@ -278,6 +278,40 @@ class PostgresOutboxRepositoryPostgresqlTest < Minitest::Test
     assert_equal '0', scalar("SELECT COUNT(*) FROM #{deliveries_table} WHERE event_id = 1")
   end
 
+  def test_target_retirement_is_exact_audited_idempotent_and_refreshes_parents
+    seed_retirement_rows
+    SearchEngine.config.postgres_outbox.delivery_targets = lambda do
+      [{ key: 'target_2', queue_name: 'queue_2' }]
+    end
+    worker = new_session('target_retirement')
+    repository = SearchEngine::PostgresOutbox::Repository.new(connection: PsqlConnection.new(worker))
+
+    dry_run = repository.retire_delivery_target!(
+      target_key: 'target_1',
+      dry_run: true,
+      reason: 'topology migration'
+    )
+    assert_retirement_dry_run(dry_run)
+
+    applied = repository.retire_delivery_target!(
+      target_key: 'target_1',
+      dry_run: false,
+      reason: 'topology migration',
+      operator: 'deploy-42'
+    )
+    assert_retirement_applied(applied)
+
+    repeated = repository.retire_delivery_target!(
+      target_key: 'target_1',
+      dry_run: false,
+      reason: 'topology migration',
+      operator: 'deploy-42'
+    )
+    assert_equal 0, repeated[:matched_nonterminal_deliveries]
+    assert_equal 0, repeated[:superseded_deliveries]
+    assert_equal 0, repeated[:affected_parent_events]
+  end
+
   private
 
   def postgresql_16?
@@ -446,6 +480,61 @@ class PostgresOutboxRepositoryPostgresqlTest < Minitest::Test
       INSERT INTO #{deliveries_table} (id, event_id, target_key, queue_name, status)
       VALUES (102, 2, 'target_1', 'queue_1', 'pending')
     SQL
+  end
+
+  def seed_retirement_rows
+    @control.run(<<~SQL)
+      INSERT INTO #{events_table} (
+        id, source_table, source_model_name, collection, record_id, document_id, operation, status
+      )
+      VALUES (10, 'products', 'Product', 'products', '10', 'sku-10', 'upsert', 'pending'),
+             (11, 'products', 'Product', 'products', '11', 'sku-11', 'upsert', 'pending'),
+             (12, 'products', 'Product', 'products', '12', 'sku-12', 'upsert', 'failed'),
+             (13, 'products', 'Product', 'products', '13', 'sku-13', 'upsert', 'processed');
+
+      INSERT INTO #{deliveries_table} (
+        id, event_id, target_key, queue_name, status, locked_at, locked_by, processed_at, last_error
+      )
+      VALUES (201, 10, 'target_1', 'queue_1', 'pending', NULL, NULL, NULL, NULL),
+             (202, 10, 'target_2', 'queue_2', 'pending', NULL, NULL, NULL, NULL),
+             (203, 11, 'target_1', 'queue_1', 'processing', CURRENT_TIMESTAMP, 'worker-1', NULL, NULL),
+             (204, 12, 'target_1', 'queue_1', 'failed', NULL, NULL, NULL, 'old failure'),
+             (205, 13, 'target_1', 'queue_1', 'processed', NULL, NULL, CURRENT_TIMESTAMP, NULL)
+    SQL
+  end
+
+  def assert_retirement_dry_run(result)
+    assert_equal 3, result[:matched_nonterminal_deliveries]
+    assert_equal 0, result[:superseded_deliveries]
+    assert_equal 3, result[:affected_parent_events]
+    assert_equal 'pending', scalar("SELECT status FROM #{deliveries_table} WHERE id = 201")
+  end
+
+  def assert_retirement_applied(result)
+    assert_equal 3, result[:matched_nonterminal_deliveries]
+    assert_equal result[:matched_nonterminal_deliveries], result[:superseded_deliveries]
+    assert_equal 3, result[:affected_parent_events]
+    assert_equal '3', scalar(<<~SQL)
+      SELECT COUNT(*)
+      FROM #{deliveries_table}
+      WHERE target_key = 'target_1'
+        AND status = 'superseded'
+    SQL
+    assert_equal 'pending', scalar("SELECT status FROM #{deliveries_table} WHERE id = 202")
+    assert_equal 'processed', scalar("SELECT status FROM #{deliveries_table} WHERE id = 205")
+    assert_equal 'pending', scalar("SELECT status FROM #{events_table} WHERE id = 10")
+    assert_equal 'superseded', scalar("SELECT status FROM #{events_table} WHERE id = 11")
+    assert_equal 'superseded', scalar("SELECT status FROM #{events_table} WHERE id = 12")
+    assert_equal '<null>', scalar("SELECT COALESCE(locked_by, '<null>') FROM #{deliveries_table} WHERE id = 203")
+    assert_retirement_audit
+  end
+
+  def assert_retirement_audit
+    audit = JSON.parse(scalar("SELECT last_error FROM #{deliveries_table} WHERE id = 201"))
+    assert_equal 'delivery_target_retired', audit.fetch('action')
+    assert_equal 'target_1', audit.fetch('target_key')
+    assert_equal 'topology migration', audit.fetch('reason')
+    assert_equal 'deploy-42', audit.fetch('operator')
   end
 
   def insert_events

@@ -83,14 +83,18 @@ module SearchEngine
 
       # Resolve the effective dispatch mode from ENV override or config.
       # @param env_value [String, Symbol, nil]
-      # @return [Symbol] :inline or :active_job (falls back to :inline if AJ unavailable)
+      # @return [Symbol] :inline or :active_job
+      # @raise [ArgumentError] for unsupported values or unavailable ActiveJob
       def resolve_dispatch_mode(env_value)
-        val = (env_value || ENV['DISPATCH'] || SearchEngine.config.indexer.dispatch || :inline).to_s.downcase
-        case val
-        when 'active_job', 'activejob', 'aj'
-          return :active_job if defined?(::ActiveJob::Base)
+        raw = env_value || ENV['DISPATCH'] || SearchEngine.config.indexer.dispatch || :inline
+        mode = SearchEngine::Config::Validators.normalize_dispatch_mode(raw)
+        raise ArgumentError, 'dispatch mode must be :active_job or :inline' unless mode
+
+        if mode == :active_job && !defined?(::ActiveJob::Base)
+          raise ArgumentError, 'dispatch mode :active_job requires ActiveJob'
         end
-        :inline
+
+        mode
       end
 
       # Return true when ENV[name] is a truthy flag (1/true/yes/on).

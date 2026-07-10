@@ -98,6 +98,7 @@ module SearchEngine
         success_total: 0,
         failed_total: 0,
         sample_error: nil,
+        attempts: 0,
         job_id: nil,
         updated_at: iso8601_now
       }

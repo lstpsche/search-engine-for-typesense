@@ -4,91 +4,139 @@ require 'json'
 
 module SearchEngine
   class Indexer
-    # Shared parser for Typesense import API responses.
+    # Strict, payload-safe parser for Typesense import API responses.
     #
-    # Accepts the two shapes returned by different versions of the Typesense Ruby
-    # client:
-    # - String (JSONL status lines)
-    # - Array<Hash> (already parsed per-document statuses)
-    #
-    # Returns a stable tuple:
-    #   [success_count, failure_count, errors_sample]
+    # Typesense clients return either JSONL or an already-decoded Array<Hash>.
+    # Parsing preserves response order and deliberately ignores document/payload
+    # keys that some client options may include in each response row.
     module ImportResponseParser
+      MAX_ERROR_LENGTH = 200
       MAX_ERROR_SAMPLES = 5
-      INVALID_JSON_LINE = 'invalid-json-line'
+      SUCCESS_KEYS = ['success', :success].freeze
+      STATUS_KEYS = ['status', :status, 'code', :code].freeze
+      ERROR_KEYS = ['error', :error, 'message', :message].freeze
 
       module_function
 
-      # @param raw [String, Array, Object]
+      # Parse every response row into a stable, ordered representation.
+      #
+      # @param raw [String, Array<Hash>]
+      # @return [Array<Hash>] frozen rows with :index, :success, :status, and :error
+      # @raise [SearchEngine::Errors::InvalidParams] for malformed or ambiguous responses
+      def parse_rows(raw)
+        entries = response_entries(raw)
+        entries.each_with_index.map { |entry, index| parse_row(entry, index) }.freeze
+      end
+
+      # Return the legacy aggregate tuple, derived from strict row parsing.
+      #
+      # @param raw [String, Array<Hash>]
       # @return [Array(Integer, Integer, Array<String>)]
       def parse(raw)
-        return parse_from_string(raw) if raw.is_a?(String)
-        return parse_from_array(raw) if raw.is_a?(Array)
-        return [0, 0, []] if raw.nil?
-
-        raise SearchEngine::Errors::InvalidParams,
-              "Unsupported Typesense import response shape: #{raw.class.name}"
+        rows = parse_rows(raw)
+        successes = rows.count { |row| row[:success] }
+        failures = rows.length - successes
+        errors = rows.filter_map { |row| row[:error] unless row[:success] }
+        [successes, failures, errors.first(MAX_ERROR_SAMPLES)]
       end
 
-      def parse_from_string(str)
-        success = 0
-        failure = 0
-        samples = []
+      def response_entries(raw)
+        case raw
+        when String
+          parse_jsonl(raw)
+        when Array
+          raw
+        when nil
+          raise_invalid!('Typesense import response is nil')
+        else
+          raise_invalid!("Unsupported Typesense import response shape: #{raw.class.name}")
+        end
+      end
+      module_function :response_entries
 
-        str.each_line do |line|
-          row = line.strip
-          next if row.empty?
+      def parse_jsonl(raw)
+        entries = []
+        raw.each_line.with_index do |line, line_index|
+          text = line.strip
+          next if text.empty?
 
-          parsed = safe_parse_json(row)
-          unless parsed
-            failure += 1
-            samples << INVALID_JSON_LINE
-            next
-          end
-
-          if truthy?(parsed['success'] || parsed[:success])
-            success += 1
-          else
-            failure += 1
-            msg = parsed['error'] || parsed[:error] || parsed['message'] || parsed[:message]
-            samples << msg.to_s[0, 200] if msg
+          begin
+            entries << JSON.parse(text)
+          rescue JSON::ParserError
+            raise_invalid!("Invalid JSON in Typesense import response row #{line_index}")
           end
         end
-
-        [success, failure, samples[0, MAX_ERROR_SAMPLES]]
+        entries
       end
-      module_function :parse_from_string
+      module_function :parse_jsonl
 
-      def parse_from_array(arr)
-        success = 0
-        failure = 0
-        samples = []
-
-        arr.each do |entry|
-          if entry.is_a?(Hash) && truthy?(entry['success'] || entry[:success])
-            success += 1
-          else
-            failure += 1
-            msg = entry.is_a?(Hash) ? (entry['error'] || entry[:error] || entry['message'] || entry[:message]) : nil
-            samples << msg.to_s[0, 200] if msg
-          end
+      def parse_row(entry, index)
+        unless entry.is_a?(Hash)
+          raise_invalid!("Typesense import response row #{index} must be a Hash (got #{entry.class.name})")
         end
 
-        [success, failure, samples[0, MAX_ERROR_SAMPLES]]
+        row = {
+          index: index,
+          success: parse_success(entry, index),
+          status: parse_status(entry, index),
+          error: parse_error(entry)
+        }
+        row[:error]&.freeze
+        row.freeze
       end
-      module_function :parse_from_array
+      module_function :parse_row
 
-      def safe_parse_json(line)
-        JSON.parse(line)
-      rescue StandardError
-        nil
-      end
-      module_function :safe_parse_json
+      def parse_success(entry, index)
+        values = values_for(entry, SUCCESS_KEYS)
+        raise_invalid!("Typesense import response row #{index} is missing success") if values.empty?
 
-      def truthy?(value)
-        value == true || value.to_s.downcase == 'true'
+        unless values.all? { |value| [true, false].include?(value) }
+          raise_invalid!("Typesense import response row #{index} has a non-boolean success value")
+        end
+        raise_invalid!("Typesense import response row #{index} has conflicting success values") if values.uniq.size > 1
+
+        values.first
       end
-      module_function :truthy?
+      module_function :parse_success
+
+      def parse_status(entry, index)
+        values = values_for(entry, STATUS_KEYS).compact.map { |value| integer_status(value, index) }
+        return nil if values.empty?
+
+        raise_invalid!("Typesense import response row #{index} has conflicting status values") if values.uniq.size > 1
+
+        values.first
+      end
+      module_function :parse_status
+
+      def integer_status(value, index)
+        return value if value.is_a?(Integer)
+        return Integer(value, 10) if value.is_a?(String) && value.match?(/\A\d+\z/)
+
+        raise_invalid!("Typesense import response row #{index} has a non-integer status value")
+      end
+      module_function :integer_status
+
+      def parse_error(entry)
+        value = ERROR_KEYS.filter_map { |key| entry[key] if entry.key?(key) }.first
+        return nil if value.nil?
+        return nil unless value.is_a?(String) || value.is_a?(Symbol) || value.is_a?(Numeric)
+
+        value.to_s.gsub(/\s+/, ' ').strip[0, MAX_ERROR_LENGTH]
+      end
+      module_function :parse_error
+
+      def values_for(entry, keys)
+        keys.each_with_object([]) do |key, values|
+          values << entry[key] if entry.key?(key)
+        end
+      end
+      module_function :values_for
+
+      def raise_invalid!(message)
+        raise SearchEngine::Errors::InvalidParams, message
+      end
+      module_function :raise_invalid!
     end
   end
 end

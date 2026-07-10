@@ -328,8 +328,7 @@ module SearchEngine
 
         def invalid_type_message(expected, got)
           got_class = got.nil? ? 'NilClass' : got.class.name
-          got_preview = got.is_a?(String) ? got[0, 50] : got.to_s[0, 50]
-          "Invalid type (expected #{expected}, got #{got_class}: \"#{got_preview}\")."
+          "Invalid type (expected #{expected}, got #{got_class})."
         end
 
         def validate_required_and_unknown!(klass, present_keys, allowed_keys, required_keys)
@@ -490,7 +489,8 @@ module SearchEngine
           end
         end
 
-        def import_documents!(klass, docs, into:, partition: nil)
+        def import_documents!(klass, docs, into:, partition: nil, on_failure: :raise)
+          failure_mode = normalize_failure_mode!(on_failure)
           collection = resolve_target_collection(klass, into: into, partition: partition)
           if docs.empty?
             return {
@@ -499,13 +499,18 @@ module SearchEngine
               success_count: 0,
               failure_count: 0,
               bytes_sent: 0,
-              response: nil
+              errors_sample: [].freeze,
+              row_results: [].freeze
             }
           end
 
           count, bytes, jsonl = encode_jsonl!(docs)
           raw = SearchEngine.client.import_documents(collection: collection, jsonl: jsonl, action: :upsert)
-          success_count, failure_count, errors_sample = parse_import_response(raw)
+          row_results = parse_import_response(raw)
+          validate_response_count!(row_results, count, collection)
+          success_count = row_results.count { |row| row[:success] }
+          failure_count = row_results.length - success_count
+          errors_sample = row_results.filter_map { |row| row[:error] unless row[:success] }.first(5).freeze
 
           result = {
             collection: collection,
@@ -513,11 +518,11 @@ module SearchEngine
             success_count: success_count,
             failure_count: failure_count,
             bytes_sent: bytes,
-            response: raw,
-            errors_sample: errors_sample
+            errors_sample: errors_sample,
+            row_results: row_results
           }
 
-          if failure_count.positive?
+          if failure_mode == :raise && failure_count.positive?
             sample = errors_sample&.first
             msg = "Typesense import failed for #{failure_count}/#{count} document(s)"
             msg = "#{msg} (e.g., #{sample})" if sample
@@ -532,7 +537,28 @@ module SearchEngine
         end
 
         def parse_import_response(raw)
-          SearchEngine::Indexer::ImportResponseParser.parse(raw)
+          SearchEngine::Indexer::ImportResponseParser.parse_rows(raw)
+        end
+
+        def normalize_failure_mode!(mode)
+          return mode if %i[raise return].include?(mode)
+
+          raise SearchEngine::Errors::InvalidParams,
+                'on_failure must be :raise or :return'
+        end
+
+        def validate_response_count!(row_results, submitted_count, collection)
+          response_count = row_results.length
+          return if response_count == submitted_count
+
+          raise SearchEngine::Errors::InvalidParams.new(
+            "Typesense import response row count mismatch: expected #{submitted_count}, got #{response_count}",
+            details: {
+              collection: collection,
+              submitted_count: submitted_count,
+              response_count: response_count
+            }
+          )
         end
 
         def normalize_records_input(records)
@@ -656,11 +682,13 @@ module SearchEngine
         # @param data [Enumerable<Hash>, nil]
         # @param into [String, nil]
         # @param partition [Object, nil]
-        # @return [Hash] stats payload with keys: :collection, :docs_count, :success_count, :failure_count, :bytes_sent, :response
+        # @param on_failure [Symbol] :raise (default) or :return
+        # @return [Hash] payload-safe stats including ordered :row_results
         # @raise [SearchEngine::Errors::InvalidParams]
-        def upsert_bulk(records: nil, data: nil, into: nil, partition: nil)
+        def upsert_bulk(records: nil, data: nil, into: nil, partition: nil, on_failure: :raise)
+          Helpers.normalize_failure_mode!(on_failure)
           docs = Helpers.prepare_documents(self, records: records, data: data)
-          Helpers.import_documents!(self, docs, into: into, partition: partition)
+          Helpers.import_documents!(self, docs, into: into, partition: partition, on_failure: on_failure)
         end
       end
     end

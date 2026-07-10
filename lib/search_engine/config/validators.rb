@@ -5,6 +5,8 @@ module SearchEngine
     # Validation helpers for configuration.
     # Keep messages identical to the previous inline implementations.
     module Validators
+      DISPATCH_MODES = %i[active_job inline].freeze
+
       module_function
 
       def validate_protocol(protocol)
@@ -23,6 +25,19 @@ module SearchEngine
         return [] if port.is_a?(Integer) && port.positive?
 
         ['port must be a positive Integer']
+      end
+
+      def normalize_dispatch_mode(value)
+        normalized = value.to_s
+        return normalized.to_sym if %w[active_job inline].include?(normalized)
+
+        nil
+      end
+
+      def validate_dispatch_mode(value, name:)
+        return [] if normalize_dispatch_mode(value)
+
+        ["#{name} must be :active_job or :inline"]
       end
 
       def validate_timeouts(timeout_ms, open_timeout_ms)

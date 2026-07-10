@@ -36,7 +36,7 @@ module SearchEngine
       case effective_mode
       when :active_job
         dispatch_active_job!(klass, partition: partition, into: into, queue: queue, metadata: metadata)
-      else
+      when :inline
         dispatch_inline!(klass, partition: partition, into: into, metadata: metadata)
       end
     end
@@ -45,10 +45,24 @@ module SearchEngine
       private
 
       def resolve_mode(override)
-        m = (override || SearchEngine.config.indexer.dispatch || :inline).to_sym
-        return :active_job if m == :active_job && defined?(::ActiveJob::Base)
+        raw = override.nil? ? SearchEngine.config.indexer.dispatch : override
+        mode = SearchEngine::Config::Validators.normalize_dispatch_mode(raw)
+        unless mode
+          raise SearchEngine::Errors::InvalidParams.new(
+            'dispatch mode must be :active_job or :inline',
+            details: { provided: raw, allowed: %i[active_job inline] }
+          )
+        end
+        if mode == :active_job && !active_job_available?
+          raise SearchEngine::Errors::ConfigurationError,
+                'dispatch mode :active_job requires ActiveJob'
+        end
 
-        :inline
+        mode
+      end
+
+      def active_job_available?
+        defined?(::ActiveJob::Base)
       end
 
       def dispatch_active_job!(klass, partition:, into:, queue:, metadata:)

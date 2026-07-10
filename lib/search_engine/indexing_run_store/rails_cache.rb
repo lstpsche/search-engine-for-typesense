@@ -40,8 +40,22 @@ module SearchEngine
       # @return [Hash]
       def mark_started(run_id:, partition_key:, job_id: nil)
         update_partition(run_id, partition_key) do |entry|
+          ensure_non_terminal!(entry, 'start')
           entry[:status] = 'running'
+          entry[:attempts] = entry[:attempts].to_i + 1
           entry[:job_id] = job_id.to_s unless job_id.nil?
+        end
+      end
+
+      # Record one failed import attempt without terminalizing the partition.
+      # ActiveJob may safely start the same partition again on retry.
+      # @return [Hash]
+      def record_attempt(run_id:, partition_key:, summary:, error:)
+        update_partition(run_id, partition_key) do |entry|
+          ensure_non_terminal!(entry, 'record an attempt for')
+          assign_summary!(entry, summary)
+          entry[:status] = 'running'
+          entry[:sample_error] = representative_error(summary, error)
         end
       end
 
@@ -49,6 +63,7 @@ module SearchEngine
       # @return [Hash]
       def mark_succeeded(run_id:, partition_key:, summary:)
         update_partition(run_id, partition_key) do |entry|
+          ensure_non_terminal!(entry, 'succeed')
           assign_summary!(entry, summary)
           entry[:status] = 'succeeded'
           entry[:sample_error] = nil
@@ -59,8 +74,9 @@ module SearchEngine
       # @return [Hash]
       def mark_failed(run_id:, partition_key:, error:)
         update_partition(run_id, partition_key) do |entry|
+          ensure_not_succeeded!(entry)
           entry[:status] = 'failed'
-          entry[:sample_error] = error_message(error)
+          entry[:sample_error] = error_message(error) if entry[:sample_error].to_s.strip.empty?
           entry[:failed_total] = [entry[:failed_total].to_i, 1].max
         end
       end
@@ -192,6 +208,26 @@ module SearchEngine
         return error if error.is_a?(String)
 
         "#{error.class}: #{error.message.to_s[0, 200]}"
+      end
+
+      def representative_error(summary, error)
+        sample = summary_value(summary, :sample_error).to_s
+        return sample[0, 200] unless sample.strip.empty?
+
+        error_message(error)
+      end
+
+      def ensure_non_terminal!(entry, action)
+        status = entry[:status].to_s
+        return unless %w[succeeded failed].include?(status)
+
+        raise StaleRun, "cannot #{action} terminal indexing partition (#{status})"
+      end
+
+      def ensure_not_succeeded!(entry)
+        return unless entry[:status].to_s == 'succeeded'
+
+        raise StaleRun, 'cannot fail terminal indexing partition (succeeded)'
       end
 
       def meta_cache_key(run_id)

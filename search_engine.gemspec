@@ -24,6 +24,7 @@ Gem::Specification.new do |spec|
     'app/search_engine/**/*',
     'exe/*',
     'README.md',
+    'CHANGELOG.md',
     'LICENSE'
   ].reject { |f| File.basename(f) == '.DS_Store' }
   spec.require_paths = ['lib']
