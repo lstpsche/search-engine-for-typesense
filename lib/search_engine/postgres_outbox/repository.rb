@@ -392,27 +392,14 @@ module SearchEngine
 
       def reset_stale_delivery_processing!
         execute(<<~SQL)
-          WITH reset_deliveries AS (
-            UPDATE #{quoted_delivery_table}
-            SET status = 'pending',
-                locked_at = NULL,
-                locked_by = NULL,
-                updated_at = CURRENT_TIMESTAMP
-            WHERE target_key = #{quote(target_key)}
-              AND status = 'processing'
-              AND locked_at < (CURRENT_TIMESTAMP - interval '#{processing_timeout_s} seconds')
-            RETURNING event_id
-          ),
-          aggregate AS (
-            #{event_status_aggregate_sql('SELECT event_id FROM reset_deliveries')}
-          )
-          UPDATE #{quoted_table} events
-          SET status = aggregate.status,
-              processed_at = #{aggregate_processed_at_sql},
-              last_error = aggregate.last_error,
+          UPDATE #{quoted_delivery_table}
+          SET status = 'pending',
+              locked_at = NULL,
+              locked_by = NULL,
               updated_at = CURRENT_TIMESTAMP
-          FROM aggregate
-          WHERE events.id = aggregate.event_id
+          WHERE target_key = #{quote(target_key)}
+            AND status = 'processing'
+            AND locked_at < (CURRENT_TIMESTAMP - interval '#{processing_timeout_s} seconds')
         SQL
       end
 

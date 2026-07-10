@@ -277,13 +277,13 @@ class PostgresOutboxRepositoryTest < Minitest::Test
     assert_includes connection.executed_sql.first, 'UPDATE "custom_outbox_deliveries"'
   end
 
-  def test_delivery_claim_reset_stale_processing_refreshes_parent_statuses
+  def test_delivery_claim_reset_stale_processing_does_not_lock_or_refresh_parent_rows
     connection = FakeConnection.new(rows: [])
     repository = SearchEngine::PostgresOutbox::Repository.new(connection: connection, target_key: 'target_1')
 
     repository.claim_pending(limit: 25, worker_id: 'worker-1')
 
-    assert_stale_delivery_reset_refresh_sql(connection.executed_sql.first)
+    assert_stale_delivery_reset_sql(connection.executed_sql.first)
   end
 
   def test_delivery_mark_processed_updates_target_delivery_and_refreshes_parent
@@ -849,15 +849,14 @@ class PostgresOutboxRepositoryTest < Minitest::Test
     assert_parent_refresh_sql(sql)
   end
 
-  def assert_stale_delivery_reset_refresh_sql(sql)
-    assert_includes sql, 'WITH reset_deliveries AS ('
+  def assert_stale_delivery_reset_sql(sql)
     assert_includes sql, 'UPDATE "custom_outbox_deliveries"'
     assert_includes sql, "status = 'pending'"
     assert_includes sql, "target_key = 'target_1'"
     assert_includes sql, "status = 'processing'"
     assert_includes sql, "interval '30 seconds'"
-    assert_includes sql, 'RETURNING event_id'
-    assert_parent_refresh_sql(sql)
+    refute_includes sql, 'UPDATE "custom_outbox" events'
+    refute_includes sql, 'RETURNING event_id'
   end
 
   def assert_delivery_status_refresh_transaction(connection)
