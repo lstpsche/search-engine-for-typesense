@@ -129,13 +129,33 @@ module SearchEngine
         targets = materialization_delivery_targets
         return if targets.empty?
 
+        # Discover work without row locks, then acquire every affected parent before any delivery.
+        # The exact preview is revalidated under those parent locks before mutations begin.
+        preview_rows = select_rows(delivery_materialization_select_sql(limit, targets, lock: false))
+        return preview_rows if preview_rows.empty?
+
+        supersede_parents = select_rows(supersede_parent_ids_sql(preview_rows))
         rows = []
         connection.transaction do
-          rows = select_rows(delivery_materialization_select_sql(limit, targets))
+          parent_ids = preview_rows.map { |row| row_value(row, :id) }
+          parent_ids.concat(supersede_parents.map { |row| row_value(row, :event_id) })
+          lock_event_rows!(parent_ids)
+
+          rows = select_rows(
+            delivery_materialization_select_sql(
+              limit,
+              targets,
+              event_ids: preview_rows.map { |row| row_value(row, :id) }
+            )
+          )
           next if rows.empty?
 
-          execute(materialization_supersede_older_deliveries_sql(rows, targets))
-          execute(supersede_older_pending_sql(rows))
+          supersede_candidates = select_rows(materialization_supersede_parent_candidates_sql(rows, targets))
+          older_event_ids = supersede_candidates.map { |candidate| row_value(candidate, :event_id) }
+          older_delivery_ids = supersede_candidates.map { |candidate| row_value(candidate, :delivery_id) }
+          lock_delivery_rows!(older_delivery_ids)
+          supersede_pending_events_by_id!(older_event_ids)
+          supersede_pending_deliveries!(older_delivery_ids, event_ids: older_event_ids)
           execute(delivery_materialization_insert_sql(rows, targets))
         end
 
@@ -298,8 +318,10 @@ module SearchEngine
         rows.map { |row| Event.new(row) }
       end
 
-      def delivery_materialization_select_sql(limit, targets)
-        return collection_limited_materialization_select_sql(targets) if collection_limited_batch?(limit)
+      def delivery_materialization_select_sql(limit, targets, event_ids: nil, lock: true)
+        if collection_limited_batch?(limit)
+          return collection_limited_materialization_select_sql(targets, event_ids: event_ids, lock: lock)
+        end
 
         limit = global_limit_for(limit)
         <<~SQL
@@ -313,6 +335,8 @@ module SearchEngine
             FROM #{quoted_table} outbox
             WHERE outbox.status IN ('pending', 'processing', 'failed')
               AND (outbox.next_attempt_at IS NULL OR outbox.next_attempt_at <= CURRENT_TIMESTAMP)
+              #{newer_event_exclusion_sql('outbox')}
+              #{event_id_filter_sql('outbox', event_ids)}
               AND EXISTS (
                 SELECT 1
                 FROM target
@@ -325,7 +349,7 @@ module SearchEngine
               )
             ORDER BY outbox.id ASC
             LIMIT #{limit}
-            FOR UPDATE SKIP LOCKED
+            #{row_lock_sql(lock)}
           ),
           latest_candidate_ids AS (
             SELECT id
@@ -378,13 +402,36 @@ module SearchEngine
       end
 
       def claim_pending_delivery_rows(limit:, worker_id:)
-        rows = []
+        # A lock-free preview lets us discover older siblings without ever holding a delivery
+        # while waiting for a parent. Revalidation under the parent locks prevents stale previews
+        # from superseding work when the selected delivery is no longer claimable.
+        preview_rows = select_rows(delivery_claim_select_sql(limit, lock: false))
+        return [] if preview_rows.empty?
 
+        supersede_parents = select_rows(supersede_parent_ids_sql(preview_rows))
+        rows = []
         connection.transaction do
-          rows = select_rows(delivery_claim_select_sql(limit))
+          parent_ids = preview_rows.map { |row| row_value(row, :id) }
+          parent_ids.concat(supersede_parents.map { |row| row_value(row, :event_id) })
+          lock_event_rows!(parent_ids)
+
+          rows = select_rows(
+            delivery_claim_select_sql(
+              limit,
+              delivery_ids: preview_rows.map { |row| row_value(row, :delivery_id) },
+              lock: false
+            )
+          )
+          next if rows.empty?
+
+          supersede_candidates = select_rows(delivery_supersede_parent_candidates_sql(rows))
+          older_event_ids = supersede_candidates.map { |candidate| row_value(candidate, :event_id) }
+          older_delivery_ids = supersede_candidates.map { |candidate| row_value(candidate, :delivery_id) }
           delivery_ids = rows.map { |row| row_value(row, :delivery_id) }
-          execute(delivery_supersede_older_pending_sql(rows)) unless rows.empty?
-          execute(delivery_claim_update_sql(delivery_ids, worker_id)) unless delivery_ids.empty?
+          lock_delivery_rows!(older_delivery_ids + delivery_ids)
+          supersede_pending_events_by_id!(older_event_ids)
+          supersede_pending_deliveries!(older_delivery_ids, event_ids: older_event_ids)
+          execute(delivery_claim_update_sql(delivery_ids, worker_id))
         end
 
         rows.map { |row| row.merge('delivery_lease_owner' => worker_id) }
@@ -460,8 +507,10 @@ module SearchEngine
         SQL
       end
 
-      def delivery_claim_select_sql(limit)
-        return collection_limited_delivery_claim_select_sql if collection_limited_batch?(limit)
+      def delivery_claim_select_sql(limit, delivery_ids: nil, lock: true)
+        if collection_limited_batch?(limit)
+          return collection_limited_delivery_claim_select_sql(delivery_ids: delivery_ids, lock: lock)
+        end
 
         limit = global_limit_for(limit)
         <<~SQL
@@ -477,10 +526,11 @@ module SearchEngine
             WHERE deliveries.target_key = #{quote(target_key)}
               AND deliveries.status = 'pending'
               AND (deliveries.next_attempt_at IS NULL OR deliveries.next_attempt_at <= CURRENT_TIMESTAMP)
+              #{delivery_id_filter_sql('deliveries', delivery_ids)}
               #{processing_delivery_exclusion_sql(delivery_relation: 'deliveries', event_relation: 'events')}
             ORDER BY deliveries.id ASC
             LIMIT #{claim_candidate_limit(limit)}
-            FOR UPDATE OF deliveries SKIP LOCKED
+            #{row_lock_sql(lock, of: 'deliveries')}
           ),
           ranked_candidate_deliveries AS (
             SELECT delivery_id,
@@ -500,6 +550,7 @@ module SearchEngine
             #{latest_pending_delivery_lateral_sql('ranked_candidate_deliveries')}
             WHERE ranked_candidate_deliveries.row_number = 1
               AND (latest_delivery.next_attempt_at IS NULL OR latest_delivery.next_attempt_at <= CURRENT_TIMESTAMP)
+              #{exact_delivery_candidate_sql(delivery_ids)}
             ORDER BY ranked_candidate_deliveries.delivery_id ASC
             LIMIT #{limit}
           )
@@ -513,7 +564,7 @@ module SearchEngine
           INNER JOIN latest_due
             ON latest_due.id = deliveries.id
           ORDER BY deliveries.id ASC
-          FOR UPDATE OF deliveries SKIP LOCKED
+          #{row_lock_sql(lock, of: 'deliveries')}
         SQL
       end
 
@@ -530,47 +581,44 @@ module SearchEngine
         SQL
       end
 
-      def materialization_supersede_older_deliveries_sql(rows, targets)
+      # Discover the complete older-parent lock set for the preview keys. Delivery rows are
+      # intentionally not consulted here: a parent-first materializer may add one while this
+      # worker waits, so current delivery candidates are recomputed only after these locks are held.
+      def supersede_parent_ids_sql(rows)
         <<~SQL
           WITH latest(collection, document_id, id) AS (
             VALUES #{coalesce_values_sql(rows)}
-          ),
-          target(target_key, queue_name) AS (
-            VALUES #{delivery_target_values_sql(targets)}
-          ),
-          older_event_targets AS MATERIALIZED (
-            SELECT older_events.id AS event_id,
-                   target.target_key
-            FROM latest
-            CROSS JOIN target
-            INNER JOIN #{quoted_table} older_events
-              ON older_events.collection = latest.collection
-             AND older_events.document_id = latest.document_id
-             AND older_events.id < latest.id
-          ),
-          updated_deliveries AS (
-            UPDATE #{quoted_delivery_table} older_deliveries
-            SET status = 'superseded',
-                processed_at = CURRENT_TIMESTAMP,
-                locked_at = NULL,
-                locked_by = NULL,
-                updated_at = CURRENT_TIMESTAMP
-            FROM older_event_targets
-            WHERE older_deliveries.event_id = older_event_targets.event_id
-              AND older_deliveries.status = 'pending'
-              AND older_deliveries.target_key = older_event_targets.target_key
-            RETURNING older_deliveries.event_id
-          ),
-          aggregate AS (
-            #{event_status_aggregate_sql('SELECT event_id FROM updated_deliveries')}
           )
-          UPDATE #{quoted_table} events
-          SET status = aggregate.status,
-              processed_at = #{aggregate_processed_at_sql},
-              last_error = aggregate.last_error,
-              updated_at = CURRENT_TIMESTAMP
-          FROM aggregate
-          WHERE events.id = aggregate.event_id
+          SELECT DISTINCT older_events.id AS event_id
+          FROM latest
+          INNER JOIN #{quoted_table} older_events
+            ON older_events.collection = latest.collection
+           AND older_events.document_id = latest.document_id
+           AND older_events.id < latest.id
+          ORDER BY event_id ASC
+        SQL
+      end
+
+      def materialization_supersede_parent_candidates_sql(rows, targets)
+        <<~SQL
+          WITH latest(collection, document_id, id) AS (
+            VALUES #{coalesce_values_sql(rows)}
+          )
+          SELECT DISTINCT older_events.id AS event_id,
+                          latest.id AS latest_event_id,
+                          older_deliveries.id AS delivery_id
+          FROM latest
+          INNER JOIN #{quoted_table} older_events
+            ON older_events.collection = latest.collection
+           AND older_events.document_id = latest.document_id
+           AND older_events.id < latest.id
+          LEFT JOIN #{quoted_delivery_table} older_deliveries
+            ON older_deliveries.event_id = older_events.id
+           AND older_deliveries.status = 'pending'
+           AND older_deliveries.target_key IN (#{ids_sql(targets.map(&:key))})
+          WHERE older_events.status = 'pending'
+             OR older_deliveries.id IS NOT NULL
+          ORDER BY event_id ASC
         SQL
       end
 
@@ -592,44 +640,63 @@ module SearchEngine
         SQL
       end
 
-      def delivery_supersede_older_pending_sql(rows)
+      def delivery_supersede_parent_candidates_sql(rows)
         <<~SQL
           WITH latest(target_key, collection, document_id, event_id, delivery_id) AS (
             VALUES #{delivery_coalesce_values_sql(rows)}
-          ),
-          older_event_targets AS MATERIALIZED (
-            SELECT older_events.id AS event_id,
-                   latest.target_key
-            FROM latest
-            INNER JOIN #{quoted_table} older_events
-              ON older_events.collection = latest.collection
-             AND older_events.document_id = latest.document_id
-             AND older_events.id < latest.event_id
-          ),
-          updated_deliveries AS (
-            UPDATE #{quoted_delivery_table} older_deliveries
+          )
+          SELECT DISTINCT older_events.id AS event_id,
+                          latest.event_id AS latest_event_id,
+                          older_deliveries.id AS delivery_id
+          FROM latest
+          INNER JOIN #{quoted_table} older_events
+            ON older_events.collection = latest.collection
+           AND older_events.document_id = latest.document_id
+           AND older_events.id < latest.event_id
+          LEFT JOIN #{quoted_delivery_table} older_deliveries
+            ON older_deliveries.event_id = older_events.id
+           AND older_deliveries.target_key = latest.target_key
+           AND older_deliveries.status = 'pending'
+          WHERE older_events.status = 'pending'
+             OR older_deliveries.id IS NOT NULL
+          ORDER BY event_id ASC
+        SQL
+      end
+
+      def supersede_pending_events_by_id!(event_ids)
+        ids = normalized_ids(event_ids)
+        return if ids.empty?
+
+        execute(<<~SQL)
+          UPDATE #{quoted_table}
+          SET status = 'superseded',
+              processed_at = CURRENT_TIMESTAMP,
+              locked_at = NULL,
+              locked_by = NULL,
+              updated_at = CURRENT_TIMESTAMP
+          WHERE id IN (#{ids_sql(ids)})
+            AND status = 'pending'
+        SQL
+      end
+
+      def supersede_pending_deliveries!(delivery_ids, event_ids:)
+        ids = normalized_ids(delivery_ids)
+        parent_ids = normalized_ids(event_ids)
+        return if parent_ids.empty?
+
+        unless ids.empty?
+          execute(<<~SQL)
+            UPDATE #{quoted_delivery_table}
             SET status = 'superseded',
                 processed_at = CURRENT_TIMESTAMP,
                 locked_at = NULL,
                 locked_by = NULL,
                 updated_at = CURRENT_TIMESTAMP
-            FROM older_event_targets
-            WHERE older_deliveries.event_id = older_event_targets.event_id
-              AND older_deliveries.status = 'pending'
-              AND older_deliveries.target_key = older_event_targets.target_key
-            RETURNING older_deliveries.event_id
-          ),
-          aggregate AS (
-            #{event_status_aggregate_sql('SELECT event_id FROM updated_deliveries')}
-          )
-          UPDATE #{quoted_table} events
-          SET status = aggregate.status,
-              processed_at = #{aggregate_processed_at_sql},
-              last_error = aggregate.last_error,
-              updated_at = CURRENT_TIMESTAMP
-          FROM aggregate
-          WHERE events.id = aggregate.event_id
-        SQL
+            WHERE id IN (#{ids_sql(ids)})
+              AND status = 'pending'
+          SQL
+        end
+        refresh_event_statuses!(parent_ids)
       end
 
       def update_status!(events, status, extra:)
@@ -734,10 +801,26 @@ module SearchEngine
       end
 
       def lock_event_rows!(event_ids)
+        ids = normalized_ids(event_ids)
+        return if ids.empty?
+
         execute(<<~SQL)
           SELECT id
           FROM #{quoted_table}
-          WHERE id IN (#{ids_sql(event_ids)})
+          WHERE id IN (#{ids_sql(ids)})
+          ORDER BY id ASC
+          FOR UPDATE
+        SQL
+      end
+
+      def lock_delivery_rows!(delivery_ids)
+        ids = normalized_ids(delivery_ids)
+        return if ids.empty?
+
+        execute(<<~SQL)
+          SELECT id
+          FROM #{quoted_delivery_table}
+          WHERE id IN (#{ids_sql(ids)})
           ORDER BY id ASC
           FOR UPDATE
         SQL
@@ -874,7 +957,7 @@ module SearchEngine
           document_id = row_value(row, :document_id)
           id = row_value(row, :id)
 
-          "(#{quote(collection)}, #{quote(document_id)}, #{quote(id)})"
+          "(#{quote(collection)}, #{quote(document_id)}, #{quote(id)}::bigint)"
         end.join(', ')
       end
 
@@ -886,7 +969,8 @@ module SearchEngine
           event_id = row_value(row, :id)
           delivery_id = row_value(row, :delivery_id)
 
-          "(#{quote(target)}, #{quote(collection)}, #{quote(document_id)}, #{quote(event_id)}, #{quote(delivery_id)})"
+          "(#{quote(target)}, #{quote(collection)}, #{quote(document_id)}, " \
+            "#{quote(event_id)}::bigint, #{quote(delivery_id)}::bigint)"
         end.join(', ')
       end
 
@@ -898,7 +982,7 @@ module SearchEngine
 
       def materialization_event_values_sql(rows)
         rows.map do |row|
-          "(#{quote(row_value(row, :id))})"
+          "(#{quote(row_value(row, :id))}::bigint)"
         end.join(', ')
       end
 
@@ -1133,7 +1217,7 @@ module SearchEngine
         SQL
       end
 
-      def collection_limited_materialization_select_sql(targets)
+      def collection_limited_materialization_select_sql(targets, event_ids: nil, lock: true)
         <<~SQL
           WITH target(target_key, queue_name) AS (
             VALUES #{delivery_target_values_sql(targets)}
@@ -1146,6 +1230,8 @@ module SearchEngine
             FROM #{quoted_table} outbox
             WHERE outbox.status IN ('pending', 'processing', 'failed')
               AND (outbox.next_attempt_at IS NULL OR outbox.next_attempt_at <= CURRENT_TIMESTAMP)
+              #{newer_event_exclusion_sql('outbox')}
+              #{event_id_filter_sql('outbox', event_ids)}
               AND EXISTS (
                 SELECT 1
                 FROM target
@@ -1158,7 +1244,7 @@ module SearchEngine
             )
             ORDER BY outbox.id ASC
             LIMIT #{collection_limited_candidate_limit}
-            FOR UPDATE SKIP LOCKED
+            #{row_lock_sql(lock)}
           ),
           latest_candidate_ids AS (
             SELECT id,
@@ -1198,7 +1284,7 @@ module SearchEngine
         SQL
       end
 
-      def collection_limited_delivery_claim_select_sql
+      def collection_limited_delivery_claim_select_sql(delivery_ids: nil, lock: true)
         <<~SQL
           WITH #{collection_limits_cte_sql},
           candidate_deliveries AS MATERIALIZED (
@@ -1213,10 +1299,11 @@ module SearchEngine
             WHERE deliveries.target_key = #{quote(target_key)}
               AND deliveries.status = 'pending'
               AND (deliveries.next_attempt_at IS NULL OR deliveries.next_attempt_at <= CURRENT_TIMESTAMP)
+              #{delivery_id_filter_sql('deliveries', delivery_ids)}
               #{processing_delivery_exclusion_sql(delivery_relation: 'deliveries', event_relation: 'events')}
             ORDER BY deliveries.id ASC
             LIMIT #{claim_candidate_limit(collection_limited_candidate_limit)}
-            FOR UPDATE OF deliveries SKIP LOCKED
+            #{row_lock_sql(lock, of: 'deliveries')}
           ),
           ranked_candidate_deliveries AS (
             SELECT delivery_id,
@@ -1237,6 +1324,7 @@ module SearchEngine
             #{latest_pending_delivery_lateral_sql('ranked_candidate_deliveries')}
             WHERE ranked_candidate_deliveries.row_number = 1
               AND (latest_delivery.next_attempt_at IS NULL OR latest_delivery.next_attempt_at <= CURRENT_TIMESTAMP)
+              #{exact_delivery_candidate_sql(delivery_ids)}
           ),
           ranked_by_collection AS (
             SELECT latest_due.id,
@@ -1266,7 +1354,7 @@ module SearchEngine
           INNER JOIN selected_due
             ON selected_due.id = deliveries.id
           ORDER BY deliveries.id ASC
-          FOR UPDATE OF deliveries SKIP LOCKED
+          #{row_lock_sql(lock, of: 'deliveries')}
         SQL
       end
 
@@ -1285,6 +1373,52 @@ module SearchEngine
 
       def claim_candidate_limit(limit)
         [limit.to_i, 0].max * CLAIM_CANDIDATE_OVERSAMPLE
+      end
+
+      def event_id_filter_sql(relation, event_ids)
+        id_filter_sql(relation, event_ids)
+      end
+
+      def delivery_id_filter_sql(relation, delivery_ids)
+        id_filter_sql(relation, delivery_ids)
+      end
+
+      def id_filter_sql(relation, ids)
+        return '' if ids.nil?
+
+        values = normalized_ids(ids)
+        return 'AND 1 = 0' if values.empty?
+
+        "AND #{relation}.id IN (#{ids_sql(values)})"
+      end
+
+      def exact_delivery_candidate_sql(delivery_ids)
+        return '' if delivery_ids.nil?
+
+        'AND latest_delivery.id = ranked_candidate_deliveries.delivery_id'
+      end
+
+      def row_lock_sql(lock, of: nil)
+        return '' unless lock
+
+        relation = of ? " OF #{of}" : ''
+        "FOR UPDATE#{relation} SKIP LOCKED"
+      end
+
+      def normalized_ids(ids)
+        Array(ids).compact.uniq(&:to_s)
+      end
+
+      def newer_event_exclusion_sql(event_relation)
+        <<~SQL.chomp
+          AND NOT EXISTS (
+            SELECT 1
+            FROM #{quoted_table} newer_events
+            WHERE newer_events.collection = #{event_relation}.collection
+              AND newer_events.document_id = #{event_relation}.document_id
+              AND newer_events.id > #{event_relation}.id
+          )
+        SQL
       end
 
       def processing_event_exclusion_sql(event_relation)
