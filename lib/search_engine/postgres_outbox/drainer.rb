@@ -92,19 +92,15 @@ module SearchEngine
 
         grouped.each_with_index do |(collection, collection_events), index|
           result = call_processor(collection, collection_events, lease_owner: lease_owner)
-          processed_ids = processed_event_ids(result, collection_events)
-          failed_ids = failed_event_ids(result, collection_events, processed_ids)
-          processed_events = events_for_ids(collection_events, processed_ids)
-          failed_events = events_for_ids(collection_events, failed_ids)
+          processed_events = events_for_ids(collection_events, result.processed_event_ids)
+          failed_events = events_for_ids(collection_events, result.failed_event_ids)
 
           mark_processed(processed_events, summary)
-          if result.success?
-            mark_retryable(failed_events, incomplete_success_error(collection, processed_ids, failed_ids), summary)
-          else
-            mark_retryable(failed_events, result.error, summary)
-            mark_remaining_retryable(grouped[(index + 1)..], summary)
-            break
-          end
+          next if result.success?
+
+          mark_result_failures_retryable(failed_events, result, summary)
+          mark_remaining_retryable(grouped[(index + 1)..], summary)
+          break
         rescue StandardError => error
           mark_retryable(collection_events, error, summary)
           mark_remaining_retryable(grouped[(index + 1)..], summary)
@@ -139,29 +135,15 @@ module SearchEngine
       end
 
       def normalize_result(result, events)
-        return ProcessorResult.success(events.map(&:id)) if result.nil?
-        return result if result.respond_to?(:success?)
+        raise TypeError, 'postgres outbox processor must return ProcessorResult' unless result.is_a?(ProcessorResult)
 
-        raise TypeError, 'postgres outbox processor must return ProcessorResult or nil'
+        result.validate_for!(events.map(&:id))
       end
 
-      def processed_event_ids(result, events)
-        return events.map(&:id) if result.success? && result.processed_event_ids.empty?
-
-        result.processed_event_ids
-      end
-
-      def failed_event_ids(result, events, processed_ids)
-        return result.failed_event_ids unless result.failed_event_ids.empty?
-
-        events.map(&:id) - processed_ids
-      end
-
-      def incomplete_success_error(collection, processed_ids, failed_ids)
-        return nil if failed_ids.empty?
-
-        "Postgres outbox processor for #{collection} reported success without covering event ids: " \
-          "#{failed_ids.join(', ')}; processed ids: #{processed_ids.join(', ')}"
+      def mark_result_failures_retryable(events, result, summary)
+        Array(events).group_by { |event| result.error_for(event.id) }.each do |event_error, failed_events|
+          mark_retryable(failed_events, event_error, summary)
+        end
       end
 
       def mark_processed(events, summary)

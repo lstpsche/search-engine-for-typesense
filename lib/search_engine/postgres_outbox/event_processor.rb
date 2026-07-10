@@ -4,6 +4,46 @@ module SearchEngine
   module PostgresOutbox
     # Default full-document outbox processor for one collection batch.
     class EventProcessor
+      # Bounded, payload-free context for one failed generic event.
+      class EventProcessingError < StandardError
+        CONTEXT_VALUE_LIMIT = 120
+        DETAIL_LIMIT = 500
+
+        attr_reader :event_id, :collection, :operation, :document_id, :original_error
+
+        def initialize(event, error)
+          @event_id = event.id
+          @collection = event.collection
+          @operation = event.operation
+          @document_id = event.document_id
+          @original_error = error
+          super(build_message(error))
+          set_backtrace(error.backtrace) if error.respond_to?(:backtrace)
+        end
+
+        private
+
+        def build_message(error)
+          'postgres outbox event failed ' \
+            "collection=#{bounded(collection)} event_id=#{bounded(event_id)} " \
+            "operation=#{bounded(operation)} document_id=#{bounded(document_id)}: " \
+            "#{bounded(error.class)}: #{bounded(error_message(error), limit: DETAIL_LIMIT)}"
+        end
+
+        def error_message(error)
+          error.respond_to?(:message) ? error.message : error.to_s
+        rescue StandardError
+          '<message unavailable>'
+        end
+
+        def bounded(value, limit: CONTEXT_VALUE_LIMIT)
+          string = value.to_s.encode(Encoding::UTF_8, invalid: :replace, undef: :replace, replace: '?')
+          string.gsub(/\s+/, ' ')[0, limit]
+        rescue StandardError
+          '<unprintable>'
+        end
+      end
+
       # @param events [Array<SearchEngine::PostgresOutbox::Event>]
       # @param context [Hash]
       # @return [SearchEngine::PostgresOutbox::ProcessorResult]
@@ -15,10 +55,24 @@ module SearchEngine
       # @param context [Hash]
       # @return [SearchEngine::PostgresOutbox::ProcessorResult]
       def call(events:, context: {})
-        Array(events).each { |event| process_event(event, context: context) }
-        ProcessorResult.success(Array(events).map(&:id))
-      rescue StandardError => error
-        ProcessorResult.failure(Array(events).map(&:id), error: error)
+        processed_ids = []
+        failed_ids = []
+        errors = {}
+
+        Array(events).each do |event|
+          process_event(event, context: context)
+          processed_ids << event.id
+        rescue StandardError => error
+          failed_ids << event.id
+          errors[event.id] = EventProcessingError.new(event, error)
+        end
+
+        ProcessorResult.new(
+          processed_event_ids: processed_ids,
+          failed_event_ids: failed_ids,
+          error: errors.values.first,
+          errors_by_event_id: errors
+        )
       end
 
       private

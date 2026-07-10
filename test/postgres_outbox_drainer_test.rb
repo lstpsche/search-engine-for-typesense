@@ -4,13 +4,19 @@ require 'test_helper'
 
 class PostgresOutboxDrainerTest < Minitest::Test
   class FakeRepository
-    attr_reader :processed_ids, :superseded_ids, :retryable_calls, :claim_args, :claim_history
+    attr_reader :processed_ids,
+                :superseded_ids,
+                :retryable_calls,
+                :terminal_retryable_calls,
+                :claim_args,
+                :claim_history
 
     def initialize(events)
       @events = events
       @processed_ids = []
       @superseded_ids = []
       @retryable_calls = []
+      @terminal_retryable_calls = []
       @claim_history = []
     end
 
@@ -35,6 +41,10 @@ class PostgresOutboxDrainerTest < Minitest::Test
     def mark_retryable!(events, error:)
       ids = events.map(&:id)
       retryable_calls << [ids, error]
+      terminal_ids = events.filter_map do |event|
+        event.id if event.attempts + 1 >= SearchEngine.config.postgres_outbox.max_attempts
+      end
+      terminal_retryable_calls << [terminal_ids, error] if terminal_ids.any?
       ids
     end
   end
@@ -525,26 +535,135 @@ class PostgresOutboxDrainerTest < Minitest::Test
     end
   end
 
-  def test_partial_success_result_retries_uncovered_ids
-    partial_success = SearchEngine::PostgresOutbox::ProcessorResult.success([1])
-    processor = RecordingProcessor.new('products' => partial_success)
-    repository = FakeRepository.new(
-      [
-        event(id: 1, collection: 'products'),
-        event(id: 2, collection: 'products')
-      ]
+  def test_one_failed_event_does_not_prevent_99_good_siblings_from_being_acknowledged
+    failed_error = StandardError.new('record 50 mapping failed')
+    processed_ids = (1..100).to_a - [50]
+    partial = SearchEngine::PostgresOutbox::ProcessorResult.new(
+      processed_event_ids: processed_ids,
+      failed_event_ids: [50],
+      errors_by_event_id: { 50 => failed_error }
     )
+    processor = RecordingProcessor.new('products' => partial)
+    repository = FakeRepository.new((1..100).map { |id| event(id: id, collection: 'products') })
 
     SearchEngine::DependencyPlanner.stub(:order_events, ->(input) { input }) do
       summary = SearchEngine::PostgresOutbox::Drainer
                 .new(repository: repository, processor: processor, worker_id: 'w1')
                 .drain_once
 
-      assert_equal [1], repository.processed_ids
-      assert_equal [[2]], repository.retryable_calls.map(&:first)
-      assert_match(/reported success without covering event ids: 2/, repository.retryable_calls.first.last)
-      assert_equal 1, summary[:processed]
+      assert_equal processed_ids, repository.processed_ids
+      assert_equal [[[50], failed_error]], repository.retryable_calls
+      assert_equal 99, summary[:processed]
       assert_equal 1, summary[:retryable]
+      assert_equal 1, summary[:failed]
+      assert_equal ['products'], summary[:collections]
+    end
+  end
+
+  def test_missing_result_classification_retries_entire_batch_without_acknowledging_siblings
+    partial_success = SearchEngine::PostgresOutbox::ProcessorResult.success([1])
+
+    assert_malformed_result_retries_entire_batch(
+      partial_success,
+      error_class: SearchEngine::PostgresOutbox::ProcessorResult::ValidationError,
+      message: 'missing ids: 2'
+    )
+  end
+
+  def test_duplicate_result_classification_retries_entire_batch_without_acknowledging_siblings
+    result = SearchEngine::PostgresOutbox::ProcessorResult.new(
+      processed_event_ids: [1, 1],
+      failed_event_ids: [2],
+      error: 'failed'
+    )
+
+    assert_malformed_result_retries_entire_batch(
+      result,
+      error_class: SearchEngine::PostgresOutbox::ProcessorResult::ValidationError,
+      message: 'duplicate processed ids: 1'
+    )
+  end
+
+  def test_overlapping_result_classification_retries_entire_batch_without_acknowledging_siblings
+    result = SearchEngine::PostgresOutbox::ProcessorResult.new(
+      processed_event_ids: [1],
+      failed_event_ids: [1, 2],
+      error: 'failed'
+    )
+
+    assert_malformed_result_retries_entire_batch(
+      result,
+      error_class: SearchEngine::PostgresOutbox::ProcessorResult::ValidationError,
+      message: 'overlapping ids: 1'
+    )
+  end
+
+  def test_unknown_result_classification_retries_entire_batch_without_acknowledging_siblings
+    result = SearchEngine::PostgresOutbox::ProcessorResult.new(
+      processed_event_ids: [1, 99],
+      failed_event_ids: [2],
+      error: 'failed'
+    )
+
+    assert_malformed_result_retries_entire_batch(
+      result,
+      error_class: SearchEngine::PostgresOutbox::ProcessorResult::ValidationError,
+      message: 'unknown ids: 99'
+    )
+  end
+
+  def test_non_processor_result_retries_entire_batch_without_acknowledging_siblings
+    assert_malformed_result_retries_entire_batch(
+      Object.new,
+      error_class: TypeError,
+      message: 'processor must return ProcessorResult'
+    )
+  end
+
+  def test_nil_result_retries_entire_batch_without_acknowledging_siblings
+    assert_malformed_result_retries_entire_batch(
+      nil,
+      error_class: TypeError,
+      message: 'processor must return ProcessorResult'
+    )
+  end
+
+  def test_retry_exhaustion_retains_bounded_event_context_without_payload
+    final_attempt = SearchEngine.config.postgres_outbox.max_attempts - 1
+    repository = FakeRepository.new(
+      [
+        event(
+          id: 42,
+          collection: 'products',
+          document_id: 'sku-42',
+          source_model_name: "#{self.class.name}::MissingSource",
+          payload: { 'private_data' => 'must-not-appear-in-errors' },
+          attempts: final_attempt
+        )
+      ]
+    )
+
+    SearchEngine::DependencyPlanner.stub(:order_events, ->(input) { input }) do
+      summary = SearchEngine::PostgresOutbox::Drainer
+                .new(repository: repository, worker_id: 'w1')
+                .drain_once
+
+      assert_empty repository.processed_ids
+      assert_equal [[42]], repository.retryable_calls.map(&:first)
+      error = repository.retryable_calls.first.last
+      assert_equal [[[42], error]], repository.terminal_retryable_calls
+      assert_kind_of SearchEngine::PostgresOutbox::EventProcessor::EventProcessingError, error
+      assert_kind_of NameError, error.original_error
+      assert_equal 42, error.event_id
+      assert_equal 'products', error.collection
+      assert_equal :upsert, error.operation
+      assert_equal 'sku-42', error.document_id
+      assert_includes error.message, 'collection=products event_id=42 operation=upsert document_id=sku-42'
+      refute_includes error.message, 'must-not-appear-in-errors'
+      assert_operator error.message.length, :<, 1_000
+      assert_equal 0, summary[:processed]
+      assert_equal 1, summary[:retryable]
+      assert_equal 1, summary[:failed]
     end
   end
 
@@ -592,24 +711,52 @@ class PostgresOutboxDrainerTest < Minitest::Test
 
   private
 
+  def assert_malformed_result_retries_entire_batch(result, error_class:, message:)
+    processor = RecordingProcessor.new('products' => result)
+    repository = FakeRepository.new(
+      [
+        event(id: 1, collection: 'products'),
+        event(id: 2, collection: 'products')
+      ]
+    )
+
+    summary = SearchEngine::DependencyPlanner.stub(:order_events, ->(input) { input }) do
+      SearchEngine::PostgresOutbox::Drainer
+        .new(repository: repository, processor: processor, worker_id: 'w1')
+        .drain_once
+    end
+
+    assert_empty repository.processed_ids
+    assert_equal [[1, 2]], repository.retryable_calls.map(&:first)
+    error = repository.retryable_calls.first.last
+    assert_kind_of error_class, error
+    assert_includes error.message, message
+    assert_equal 0, summary[:processed]
+    assert_equal 2, summary[:retryable]
+    assert_equal 2, summary[:failed]
+  end
+
   def event(
     id:,
     collection: 'products',
     document_id: nil,
     operation: 'upsert',
     delivery_id: nil,
-    target_key: nil
+    target_key: nil,
+    source_model_name: 'Product',
+    payload: {},
+    attempts: 0
   )
     SearchEngine::PostgresOutbox::Event.new(
       id: id,
       source_table: collection,
-      source_model_name: 'Product',
+      source_model_name: source_model_name,
       collection: collection,
       record_id: id.to_s,
       document_id: document_id || id.to_s,
       operation: operation,
-      attempts: 0,
-      payload: {},
+      attempts: attempts,
+      payload: payload,
       delivery_id: delivery_id,
       target_key: target_key
     )

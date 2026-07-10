@@ -26,6 +26,29 @@ class PostgresOutboxEventProcessorTest < Minitest::Test
     end
   end
 
+  class BatchSourceProduct
+    class << self
+      attr_accessor :records
+
+      def find_by(id:)
+        records.find { |record| record.id.to_s == id.to_s }
+      end
+    end
+  end
+
+  class SelectiveSearchModel
+    class << self
+      attr_accessor :failing_id, :upserted_ids
+
+      def upsert(record:)
+        raise StandardError, "mapping failed for record #{record.id}" if record.id == failing_id
+
+        upserted_ids << record.id
+        1
+      end
+    end
+  end
+
   class FakeClient
     attr_reader :deletes
 
@@ -49,6 +72,9 @@ class PostgresOutboxEventProcessorTest < Minitest::Test
   def setup
     SourceProduct.record = nil
     FakeSearchModel.upserted = nil
+    BatchSourceProduct.records = []
+    SelectiveSearchModel.failing_id = nil
+    SelectiveSearchModel.upserted_ids = []
   end
 
   def test_delete_nil_response_is_success
@@ -92,23 +118,78 @@ class PostgresOutboxEventProcessorTest < Minitest::Test
 
       refute result.success?
       assert_equal [1], result.failed_event_ids
-      assert_kind_of NameError, result.error
+      assert_kind_of SearchEngine::PostgresOutbox::EventProcessor::EventProcessingError, result.error
+      assert_kind_of NameError, result.error.original_error
     end
+  end
+
+  def test_one_bad_event_does_not_fail_its_99_good_siblings
+    BatchSourceProduct.records = (1..100).map { |id| Product.new(id: id) }
+    SelectiveSearchModel.failing_id = 50
+    events = (1..100).map do |id|
+      event(
+        id: id,
+        source_model_name: "#{self.class.name}::BatchSourceProduct",
+        record_id: id.to_s,
+        document_id: "sku-#{id}",
+        payload: { 'private_data' => 'must-not-appear-in-errors' }
+      )
+    end
+
+    SearchEngine::CollectionResolver.stub(:model_for_logical, SelectiveSearchModel) do
+      result = SearchEngine::PostgresOutbox::EventProcessor.call(events: events)
+
+      assert_equal((1..100).to_a - [50], result.processed_event_ids)
+      assert_equal [50], result.failed_event_ids
+      assert_same result, result.validate_for!((1..100).to_a)
+      assert_equal((1..100).to_a - [50], SelectiveSearchModel.upserted_ids)
+
+      error = result.error_for(50)
+      assert_same error, result.error
+      assert_kind_of SearchEngine::PostgresOutbox::EventProcessor::EventProcessingError, error
+      assert_equal 50, error.event_id
+      assert_equal 'products', error.collection
+      assert_equal :upsert, error.operation
+      assert_equal 'sku-50', error.document_id
+      assert_kind_of StandardError, error.original_error
+      assert_includes error.message, 'collection=products event_id=50 operation=upsert document_id=sku-50'
+      assert_includes error.message, 'mapping failed for record 50'
+      refute_includes error.message, 'must-not-appear-in-errors'
+      assert_operator error.message.length, :<, 1_000
+    end
+  end
+
+  def test_failure_context_is_bounded_and_valid_utf8_for_malformed_error_messages
+    malformed_message = "\xFF".b + ('x' * 2_000)
+    original_error = StandardError.new(malformed_message)
+
+    error = SearchEngine::PostgresOutbox::EventProcessor::EventProcessingError.new(event, original_error)
+
+    assert_predicate error.message, :valid_encoding?
+    assert_operator error.message.length, :<, 1_000
+    assert_same original_error, error.original_error
   end
 
   private
 
-  def event(operation: 'upsert', record_id: '1', document_id: '1')
+  def event(
+    id: 1,
+    operation: 'upsert',
+    source_model_name: "#{self.class.name}::SourceProduct",
+    record_id: '1',
+    document_id: '1',
+    payload: {}
+  )
     SearchEngine::PostgresOutbox::Event.new(
-      id: 1,
+      id: id,
       source_table: 'products',
-      source_model_name: "#{self.class.name}::SourceProduct",
+      source_model_name: source_model_name,
       collection: 'products',
       record_id: record_id,
       document_id: document_id,
       operation: operation,
       attempts: 0,
-      payload: {}
+      payload: payload
     )
   end
 end
