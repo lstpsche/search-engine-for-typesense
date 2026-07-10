@@ -222,6 +222,7 @@ class PostgresOutboxRepositoryTest < Minitest::Test
     assert_equal [11], events.map(&:id)
     assert_equal [101], events.map(&:delivery_id)
     assert_equal ['target_1'], events.map(&:target_key)
+    assert_equal ['worker-1'], events.map(&:delivery_lease_owner)
     assert_equal 1, connection.selected_sql.size
     assert_delivery_claim_select_sql(connection.selected_sql.first)
     assert_delivery_claim_update_sql(connection.executed_sql)
@@ -286,46 +287,128 @@ class PostgresOutboxRepositoryTest < Minitest::Test
   end
 
   def test_delivery_mark_processed_updates_target_delivery_and_refreshes_parent
-    connection = FakeConnection.new
+    connection = FakeConnection.new(rows: [{ 'id' => 11 }])
     repository = SearchEngine::PostgresOutbox::Repository.new(connection: connection, target_key: 'target_1')
+    event = claimed_event(id: 11, delivery_id: 101, lease_owner: 'lease-a')
 
-    repository.mark_processed!([11])
+    acknowledged = repository.mark_processed!([event])
 
-    assert_includes connection.executed_sql[0], 'UPDATE "custom_outbox_deliveries"'
-    assert_includes connection.executed_sql[0], "status = 'processed'"
-    assert_includes connection.executed_sql[0], "WHERE target_key = 'target_1'"
-    assert_includes connection.executed_sql[0], "event_id IN ('11')"
+    assert_equal [11], acknowledged
+    assert_claimed_delivery_mutation_sql(connection.selected_sql[0], event, status: 'processed')
+    assert_event_row_lock_sql(connection.executed_sql[0], event_ids: [11])
     assert_parent_refresh_sql(connection.executed_sql[1])
     assert_delivery_status_refresh_transaction(connection)
   end
 
   def test_delivery_mark_retryable_updates_target_delivery_and_refreshes_parent
-    connection = FakeConnection.new
+    connection = FakeConnection.new(rows: [{ 'id' => 12 }])
     repository = SearchEngine::PostgresOutbox::Repository.new(connection: connection, target_key: 'target_1')
+    event = claimed_event(id: 12, delivery_id: 102, lease_owner: 'lease-a')
 
-    repository.mark_retryable!([12], error: 'temporary')
+    acknowledged = repository.mark_retryable!([event], error: 'temporary')
 
-    assert_includes connection.executed_sql[0], 'UPDATE "custom_outbox_deliveries"'
-    assert_includes connection.executed_sql[0], 'attempts = attempts + 1'
-    assert_includes connection.executed_sql[0], "status = CASE WHEN attempts + 1 >= 3 THEN 'failed' ELSE 'pending' END"
-    assert_includes connection.executed_sql[0], "WHERE target_key = 'target_1'"
-    assert_includes connection.executed_sql[0], "last_error = 'temporary'"
+    assert_equal [12], acknowledged
+    sql = connection.selected_sql[0]
+    assert_claimed_delivery_mutation_sql(sql, event)
+    assert_includes sql, 'attempts = attempts + 1'
+    assert_includes sql, "status = CASE WHEN attempts + 1 >= 3 THEN 'failed' ELSE 'pending' END"
+    assert_includes sql, "last_error = 'temporary'"
+    assert_event_row_lock_sql(connection.executed_sql[0], event_ids: [12])
     assert_parent_refresh_sql(connection.executed_sql[1])
     assert_delivery_status_refresh_transaction(connection)
   end
 
   def test_delivery_mark_failed_updates_target_delivery_and_refreshes_parent
-    connection = FakeConnection.new
+    connection = FakeConnection.new(rows: [{ 'id' => 13 }])
     repository = SearchEngine::PostgresOutbox::Repository.new(connection: connection, target_key: 'target_1')
+    event = claimed_event(id: 13, delivery_id: 103, lease_owner: 'lease-a')
 
-    repository.mark_failed!([13], error: 'hard failure')
+    acknowledged = repository.mark_failed!([event], error: 'hard failure')
 
-    assert_includes connection.executed_sql[0], 'UPDATE "custom_outbox_deliveries"'
-    assert_includes connection.executed_sql[0], "status = 'failed'"
-    assert_includes connection.executed_sql[0], "WHERE target_key = 'target_1'"
-    assert_includes connection.executed_sql[0], "last_error = 'hard failure'"
+    assert_equal [13], acknowledged
+    sql = connection.selected_sql[0]
+    assert_claimed_delivery_mutation_sql(sql, event, status: 'failed')
+    assert_includes sql, "last_error = 'hard failure'"
+    assert_event_row_lock_sql(connection.executed_sql[0], event_ids: [13])
     assert_parent_refresh_sql(connection.executed_sql[1])
     assert_delivery_status_refresh_transaction(connection)
+  end
+
+  def test_stale_delivery_success_updates_zero_rows_and_does_not_refresh_parent
+    connection = FakeConnection.new(rows: [])
+    repository = SearchEngine::PostgresOutbox::Repository.new(connection: connection, target_key: 'target_1')
+    stale_event = claimed_event(id: 11, delivery_id: 101, lease_owner: 'lease-a')
+
+    acknowledged = repository.mark_processed!([stale_event])
+
+    assert_empty acknowledged
+    assert_claimed_delivery_mutation_sql(connection.selected_sql.first, stale_event, status: 'processed')
+    assert_equal 1, connection.executed_sql.size
+    assert_event_row_lock_sql(connection.executed_sql.first, event_ids: [11])
+    assert_equal %i[begin execute select commit], connection.transaction_events.map(&:first)
+  end
+
+  def test_reclaimed_delivery_accepts_only_the_new_lease_owner
+    connection = FakeConnection.new(row_sets: [[], [{ 'id' => 11 }]])
+    repository = SearchEngine::PostgresOutbox::Repository.new(connection: connection, target_key: 'target_1')
+    stale_event = claimed_event(id: 11, delivery_id: 101, lease_owner: 'lease-a')
+    reclaimed_event = claimed_event(id: 11, delivery_id: 101, lease_owner: 'lease-b')
+
+    stale_acknowledgements = repository.mark_processed!([stale_event])
+    current_acknowledgements = repository.mark_processed!([reclaimed_event])
+
+    assert_empty stale_acknowledgements
+    assert_equal [11], current_acknowledgements
+    assert_claimed_delivery_mutation_sql(connection.selected_sql[0], stale_event, status: 'processed')
+    assert_claimed_delivery_mutation_sql(connection.selected_sql[1], reclaimed_event, status: 'processed')
+    assert_equal 3, connection.executed_sql.size
+    assert_event_row_lock_sql(connection.executed_sql[0], event_ids: [11])
+    assert_event_row_lock_sql(connection.executed_sql[1], event_ids: [11])
+    assert_parent_refresh_sql(connection.executed_sql[2])
+  end
+
+  def test_stale_failure_cannot_overwrite_a_newer_successful_delivery
+    connection = FakeConnection.new(row_sets: [[{ 'id' => 11 }], []])
+    repository = SearchEngine::PostgresOutbox::Repository.new(connection: connection, target_key: 'target_1')
+    current_event = claimed_event(id: 11, delivery_id: 101, lease_owner: 'lease-b')
+    stale_event = claimed_event(id: 11, delivery_id: 101, lease_owner: 'lease-a')
+
+    processed = repository.mark_processed!([current_event])
+    failed = repository.mark_failed!([stale_event], error: 'late failure')
+
+    assert_equal [11], processed
+    assert_empty failed
+    assert_claimed_delivery_mutation_sql(connection.selected_sql[0], current_event, status: 'processed')
+    assert_claimed_delivery_mutation_sql(connection.selected_sql[1], stale_event, status: 'failed')
+    assert_equal 3, connection.executed_sql.size
+    assert_event_row_lock_sql(connection.executed_sql[0], event_ids: [11])
+    assert_parent_refresh_sql(connection.executed_sql[1])
+    assert_event_row_lock_sql(connection.executed_sql[2], event_ids: [11])
+  end
+
+  def test_delivery_lease_renewal_is_fenced_and_does_not_refresh_parent
+    connection = FakeConnection.new(rows: [{ 'id' => 11 }])
+    repository = SearchEngine::PostgresOutbox::Repository.new(connection: connection, target_key: 'target_1')
+    event = claimed_event(id: 11, delivery_id: 101, lease_owner: 'lease-a')
+
+    renewed = repository.renew_leases!([event])
+
+    assert_equal [11], renewed
+    sql = connection.selected_sql.first
+    assert_claimed_delivery_mutation_sql(sql, event)
+    assert_includes sql, 'SET locked_at = CURRENT_TIMESTAMP,'
+    assert_empty connection.executed_sql
+  end
+
+  def test_target_scoped_delivery_mutations_reject_parent_event_ids
+    repository = SearchEngine::PostgresOutbox::Repository.new(
+      connection: FakeConnection.new,
+      target_key: 'target_1'
+    )
+
+    error = assert_raises(ArgumentError) { repository.mark_processed!([11]) }
+
+    assert_equal 'target-scoped delivery mutations require claimed Event objects', error.message
   end
 
   def test_refresh_terminal_delivery_event_statuses_noops_without_delivery_table
@@ -532,6 +615,7 @@ class PostgresOutboxRepositoryTest < Minitest::Test
     assert_includes sql, 'FROM candidate_events'
     assert_includes sql, 'ranked_candidate_events.row_number = 1'
     assert_includes sql, 'outbox.next_attempt_at <= CURRENT_TIMESTAMP'
+    assert_processing_event_exclusion_sql(sql)
     assert_latest_parent_event_lookup_sql(sql)
     assert_bounded_candidate_sql(sql, candidate_limit: 100, selected_limit: 25)
     assert_includes sql, 'LIMIT 25'
@@ -544,6 +628,7 @@ class PostgresOutboxRepositoryTest < Minitest::Test
     assert_includes sql, 'PARTITION BY latest_due.collection'
     assert_includes sql, 'collection_row_number <= collection_batch_size'
     assert_includes sql, 'COALESCE(collection_limits.batch_size, 1000)'
+    assert_processing_event_exclusion_sql(sql)
     assert_latest_parent_event_lookup_sql(sql)
     assert_bounded_candidate_sql(sql, candidate_limit: 4012, selected_limit: 1003)
     assert_includes sql, 'LIMIT 4012'
@@ -558,6 +643,7 @@ class PostgresOutboxRepositoryTest < Minitest::Test
     assert_includes executed_sql.last, "status = 'processing'"
     assert_includes executed_sql.last, "locked_by = 'worker-1'"
     assert_includes executed_sql.last, 'WHERE id IN (\'1\', \'2\')'
+    assert_includes executed_sql.last, "AND status = 'pending'"
   end
 
   def assert_supersede_sql(sql)
@@ -580,10 +666,12 @@ class PostgresOutboxRepositoryTest < Minitest::Test
     assert_includes sql, 'FROM candidate_deliveries'
     assert_includes sql, 'ranked_candidate_deliveries.row_number = 1'
     assert_includes sql, 'deliveries.next_attempt_at <= CURRENT_TIMESTAMP'
+    assert_processing_delivery_exclusion_sql(sql)
     assert_latest_delivery_lookup_sql(sql)
     assert_bounded_candidate_sql(sql, candidate_limit: 100, selected_limit: 25)
     assert_includes sql, 'LIMIT 25'
     assert_includes sql, 'deliveries.id AS delivery_id'
+    assert_processing_delivery_exclusion_sql(sql)
     assert_includes sql, 'deliveries.target_key'
   end
 
@@ -641,6 +729,38 @@ class PostgresOutboxRepositoryTest < Minitest::Test
     assert_includes sql, 'FOR UPDATE OF deliveries SKIP LOCKED'
   end
 
+  def assert_processing_event_exclusion_sql(sql)
+    assert_includes sql, 'FROM "custom_outbox" processing_events'
+    assert_includes sql, "processing_events.status = 'processing'"
+    assert_includes sql, 'processing_events.collection = outbox.collection'
+    assert_includes sql, 'processing_events.document_id = outbox.document_id'
+  end
+
+  def assert_processing_delivery_exclusion_sql(sql)
+    assert_includes sql, 'FROM "custom_outbox_deliveries" processing_deliveries'
+    assert_includes sql, 'INNER JOIN "custom_outbox" processing_events'
+    assert_includes sql, 'processing_deliveries.target_key = deliveries.target_key'
+    assert_includes sql, "processing_deliveries.status = 'processing'"
+    assert_includes sql, 'processing_events.collection = events.collection'
+    assert_includes sql, 'processing_events.document_id = events.document_id'
+  end
+
+  def assert_claimed_delivery_mutation_sql(sql, event, status: nil)
+    assert_includes sql, 'WITH claimed_deliveries(delivery_id, event_id, lease_owner) AS'
+    assert_includes(
+      sql,
+      "VALUES ('#{event.delivery_id}'::bigint, '#{event.id}'::bigint, '#{event.delivery_lease_owner}')"
+    )
+    assert_includes sql, 'UPDATE "custom_outbox_deliveries" deliveries'
+    assert_includes sql, "status = '#{status}'" if status
+    assert_includes sql, 'deliveries.id = claimed_deliveries.delivery_id'
+    assert_includes sql, 'deliveries.event_id = claimed_deliveries.event_id'
+    assert_includes sql, "deliveries.target_key = 'target_1'"
+    assert_includes sql, "deliveries.status = 'processing'"
+    assert_includes sql, 'deliveries.locked_by = claimed_deliveries.lease_owner'
+    assert_includes sql, 'RETURNING deliveries.event_id AS id'
+  end
+
   def assert_delivery_claim_update_sql(executed_sql)
     assert_includes executed_sql[0], 'UPDATE "custom_outbox_deliveries"'
     assert_includes executed_sql[0], "target_key = 'target_1'"
@@ -649,6 +769,8 @@ class PostgresOutboxRepositoryTest < Minitest::Test
     assert_includes executed_sql[2], "status = 'processing'"
     assert_includes executed_sql[2], "locked_by = 'worker-1'"
     assert_includes executed_sql[2], "WHERE id IN ('101')"
+    assert_includes executed_sql[2], "AND target_key = 'target_1'"
+    assert_includes executed_sql[2], "AND status = 'pending'"
   end
 
   def assert_materialization_select_sql(sql)
@@ -740,11 +862,20 @@ class PostgresOutboxRepositoryTest < Minitest::Test
 
   def assert_delivery_status_refresh_transaction(connection)
     assert_equal(
-      %i[begin execute execute commit],
+      %i[begin execute select execute commit],
       connection.transaction_events.map(&:first)
     )
-    transaction_sql = connection.transaction_events.select { |event| event.first == :execute }.map(&:last)
-    assert_equal connection.executed_sql, transaction_sql
+    assert_equal connection.executed_sql.first, connection.transaction_events[1].last
+    assert_equal connection.selected_sql.last, connection.transaction_events[2].last
+    assert_equal connection.executed_sql.last, connection.transaction_events[3].last
+  end
+
+  def assert_event_row_lock_sql(sql, event_ids:)
+    assert_includes sql, 'SELECT id'
+    assert_includes sql, 'FROM "custom_outbox"'
+    assert_includes sql, "WHERE id IN (#{event_ids.map { |id| "'#{id}'" }.join(', ')})"
+    assert_includes sql, 'ORDER BY id ASC'
+    assert_includes sql, 'FOR UPDATE'
   end
 
   def assert_terminal_delivery_refresh_sql(sql, limit:, retention_s:)
@@ -809,15 +940,32 @@ class PostgresOutboxRepositoryTest < Minitest::Test
     assert_includes sql, 'RETURNING slots.target_key, slots.slot, slots.queue_name'
   end
 
-  def event_row(id:)
+  def claimed_event(
+    id:,
+    delivery_id:,
+    lease_owner:,
+    target_key: 'target_1',
+    operation: 'upsert',
+    document_id: nil
+  )
+    SearchEngine::PostgresOutbox::Event.new(
+      event_row(id: id, operation: operation, document_id: document_id).merge(
+        'delivery_id' => delivery_id,
+        'target_key' => target_key,
+        'delivery_lease_owner' => lease_owner
+      )
+    )
+  end
+
+  def event_row(id:, operation: 'upsert', document_id: nil)
     {
       'id' => id,
       'source_table' => 'products',
       'source_model_name' => 'Product',
       'collection' => 'products',
       'record_id' => id.to_s,
-      'document_id' => id.to_s,
-      'operation' => 'upsert',
+      'document_id' => document_id || id.to_s,
+      'operation' => operation,
       'attempts' => 0,
       'payload' => {}
     }

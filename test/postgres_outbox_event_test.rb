@@ -16,7 +16,8 @@ class PostgresOutboxEventTest < Minitest::Test
       payload: { 'trigger_operation' => 'UPDATE' },
       created_at: 'now',
       delivery_id: 99,
-      target_key: :target_1
+      target_key: :target_1,
+      delivery_lease_owner: 'worker-1:lease-1'
     )
 
     assert_equal 7, event.id
@@ -29,6 +30,7 @@ class PostgresOutboxEventTest < Minitest::Test
     assert_equal 2, event.attempts
     assert_equal 99, event.delivery_id
     assert_equal 'target_1', event.target_key
+    assert_equal 'worker-1:lease-1', event.delivery_lease_owner
     assert_equal %w[products sku-42], event.coalesce_key
   end
 
@@ -37,6 +39,7 @@ class PostgresOutboxEventTest < Minitest::Test
 
     assert_nil event.delivery_id
     assert_nil event.target_key
+    assert_nil event.delivery_lease_owner
   end
 
   def test_delivery_attempts_override_parent_event_attempts

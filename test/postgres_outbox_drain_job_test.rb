@@ -139,7 +139,9 @@ class PostgresOutboxDrainJobTest < Minitest::Test
       SearchEngine::PostgresOutbox::DrainJob.new.perform(limit: 25, target_key: :target_1)
     end
 
-    assert_equal [{ target_key: :target_1 }], constructor_args
+    assert_equal 1, constructor_args.size
+    assert_equal :target_1, constructor_args.first[:target_key]
+    assert_match(/:.+:/, constructor_args.first[:worker_id])
     assert_equal [[[], { limit: 25 }]], drainer.calls
   end
 

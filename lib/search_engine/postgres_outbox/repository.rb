@@ -7,6 +7,7 @@ module SearchEngine
       # Keep expensive duplicate-key ranking bounded while leaving headroom for hot keys.
       CLAIM_CANDIDATE_OVERSAMPLE = 4
       ERROR_LIMIT = 1000
+      PROCESSED_AT_ASSIGNMENT = 'processed_at = CURRENT_TIMESTAMP'
 
       # @param connection [Object, nil] ActiveRecord-compatible connection
       # @param target_key [String, Symbol, nil] optional delivery target scope
@@ -51,33 +52,29 @@ module SearchEngine
         SQL
       end
 
-      # @param event_ids [Array<Integer, String>]
-      # @return [void]
-      def mark_processed!(event_ids)
-        if delivery_mode?
-          return update_delivery_status!(event_ids, 'processed', extra: 'processed_at = CURRENT_TIMESTAMP')
-        end
+      # @param events [Array<SearchEngine::PostgresOutbox::Event, Integer, String>]
+      # @return [Array<Integer, String>] event ids whose current lease was acknowledged
+      def mark_processed!(events)
+        return update_delivery_status!(events, 'processed', extra: PROCESSED_AT_ASSIGNMENT) if delivery_mode?
 
-        update_status!(event_ids, 'processed', extra: 'processed_at = CURRENT_TIMESTAMP')
+        update_status!(events, 'processed', extra: PROCESSED_AT_ASSIGNMENT)
       end
 
-      # @param event_ids [Array<Integer, String>]
-      # @return [void]
-      def mark_superseded!(event_ids)
-        if delivery_mode?
-          return update_delivery_status!(event_ids, 'superseded', extra: 'processed_at = CURRENT_TIMESTAMP')
-        end
+      # @param events [Array<SearchEngine::PostgresOutbox::Event, Integer, String>]
+      # @return [Array<Integer, String>] event ids whose current lease was acknowledged
+      def mark_superseded!(events)
+        return update_delivery_status!(events, 'superseded', extra: PROCESSED_AT_ASSIGNMENT) if delivery_mode?
 
-        update_status!(event_ids, 'superseded', extra: 'processed_at = CURRENT_TIMESTAMP')
+        update_status!(events, 'superseded', extra: PROCESSED_AT_ASSIGNMENT)
       end
 
-      # @param event_ids [Array<Integer, String>]
+      # @param events [Array<SearchEngine::PostgresOutbox::Event, Integer, String>]
       # @param error [Exception, String]
-      # @return [void]
-      def mark_retryable!(event_ids, error:)
-        ids = Array(event_ids).compact
-        return if ids.empty?
-        return mark_delivery_retryable!(ids, error: error) if delivery_mode?
+      # @return [Array<Integer, String>] event ids whose current lease was acknowledged
+      def mark_retryable!(events, error:)
+        ids = event_ids(events)
+        return [] if ids.empty?
+        return mark_delivery_retryable!(events, error: error) if delivery_mode?
 
         execute(<<~SQL)
           UPDATE #{quoted_table}
@@ -90,15 +87,16 @@ module SearchEngine
               updated_at = CURRENT_TIMESTAMP
           WHERE id IN (#{ids_sql(ids)})
         SQL
+        ids
       end
 
-      # @param event_ids [Array<Integer, String>]
+      # @param events [Array<SearchEngine::PostgresOutbox::Event, Integer, String>]
       # @param error [Exception, String]
-      # @return [void]
-      def mark_failed!(event_ids, error:)
-        ids = Array(event_ids).compact
-        return if ids.empty?
-        return mark_delivery_failed!(ids, error: error) if delivery_mode?
+      # @return [Array<Integer, String>] event ids whose current lease was acknowledged
+      def mark_failed!(events, error:)
+        ids = event_ids(events)
+        return [] if ids.empty?
+        return mark_delivery_failed!(events, error: error) if delivery_mode?
 
         execute(<<~SQL)
           UPDATE #{quoted_table}
@@ -109,6 +107,20 @@ module SearchEngine
               updated_at = CURRENT_TIMESTAMP
           WHERE id IN (#{ids_sql(ids)})
         SQL
+        ids
+      end
+
+      # Refresh the lock timestamp only for deliveries still owned by these claims.
+      # @param events [Array<SearchEngine::PostgresOutbox::Event>]
+      # @return [Array<Integer, String>] event ids whose current lease was renewed
+      def renew_leases!(events)
+        raise ArgumentError, 'delivery lease renewal requires a target-scoped repository' unless delivery_mode?
+
+        mutate_claimed_deliveries!(
+          events,
+          assignments: 'locked_at = CURRENT_TIMESTAMP',
+          refresh_parent: false
+        )
       end
 
       # Create missing delivery rows for all configured delivery targets.
@@ -375,7 +387,7 @@ module SearchEngine
           execute(delivery_claim_update_sql(delivery_ids, worker_id)) unless delivery_ids.empty?
         end
 
-        rows
+        rows.map { |row| row.merge('delivery_lease_owner' => worker_id) }
       end
 
       def reset_stale_delivery_processing!
@@ -416,6 +428,7 @@ module SearchEngine
             FROM #{quoted_table} outbox
             WHERE outbox.status = 'pending'
               AND (outbox.next_attempt_at IS NULL OR outbox.next_attempt_at <= CURRENT_TIMESTAMP)
+              #{processing_event_exclusion_sql('outbox')}
             ORDER BY outbox.id ASC
             LIMIT #{claim_candidate_limit(limit)}
             FOR UPDATE SKIP LOCKED
@@ -456,6 +469,7 @@ module SearchEngine
               locked_by = #{quote(worker_id)},
               updated_at = CURRENT_TIMESTAMP
           WHERE id IN (#{ids_sql(ids)})
+            AND status = 'pending'
         SQL
       end
 
@@ -476,6 +490,7 @@ module SearchEngine
             WHERE deliveries.target_key = #{quote(target_key)}
               AND deliveries.status = 'pending'
               AND (deliveries.next_attempt_at IS NULL OR deliveries.next_attempt_at <= CURRENT_TIMESTAMP)
+              #{processing_delivery_exclusion_sql(delivery_relation: 'deliveries', event_relation: 'events')}
             ORDER BY deliveries.id ASC
             LIMIT #{claim_candidate_limit(limit)}
             FOR UPDATE OF deliveries SKIP LOCKED
@@ -523,6 +538,8 @@ module SearchEngine
               locked_by = #{quote(worker_id)},
               updated_at = CURRENT_TIMESTAMP
           WHERE id IN (#{ids_sql(delivery_ids)})
+            AND target_key = #{quote(target_key)}
+            AND status = 'pending'
         SQL
       end
 
@@ -628,9 +645,9 @@ module SearchEngine
         SQL
       end
 
-      def update_status!(event_ids, status, extra:)
-        ids = Array(event_ids).compact
-        return if ids.empty?
+      def update_status!(events, status, extra:)
+        ids = event_ids(events)
+        return [] if ids.empty?
 
         execute(<<~SQL)
           UPDATE #{quoted_table}
@@ -641,65 +658,74 @@ module SearchEngine
               updated_at = CURRENT_TIMESTAMP
           WHERE id IN (#{ids_sql(ids)})
         SQL
+        ids
       end
 
-      def update_delivery_status!(event_ids, status, extra:)
-        ids = Array(event_ids).compact
-        return if ids.empty?
-
-        with_delivery_status_refresh(ids) do
-          execute(<<~SQL)
-            UPDATE #{quoted_delivery_table}
-            SET status = #{quote(status)},
-                #{extra},
-                locked_at = NULL,
-                locked_by = NULL,
-                updated_at = CURRENT_TIMESTAMP
-            WHERE target_key = #{quote(target_key)}
-              AND event_id IN (#{ids_sql(ids)})
+      def update_delivery_status!(events, status, extra:)
+        mutate_claimed_deliveries!(
+          events,
+          assignments: <<~SQL.chomp
+            status = #{quote(status)},
+            #{extra},
+            locked_at = NULL,
+            locked_by = NULL
           SQL
-        end
+        )
       end
 
-      def mark_delivery_retryable!(event_ids, error:)
-        with_delivery_status_refresh(event_ids) do
-          execute(<<~SQL)
-            UPDATE #{quoted_delivery_table}
-            SET attempts = attempts + 1,
-                status = CASE WHEN attempts + 1 >= #{max_attempts} THEN 'failed' ELSE 'pending' END,
-                next_attempt_at = CURRENT_TIMESTAMP + #{retry_interval_case_sql},
-                locked_at = NULL,
-                locked_by = NULL,
-                last_error = #{quote(truncate_error(error))},
-                updated_at = CURRENT_TIMESTAMP
-            WHERE target_key = #{quote(target_key)}
-              AND event_id IN (#{ids_sql(event_ids)})
+      def mark_delivery_retryable!(events, error:)
+        mutate_claimed_deliveries!(
+          events,
+          assignments: <<~SQL.chomp
+            attempts = attempts + 1,
+            status = CASE WHEN attempts + 1 >= #{max_attempts} THEN 'failed' ELSE 'pending' END,
+            next_attempt_at = CURRENT_TIMESTAMP + #{retry_interval_case_sql},
+            locked_at = NULL,
+            locked_by = NULL,
+            last_error = #{quote(truncate_error(error))}
           SQL
-        end
+        )
       end
 
-      def mark_delivery_failed!(event_ids, error:)
-        with_delivery_status_refresh(event_ids) do
-          execute(<<~SQL)
-            UPDATE #{quoted_delivery_table}
-            SET status = 'failed',
-                locked_at = NULL,
-                locked_by = NULL,
-                last_error = #{quote(truncate_error(error))},
-                updated_at = CURRENT_TIMESTAMP
-            WHERE target_key = #{quote(target_key)}
-              AND event_id IN (#{ids_sql(event_ids)})
+      def mark_delivery_failed!(events, error:)
+        mutate_claimed_deliveries!(
+          events,
+          assignments: <<~SQL.chomp
+            status = 'failed',
+            locked_at = NULL,
+            locked_by = NULL,
+            last_error = #{quote(truncate_error(error))}
           SQL
-        end
+        )
       end
 
-      def with_delivery_status_refresh(event_ids)
-        ids = Array(event_ids).compact
-        return if ids.empty?
+      def mutate_claimed_deliveries!(events, assignments:, refresh_parent: true)
+        claims = delivery_claims(events)
+        return [] if claims.empty?
 
         connection.transaction do
-          yield
-          refresh_event_statuses!(ids)
+          # Cross-path lock order is parent events first, then deliveries. Producers that mutate both
+          # tables must use the same order to avoid deadlocks with acknowledgements.
+          lock_event_rows!(claims.map { |claim| claim[:event_id] }) if refresh_parent
+          rows = select_rows(<<~SQL)
+            WITH claimed_deliveries(delivery_id, event_id, lease_owner) AS (
+              VALUES #{delivery_claim_values_sql(claims)}
+            )
+            UPDATE #{quoted_delivery_table} deliveries
+            SET #{assignments},
+                updated_at = CURRENT_TIMESTAMP
+            FROM claimed_deliveries
+            WHERE deliveries.id = claimed_deliveries.delivery_id
+              AND deliveries.event_id = claimed_deliveries.event_id
+              AND deliveries.target_key = #{quote(target_key)}
+              AND deliveries.status = 'processing'
+              AND deliveries.locked_by = claimed_deliveries.lease_owner
+            RETURNING deliveries.event_id AS id
+          SQL
+
+          ids = rows.map { |row| row_value(row, :id) }
+          refresh_event_statuses!(ids) if refresh_parent && ids.any?
+          ids
         end
       end
 
@@ -717,6 +743,16 @@ module SearchEngine
             #{event_status_aggregate_sql(ids_sql(ids))}
           ) aggregate
           WHERE events.id = aggregate.event_id
+        SQL
+      end
+
+      def lock_event_rows!(event_ids)
+        execute(<<~SQL)
+          SELECT id
+          FROM #{quoted_table}
+          WHERE id IN (#{ids_sql(event_ids)})
+          ORDER BY id ASC
+          FOR UPDATE
         SQL
       end
 
@@ -808,6 +844,41 @@ module SearchEngine
 
       def ids_sql(ids)
         ids.map { |id| quote(id) }.join(', ')
+      end
+
+      def event_ids(events)
+        Array(events).compact.map do |event|
+          event.respond_to?(:id) ? event.id : event
+        end
+      end
+
+      def delivery_claims(events)
+        Array(events).compact.map do |event|
+          unless event.respond_to?(:delivery_id) && event.respond_to?(:delivery_lease_owner)
+            raise ArgumentError, 'target-scoped delivery mutations require claimed Event objects'
+          end
+          if event.delivery_id.nil? || event.delivery_lease_owner.to_s.empty?
+            raise ArgumentError, 'claimed delivery is missing its delivery id or lease owner'
+          end
+
+          if event.target_key.to_s != target_key
+            raise ArgumentError,
+                  "claimed delivery target #{event.target_key.inspect} does not match #{target_key.inspect}"
+          end
+
+          {
+            delivery_id: event.delivery_id,
+            event_id: event.id,
+            lease_owner: event.delivery_lease_owner
+          }
+        end
+      end
+
+      def delivery_claim_values_sql(claims)
+        claims.map do |claim|
+          "(#{quote(claim[:delivery_id])}::bigint, " \
+            "#{quote(claim[:event_id])}::bigint, #{quote(claim[:lease_owner])})"
+        end.join(', ')
       end
 
       def coalesce_values_sql(rows)
@@ -1025,6 +1096,7 @@ module SearchEngine
             FROM #{quoted_table} outbox
             WHERE outbox.status = 'pending'
               AND (outbox.next_attempt_at IS NULL OR outbox.next_attempt_at <= CURRENT_TIMESTAMP)
+              #{processing_event_exclusion_sql('outbox')}
             ORDER BY outbox.id ASC
             LIMIT #{claim_candidate_limit(collection_limited_candidate_limit)}
             FOR UPDATE SKIP LOCKED
@@ -1154,6 +1226,7 @@ module SearchEngine
             WHERE deliveries.target_key = #{quote(target_key)}
               AND deliveries.status = 'pending'
               AND (deliveries.next_attempt_at IS NULL OR deliveries.next_attempt_at <= CURRENT_TIMESTAMP)
+              #{processing_delivery_exclusion_sql(delivery_relation: 'deliveries', event_relation: 'events')}
             ORDER BY deliveries.id ASC
             LIMIT #{claim_candidate_limit(collection_limited_candidate_limit)}
             FOR UPDATE OF deliveries SKIP LOCKED
@@ -1225,6 +1298,33 @@ module SearchEngine
 
       def claim_candidate_limit(limit)
         [limit.to_i, 0].max * CLAIM_CANDIDATE_OVERSAMPLE
+      end
+
+      def processing_event_exclusion_sql(event_relation)
+        <<~SQL.chomp
+          AND NOT EXISTS (
+            SELECT 1
+            FROM #{quoted_table} processing_events
+            WHERE processing_events.status = 'processing'
+              AND processing_events.collection = #{event_relation}.collection
+              AND processing_events.document_id = #{event_relation}.document_id
+          )
+        SQL
+      end
+
+      def processing_delivery_exclusion_sql(delivery_relation:, event_relation:)
+        <<~SQL.chomp
+          AND NOT EXISTS (
+            SELECT 1
+            FROM #{quoted_delivery_table} processing_deliveries
+            INNER JOIN #{quoted_table} processing_events
+              ON processing_events.id = processing_deliveries.event_id
+            WHERE processing_deliveries.target_key = #{delivery_relation}.target_key
+              AND processing_deliveries.status = 'processing'
+              AND processing_events.collection = #{event_relation}.collection
+              AND processing_events.document_id = #{event_relation}.document_id
+          )
+        SQL
       end
 
       # Resolve a bounded candidate key to its globally latest pending event. Without this lookup,

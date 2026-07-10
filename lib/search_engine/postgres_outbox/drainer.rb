@@ -1,12 +1,15 @@
 # frozen_string_literal: true
 
 require 'socket'
+require 'securerandom'
+require 'set'
 
 module SearchEngine
   module PostgresOutbox
     # Orchestrates one bounded PostgreSQL outbox drain pass.
     class Drainer
       BLOCKED_ERROR = 'Skipped because an earlier outbox collection group failed'
+      LEASE_OWNER_MAX_LENGTH = 255
 
       # @param repository [SearchEngine::PostgresOutbox::Repository]
       # @param processor [#call]
@@ -27,18 +30,19 @@ module SearchEngine
           'search_engine.postgres_outbox.drain',
           drain_payload(limit)
         ) do |payload|
-          events = repository.claim_pending(limit: limit, worker_id: worker_id)
+          lease_owner = next_lease_owner
+          events = repository.claim_pending(limit: limit, worker_id: lease_owner)
           summary = empty_summary(events)
           next summary if events.empty?
 
           summary[:continue] = true if continue_after_nonempty_batch?
 
-          kept, superseded_ids = coalesce(events)
-          repository.mark_superseded!(superseded_ids)
-          summary[:superseded] = superseded_ids.size
+          kept, superseded_events = coalesce(events)
+          superseded_ids = repository.mark_superseded!(superseded_events)
+          record_acknowledgements(summary, :superseded, superseded_events, superseded_ids)
 
           ordered = SearchEngine::DependencyPlanner.order_events(kept)
-          process_ordered_events(ordered, summary)
+          process_ordered_events(ordered, summary, lease_owner: lease_owner)
           payload.merge!(summary)
           summary
         end
@@ -55,6 +59,7 @@ module SearchEngine
           superseded: 0,
           retryable: 0,
           failed: 0,
+          stale: 0,
           collections: []
         }
         summary[:target_key] = target_key if target_key
@@ -79,27 +84,29 @@ module SearchEngine
           end
         end
 
-        [latest_by_key.values.sort_by { |event| event.id.to_i }, superseded.map(&:id)]
+        [latest_by_key.values.sort_by { |event| event.id.to_i }, superseded]
       end
 
-      def process_ordered_events(events, summary)
+      def process_ordered_events(events, summary, lease_owner:)
         grouped = group_by_collection(events)
 
         grouped.each_with_index do |(collection, collection_events), index|
-          result = call_processor(collection, collection_events)
+          result = call_processor(collection, collection_events, lease_owner: lease_owner)
           processed_ids = processed_event_ids(result, collection_events)
           failed_ids = failed_event_ids(result, collection_events, processed_ids)
+          processed_events = events_for_ids(collection_events, processed_ids)
+          failed_events = events_for_ids(collection_events, failed_ids)
 
-          mark_processed(processed_ids, collection_events, summary)
+          mark_processed(processed_events, summary)
           if result.success?
-            mark_retryable(failed_ids, incomplete_success_error(collection, processed_ids, failed_ids), summary)
+            mark_retryable(failed_events, incomplete_success_error(collection, processed_ids, failed_ids), summary)
           else
-            mark_retryable(failed_ids, result.error, summary)
+            mark_retryable(failed_events, result.error, summary)
             mark_remaining_retryable(grouped[(index + 1)..], summary)
             break
           end
         rescue StandardError => error
-          mark_retryable(collection_events.map(&:id), error, summary)
+          mark_retryable(collection_events, error, summary)
           mark_remaining_retryable(grouped[(index + 1)..], summary)
           break
         end
@@ -121,8 +128,8 @@ module SearchEngine
         grouped
       end
 
-      def call_processor(collection, events)
-        result = processor_for(collection).call(events: events, context: processor_context)
+      def call_processor(collection, events, lease_owner:)
+        result = processor_for(collection).call(events: events, context: processor_context(lease_owner))
         normalize_result(result, events)
       end
 
@@ -157,36 +164,58 @@ module SearchEngine
           "#{failed_ids.join(', ')}; processed ids: #{processed_ids.join(', ')}"
       end
 
-      def mark_processed(event_ids, events, summary)
-        ids = Array(event_ids).compact
-        return if ids.empty?
+      def mark_processed(events, summary)
+        claimed_events = Array(events).compact
+        return if claimed_events.empty?
 
-        repository.mark_processed!(ids)
-        summary[:processed] += ids.size
-        summary[:collections] |= events.map(&:collection)
+        acknowledged_ids = repository.mark_processed!(claimed_events)
+        acknowledged_keys = record_acknowledgements(summary, :processed, claimed_events, acknowledged_ids)
+        acknowledged_events = events_for_ids(claimed_events, acknowledged_keys)
+        summary[:collections] |= acknowledged_events.map(&:collection)
       end
 
-      def mark_retryable(event_ids, error, summary)
-        ids = Array(event_ids).compact
-        return if ids.empty?
+      def mark_retryable(events, error, summary)
+        claimed_events = Array(events).compact
+        return if claimed_events.empty?
 
-        repository.mark_retryable!(ids, error: error)
-        summary[:retryable] += ids.size
-        summary[:failed] += ids.size
+        acknowledged_ids = repository.mark_retryable!(claimed_events, error: error)
+        acknowledged_keys = record_acknowledgements(summary, :retryable, claimed_events, acknowledged_ids)
+        summary[:failed] += acknowledged_keys.size
       end
 
       def mark_remaining_retryable(remaining_groups, summary)
         Array(remaining_groups).each do |group|
-          mark_retryable(group.last.map(&:id), BLOCKED_ERROR, summary)
+          mark_retryable(group.last, BLOCKED_ERROR, summary)
         end
+      end
+
+      def events_for_ids(events, ids)
+        id_keys = Set.new(Array(ids).compact.map(&:to_s))
+        Array(events).select { |event| id_keys.include?(event.id.to_s) }
+      end
+
+      def record_acknowledgements(summary, counter, events, acknowledged_ids)
+        acknowledged_keys = Array(acknowledged_ids).compact.map(&:to_s).uniq
+        requested_keys = Array(events).map { |event| event.id.to_s }.uniq
+        acknowledged_keys &= requested_keys
+        summary[counter] += acknowledged_keys.size
+        summary[:stale] += requested_keys.size - acknowledged_keys.size
+        acknowledged_keys
       end
 
       def default_worker_id
         "#{Socket.gethostname}:#{$PROCESS_ID}:#{Thread.current.object_id}"
       end
 
-      def processor_context
-        context = { worker_id: worker_id }
+      def next_lease_owner
+        suffix = SecureRandom.uuid
+        prefix_limit = LEASE_OWNER_MAX_LENGTH - suffix.length - 1
+        prefix = worker_id.to_s.gsub(/[^a-zA-Z0-9_.:-]/, '_')[0, prefix_limit]
+        "#{prefix}:#{suffix}"
+      end
+
+      def processor_context(lease_owner)
+        context = { worker_id: worker_id, lease_owner: lease_owner }
         context[:target_key] = target_key if target_key
         context
       end

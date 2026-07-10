@@ -4,30 +4,38 @@ require 'test_helper'
 
 class PostgresOutboxDrainerTest < Minitest::Test
   class FakeRepository
-    attr_reader :processed_ids, :superseded_ids, :retryable_calls, :claim_args
+    attr_reader :processed_ids, :superseded_ids, :retryable_calls, :claim_args, :claim_history
 
     def initialize(events)
       @events = events
       @processed_ids = []
       @superseded_ids = []
       @retryable_calls = []
+      @claim_history = []
     end
 
     def claim_pending(limit:, worker_id:)
       @claim_args = { limit: limit, worker_id: worker_id }
+      claim_history << @claim_args
       @events
     end
 
-    def mark_processed!(event_ids)
-      processed_ids.concat(event_ids)
+    def mark_processed!(events)
+      ids = events.map(&:id)
+      processed_ids.concat(ids)
+      ids
     end
 
-    def mark_superseded!(event_ids)
-      superseded_ids.concat(event_ids)
+    def mark_superseded!(events)
+      ids = events.map(&:id)
+      superseded_ids.concat(ids)
+      ids
     end
 
-    def mark_retryable!(event_ids, error:)
-      retryable_calls << [event_ids, error]
+    def mark_retryable!(events, error:)
+      ids = events.map(&:id)
+      retryable_calls << [ids, error]
+      ids
     end
   end
 
@@ -44,6 +52,129 @@ class PostgresOutboxDrainerTest < Minitest::Test
       @results.fetch(events.first.collection) do
         SearchEngine::PostgresOutbox::ProcessorResult.success(events.map(&:id))
       end
+    end
+  end
+
+  class CallbackProcessor
+    attr_reader :calls
+
+    def initialize(&callback)
+      @callback = callback
+      @calls = []
+    end
+
+    def call(events:, context:)
+      calls << [events, context]
+      @callback.call(events, context)
+    end
+  end
+
+  # Deterministic protocol model used to exercise lease/order interleavings through the real Drainer.
+  class LeaseAwareRepository
+    attr_reader :deliveries
+
+    def initialize(events)
+      @deliveries = []
+      events.each { |event| add(event) }
+    end
+
+    def add(event)
+      deliveries << {
+        event: event,
+        delivery_id: event.delivery_id,
+        target_key: event.target_key,
+        status: :pending,
+        lease_owner: nil,
+        attempts: 0
+      }
+    end
+
+    def claim_pending(limit:, worker_id:)
+      processing_keys = deliveries.filter_map do |delivery|
+        delivery_key(delivery) if delivery[:status] == :processing
+      end
+      latest_pending = deliveries
+                       .select { |delivery| delivery[:status] == :pending }
+                       .group_by { |delivery| delivery_key(delivery) }
+                       .values
+                       .map { |versions| versions.max_by { |delivery| delivery[:event].id.to_i } }
+                       .reject { |delivery| processing_keys.include?(delivery_key(delivery)) }
+                       .sort_by { |delivery| delivery[:event].id.to_i }
+                       .first(limit || deliveries.size)
+
+      latest_pending.map do |delivery|
+        delivery[:status] = :processing
+        delivery[:lease_owner] = worker_id
+        claimed_event(delivery)
+      end
+    end
+
+    def mark_processed!(events)
+      mutate(events, :processed)
+    end
+
+    def mark_superseded!(events)
+      mutate(events, :superseded)
+    end
+
+    def mark_retryable!(events, error:)
+      mutate(events, :pending) do |delivery|
+        delivery[:attempts] += 1
+        delivery[:last_error] = error
+      end
+    end
+
+    def expire_and_requeue!(delivery_id)
+      delivery = delivery(delivery_id)
+      delivery[:status] = :pending
+      delivery[:lease_owner] = nil
+    end
+
+    def delivery(delivery_id)
+      deliveries.find { |candidate| candidate[:delivery_id] == delivery_id }
+    end
+
+    def parent_status(event_id)
+      delivery = deliveries.find { |candidate| candidate[:event].id == event_id }
+      delivery && delivery[:status]
+    end
+
+    private
+
+    def mutate(events, status)
+      Array(events).filter_map do |event|
+        delivery = delivery(event.delivery_id)
+        next unless delivery
+        next unless delivery[:status] == :processing
+        next unless delivery[:lease_owner] == event.delivery_lease_owner
+
+        yield delivery if block_given?
+        delivery[:status] = status
+        delivery[:lease_owner] = nil unless status == :processing
+        event.id
+      end
+    end
+
+    def delivery_key(delivery)
+      [delivery[:target_key], *delivery[:event].coalesce_key]
+    end
+
+    def claimed_event(delivery)
+      event = delivery[:event]
+      SearchEngine::PostgresOutbox::Event.new(
+        id: event.id,
+        source_table: event.source_table,
+        source_model_name: event.source_model_name,
+        collection: event.collection,
+        record_id: event.record_id,
+        document_id: event.document_id,
+        operation: event.operation,
+        attempts: delivery[:attempts],
+        payload: event.payload,
+        delivery_id: delivery[:delivery_id],
+        target_key: delivery[:target_key],
+        delivery_lease_owner: delivery[:lease_owner]
+      )
     end
   end
 
@@ -65,8 +196,198 @@ class PostgresOutboxDrainerTest < Minitest::Test
 
     summary = drainer.drain_once(limit: 10)
 
-    assert_equal({ claimed: 0, processed: 0, superseded: 0, retryable: 0, failed: 0, collections: [] }, summary)
-    assert_equal({ limit: 10, worker_id: 'w1' }, repository.claim_args)
+    assert_equal(
+      { claimed: 0, processed: 0, superseded: 0, retryable: 0, failed: 0, stale: 0, collections: [] },
+      summary
+    )
+    assert_equal 10, repository.claim_args[:limit]
+    assert_match(/\Aw1:[0-9a-f-]{36}\z/, repository.claim_args[:worker_id])
+  end
+
+  def test_generates_a_unique_lease_owner_for_each_claim_generation
+    repository = FakeRepository.new([])
+    drainer = SearchEngine::PostgresOutbox::Drainer.new(repository: repository, worker_id: 'w1')
+    lease_ids = %w[lease-a lease-b]
+
+    SecureRandom.stub(:uuid, -> { lease_ids.shift }) do
+      drainer.drain_once(limit: 10)
+      drainer.drain_once(limit: 10)
+    end
+
+    claim_workers = repository.claim_history.map { |args| args[:worker_id] }
+    assert_equal %w[w1:lease-a w1:lease-b], claim_workers
+  end
+
+  def test_lease_owner_is_sanitized_bounded_and_keeps_the_unique_uuid_suffix
+    repository = FakeRepository.new([])
+    worker_id = "worker name/with unsafe chars/#{'x' * 300}"
+    drainer = SearchEngine::PostgresOutbox::Drainer.new(repository: repository, worker_id: worker_id)
+    lease_ids = %w[00000000-0000-4000-8000-000000000001 00000000-0000-4000-8000-000000000002]
+
+    SecureRandom.stub(:uuid, -> { lease_ids.shift }) do
+      drainer.drain_once(limit: 10)
+      drainer.drain_once(limit: 10)
+    end
+
+    owners = repository.claim_history.map { |args| args[:worker_id] }
+    assert_equal 2, owners.uniq.size
+    all_bounded = owners.all? { |owner| owner.length <= 255 }
+    assert all_bounded
+    assert owners[0].end_with?(':00000000-0000-4000-8000-000000000001')
+    assert owners[1].end_with?(':00000000-0000-4000-8000-000000000002')
+    refute_match(%r{[ /]}, owners.join)
+  end
+
+  def test_stale_success_cannot_acknowledge_a_delivery_reclaimed_by_another_worker
+    original = event(id: 1, document_id: 'sku-1', delivery_id: 101, target_key: 'target_1')
+    repository = LeaseAwareRepository.new([original])
+    worker_b_summary = nil
+    worker_b = SearchEngine::PostgresOutbox::Drainer.new(
+      repository: repository,
+      processor: RecordingProcessor.new,
+      worker_id: 'worker-b',
+      target_key: 'target_1'
+    )
+    worker_a_processor = CallbackProcessor.new do |events, _context|
+      repository.expire_and_requeue!(events.first.delivery_id)
+      worker_b_summary = worker_b.drain_once(limit: 1)
+      SearchEngine::PostgresOutbox::ProcessorResult.success(events.map(&:id))
+    end
+    worker_a = SearchEngine::PostgresOutbox::Drainer.new(
+      repository: repository,
+      processor: worker_a_processor,
+      worker_id: 'worker-a',
+      target_key: 'target_1'
+    )
+    lease_ids = %w[lease-a lease-b]
+
+    worker_a_summary = SecureRandom.stub(:uuid, -> { lease_ids.shift }) { worker_a.drain_once(limit: 1) }
+
+    assert_equal 1, worker_b_summary[:processed]
+    assert_equal 0, worker_b_summary[:stale]
+    assert_equal 0, worker_a_summary[:processed]
+    assert_equal 1, worker_a_summary[:stale]
+    assert_equal :processed, repository.delivery(101)[:status]
+    assert_nil repository.delivery(101)[:lease_owner]
+    assert_equal :processed, repository.parent_status(1)
+  end
+
+  def test_stale_failure_cannot_overwrite_a_newer_success
+    original = event(id: 1, document_id: 'sku-1', delivery_id: 101, target_key: 'target_1')
+    repository = LeaseAwareRepository.new([original])
+    worker_b = SearchEngine::PostgresOutbox::Drainer.new(
+      repository: repository,
+      processor: RecordingProcessor.new,
+      worker_id: 'worker-b',
+      target_key: 'target_1'
+    )
+    stale_error = StandardError.new('late failure')
+    worker_a_processor = CallbackProcessor.new do |events, _context|
+      repository.expire_and_requeue!(events.first.delivery_id)
+      worker_b.drain_once(limit: 1)
+      SearchEngine::PostgresOutbox::ProcessorResult.failure(events.map(&:id), error: stale_error)
+    end
+    worker_a = SearchEngine::PostgresOutbox::Drainer.new(
+      repository: repository,
+      processor: worker_a_processor,
+      worker_id: 'worker-a',
+      target_key: 'target_1'
+    )
+    lease_ids = %w[lease-a lease-b]
+
+    summary = SecureRandom.stub(:uuid, -> { lease_ids.shift }) { worker_a.drain_once(limit: 1) }
+
+    assert_equal 0, summary[:retryable]
+    assert_equal 0, summary[:failed]
+    assert_equal 1, summary[:stale]
+    assert_equal :processed, repository.delivery(101)[:status]
+    assert_equal 0, repository.delivery(101)[:attempts]
+    assert_nil repository.delivery(101)[:last_error]
+    assert_equal :processed, repository.parent_status(1)
+  end
+
+  def test_newer_delete_waits_for_an_older_upsert_on_the_same_target_and_document
+    original = event(id: 1, document_id: 'sku-1', operation: 'upsert', delivery_id: 101, target_key: 'target_1')
+    repository = LeaseAwareRepository.new([original])
+    operations = []
+    blocked_summary = nil
+    follower_processor = CallbackProcessor.new do |events, _context|
+      operations.concat(events.map(&:operation))
+      SearchEngine::PostgresOutbox::ProcessorResult.success(events.map(&:id))
+    end
+    follower = SearchEngine::PostgresOutbox::Drainer.new(
+      repository: repository,
+      processor: follower_processor,
+      worker_id: 'follower',
+      target_key: 'target_1'
+    )
+    leader_processor = CallbackProcessor.new do |events, _context|
+      operations.concat(events.map(&:operation))
+      repository.add(
+        event(id: 2, document_id: 'sku-1', operation: 'delete', delivery_id: 102, target_key: 'target_1')
+      )
+      blocked_summary = follower.drain_once(limit: 1)
+      SearchEngine::PostgresOutbox::ProcessorResult.success(events.map(&:id))
+    end
+    leader = SearchEngine::PostgresOutbox::Drainer.new(
+      repository: repository,
+      processor: leader_processor,
+      worker_id: 'leader',
+      target_key: 'target_1'
+    )
+    lease_ids = %w[lease-upsert blocked-delete lease-delete]
+
+    SecureRandom.stub(:uuid, -> { lease_ids.shift }) do
+      leader.drain_once(limit: 1)
+      follower.drain_once(limit: 1)
+    end
+
+    assert_equal 0, blocked_summary[:claimed]
+    assert_equal %i[upsert delete], operations
+    assert_equal :processed, repository.delivery(101)[:status]
+    assert_equal :processed, repository.delivery(102)[:status]
+  end
+
+  def test_recreation_upsert_waits_for_an_older_delete_on_the_same_target_and_document
+    original = event(id: 1, document_id: 'sku-1', operation: 'delete', delivery_id: 101, target_key: 'target_1')
+    repository = LeaseAwareRepository.new([original])
+    operations = []
+    blocked_summary = nil
+    follower_processor = CallbackProcessor.new do |events, _context|
+      operations.concat(events.map(&:operation))
+      SearchEngine::PostgresOutbox::ProcessorResult.success(events.map(&:id))
+    end
+    follower = SearchEngine::PostgresOutbox::Drainer.new(
+      repository: repository,
+      processor: follower_processor,
+      worker_id: 'follower',
+      target_key: 'target_1'
+    )
+    leader_processor = CallbackProcessor.new do |events, _context|
+      operations.concat(events.map(&:operation))
+      repository.add(
+        event(id: 2, document_id: 'sku-1', operation: 'upsert', delivery_id: 102, target_key: 'target_1')
+      )
+      blocked_summary = follower.drain_once(limit: 1)
+      SearchEngine::PostgresOutbox::ProcessorResult.success(events.map(&:id))
+    end
+    leader = SearchEngine::PostgresOutbox::Drainer.new(
+      repository: repository,
+      processor: leader_processor,
+      worker_id: 'leader',
+      target_key: 'target_1'
+    )
+    lease_ids = %w[lease-delete blocked-upsert lease-upsert]
+
+    SecureRandom.stub(:uuid, -> { lease_ids.shift }) do
+      leader.drain_once(limit: 1)
+      follower.drain_once(limit: 1)
+    end
+
+    assert_equal 0, blocked_summary[:claimed]
+    assert_equal %i[delete upsert], operations
+    assert_equal :processed, repository.delivery(101)[:status]
+    assert_equal :processed, repository.delivery(102)[:status]
   end
 
   def test_coalesces_latest_event_per_collection_document_and_marks_older_superseded
@@ -243,7 +564,10 @@ class PostgresOutboxDrainerTest < Minitest::Test
       assert_equal 'target_1', summary[:target_key]
       assert_equal true, summary[:continue]
       assert_equal [1], repository.processed_ids
-      assert_equal [{ worker_id: 'w1', target_key: 'target_1' }], processor.calls.map(&:last)
+      context = processor.calls.first.last
+      assert_equal 'w1', context[:worker_id]
+      assert_equal 'target_1', context[:target_key]
+      assert_match(/\Aw1:[0-9a-f-]{36}\z/, context[:lease_owner])
     end
   end
 
@@ -261,13 +585,21 @@ class PostgresOutboxDrainerTest < Minitest::Test
                 .drain_once(limit: 10)
 
       assert_equal 'target_1', summary[:target_key]
-      assert_equal({ limit: 10, worker_id: 'w1' }, repository_seen.claim_args)
+      assert_equal 10, repository_seen.claim_args[:limit]
+      assert_match(/\Aw1:[0-9a-f-]{36}\z/, repository_seen.claim_args[:worker_id])
     end
   end
 
   private
 
-  def event(id:, collection: 'products', document_id: nil, delivery_id: nil, target_key: nil)
+  def event(
+    id:,
+    collection: 'products',
+    document_id: nil,
+    operation: 'upsert',
+    delivery_id: nil,
+    target_key: nil
+  )
     SearchEngine::PostgresOutbox::Event.new(
       id: id,
       source_table: collection,
@@ -275,7 +607,7 @@ class PostgresOutboxDrainerTest < Minitest::Test
       collection: collection,
       record_id: id.to_s,
       document_id: document_id || id.to_s,
-      operation: 'upsert',
+      operation: operation,
       attempts: 0,
       payload: {},
       delivery_id: delivery_id,

@@ -17,7 +17,8 @@ module SearchEngine
                   :payload,
                   :created_at,
                   :delivery_id,
-                  :target_key
+                  :target_key,
+                  :delivery_lease_owner
 
       # @param row [Hash] outbox row with string or symbol keys
       # @raise [ArgumentError] when operation is not upsert/delete
@@ -34,6 +35,7 @@ module SearchEngine
         @created_at = value(row, :created_at)
         @delivery_id = value(row, :delivery_id)
         @target_key = string_value(row, :target_key)
+        @delivery_lease_owner = string_value(row, :delivery_lease_owner)
       end
 
       # @return [Array<String>] key used by drainer coalescing

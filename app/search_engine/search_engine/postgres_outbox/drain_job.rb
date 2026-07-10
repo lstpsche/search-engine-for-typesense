@@ -104,9 +104,9 @@ module SearchEngine
       end
 
       def drainer_for(target_key)
-        return SearchEngine::PostgresOutbox::Drainer.new if target_key.nil?
+        return SearchEngine::PostgresOutbox::Drainer.new(worker_id: worker_id) if target_key.nil?
 
-        SearchEngine::PostgresOutbox::Drainer.new(target_key: target_key)
+        SearchEngine::PostgresOutbox::Drainer.new(target_key: target_key, worker_id: worker_id)
       end
 
       def enqueue_continuation(limit:, target_key:)
@@ -163,6 +163,7 @@ module SearchEngine
           superseded: 0,
           retryable: 0,
           failed: 0,
+          stale: 0,
           collections: [],
           target_key: target_key,
           drain_slot: drain_slot
@@ -174,7 +175,7 @@ module SearchEngine
       end
 
       def merge_batch_summary!(summary, batch_summary)
-        %i[claimed processed superseded retryable failed].each do |key|
+        %i[claimed processed superseded retryable failed stale].each do |key|
           summary[key] += batch_summary[key].to_i
         end
         summary[:collections] |= Array(batch_summary[:collections])
