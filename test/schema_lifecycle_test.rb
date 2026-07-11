@@ -79,6 +79,14 @@ class SchemaLifecycleTest < Minitest::Test
     end
   end
 
+  def teardown
+    SearchEngine.configure do |c|
+      c.schema.retention.keep_last = 0
+      c.schema.around_rebuild = nil
+      c.indexer.partition_execution = :inline
+    end
+  end
+
   def test_around_rebuild_wraps_full_lifecycle_and_preserves_result
     client = FakeClient.new(collections: [], alias_target: nil)
     forced = 'products_lifecycle_20250101_000000_001'

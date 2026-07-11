@@ -804,6 +804,30 @@ class PostgresOutboxDrainerTest < Minitest::Test
     end
   end
 
+  def test_target_claim_retries_later_groups_when_the_current_group_lease_is_lost
+    repository = FakeRepository.new(
+      [
+        event(id: 1, collection: 'products', delivery_id: 101, target_key: 'target_1'),
+        event(id: 2, collection: 'product_barcodes', delivery_id: 102, target_key: 'target_1')
+      ]
+    )
+    repository.renewal_results = [[2]]
+    processor = RecordingProcessor.new
+
+    SearchEngine::DependencyPlanner.stub(:order_events, ->(input) { input }) do
+      summary = SearchEngine::PostgresOutbox::Drainer
+                .new(repository: repository, processor: processor, worker_id: 'w1', target_key: 'target_1')
+                .drain_once(limit: 10)
+
+      assert_empty processor.calls
+      assert_empty repository.processed_ids
+      assert_equal 1, summary[:stale]
+      assert_equal 1, summary[:retryable]
+      assert_equal 1, summary[:failed]
+      assert_equal [[[2], SearchEngine::PostgresOutbox::Drainer::BLOCKED_ERROR]], repository.retryable_calls
+    end
+  end
+
   def test_target_claim_retries_current_and_later_groups_when_lease_renewal_raises
     repository = FakeRepository.new(
       [

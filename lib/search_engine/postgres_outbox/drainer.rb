@@ -93,15 +93,31 @@ module SearchEngine
 
         grouped.each_with_index do |(collection, claimed_collection_events), index|
           collection_events = claimed_collection_events
+          claimed_collection_size = claimed_collection_events.size
           collection_events = renew_remaining_group_leases!(grouped, index, summary)
-          next if collection_events.empty?
+          current_group_lease_lost = collection_events.size < claimed_collection_size
+          if collection_events.empty?
+            if current_group_lease_lost
+              mark_remaining_retryable(grouped[(index + 1)..], summary)
+              break
+            end
+
+            next
+          end
 
           result = call_processor(collection, collection_events, lease_owner: lease_owner)
           processed_events = events_for_ids(collection_events, result.processed_event_ids)
           failed_events = events_for_ids(collection_events, result.failed_event_ids)
 
           mark_processed(processed_events, summary)
-          next if result.success?
+          if result.success?
+            if current_group_lease_lost
+              mark_remaining_retryable(grouped[(index + 1)..], summary)
+              break
+            end
+
+            next
+          end
 
           mark_result_failures_retryable(failed_events, result, summary)
           mark_remaining_retryable(grouped[(index + 1)..], summary)
