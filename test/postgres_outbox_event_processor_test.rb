@@ -17,10 +17,11 @@ class PostgresOutboxEventProcessorTest < Minitest::Test
 
   class FakeSearchModel
     class << self
-      attr_accessor :upserted
+      attr_accessor :upserted, :upserted_into
 
-      def upsert(record:)
+      def upsert(record:, into:)
         self.upserted = record
+        self.upserted_into = into
         1
       end
     end
@@ -38,28 +39,30 @@ class PostgresOutboxEventProcessorTest < Minitest::Test
 
   class SelectiveSearchModel
     class << self
-      attr_accessor :failing_id, :upserted_ids
+      attr_accessor :failing_id, :upserted_ids, :upserted_into
 
-      def upsert(record:)
+      def upsert(record:, into:)
         raise StandardError, "mapping failed for record #{record.id}" if record.id == failing_id
 
         upserted_ids << record.id
+        upserted_into << into
         1
       end
     end
   end
 
   class FakeClient
-    attr_reader :deletes
+    attr_reader :deletes, :resolved
 
     def initialize(alias_target: nil, delete_response: nil)
       @alias_target = alias_target
       @delete_response = delete_response
       @deletes = []
+      @resolved = []
     end
 
     def resolve_alias(collection)
-      @resolved = collection
+      resolved << collection
       @alias_target
     end
 
@@ -72,9 +75,11 @@ class PostgresOutboxEventProcessorTest < Minitest::Test
   def setup
     SourceProduct.record = nil
     FakeSearchModel.upserted = nil
+    FakeSearchModel.upserted_into = nil
     BatchSourceProduct.records = []
     SelectiveSearchModel.failing_id = nil
     SelectiveSearchModel.upserted_ids = []
+    SelectiveSearchModel.upserted_into = []
   end
 
   def test_delete_nil_response_is_success
@@ -91,12 +96,17 @@ class PostgresOutboxEventProcessorTest < Minitest::Test
   def test_upsert_reloads_source_and_uses_search_engine_model
     record = Product.new(id: 10)
     SourceProduct.record = record
+    client = FakeClient.new(alias_target: 'products_20260605')
 
     SearchEngine::CollectionResolver.stub(:model_for_logical, FakeSearchModel) do
-      result = SearchEngine::PostgresOutbox::EventProcessor.call(events: [event(record_id: '10')])
+      result = SearchEngine::PostgresOutbox::EventProcessor.call(
+        events: [event(record_id: '10')],
+        context: { client: client }
+      )
 
       assert result.success?
       assert_same record, FakeSearchModel.upserted
+      assert_equal 'products_20260605', FakeSearchModel.upserted_into
     end
   end
 
@@ -137,7 +147,8 @@ class PostgresOutboxEventProcessorTest < Minitest::Test
     end
 
     SearchEngine::CollectionResolver.stub(:model_for_logical, SelectiveSearchModel) do
-      result = SearchEngine::PostgresOutbox::EventProcessor.call(events: events)
+      client = FakeClient.new(alias_target: 'products_20260605')
+      result = SearchEngine::PostgresOutbox::EventProcessor.call(events: events, context: { client: client })
 
       assert_equal((1..100).to_a - [50], result.processed_event_ids)
       assert_equal [50], result.failed_event_ids
@@ -156,6 +167,22 @@ class PostgresOutboxEventProcessorTest < Minitest::Test
       assert_includes error.message, 'mapping failed for record 50'
       refute_includes error.message, 'must-not-appear-in-errors'
       assert_operator error.message.length, :<, 1_000
+    end
+  end
+
+  def test_batch_pins_one_physical_target_for_all_upserts
+    BatchSourceProduct.records = [Product.new(id: 1), Product.new(id: 2)]
+    events = [1, 2].map do |id|
+      event(id: id, source_model_name: "#{self.class.name}::BatchSourceProduct", record_id: id.to_s)
+    end
+    client = FakeClient.new(alias_target: 'products_20260605')
+
+    SearchEngine::CollectionResolver.stub(:model_for_logical, SelectiveSearchModel) do
+      result = SearchEngine::PostgresOutbox::EventProcessor.call(events: events, context: { client: client })
+
+      assert result.success?
+      assert_equal ['products_20260605'], SelectiveSearchModel.upserted_into.uniq
+      assert_equal ['products'], client.resolved
     end
   end
 

@@ -224,6 +224,76 @@ Only `:inline` and `:active_job` (or their exact String equivalents) are support
 validation instead of silently running inline. Explicit `:active_job` dispatch also fails if ActiveJob is not
 available.
 
+## Guarded blue/green cutovers
+
+`SearchEngine::Schema.apply!` can run an optional guard around the complete full-rebuild lifecycle: physical
+collection creation, indexing, alias swap, and retention. In-place schema updates intentionally do not invoke
+the guard. The guard must yield exactly once; not yielding or yielding repeatedly raises `ArgumentError`.
+Guard errors and indexing errors propagate, and an interrupted pre-swap physical collection is still cleaned
+up.
+
+In delivery-target outbox deployments, use the guard to stop new target claims, wait for already-claimed
+deliveries to acknowledge, and prevent cooperating direct writers from crossing the alias swap:
+
+```ruby
+# config/initializers/search_engine.rb
+typesense_target_key = ENV.fetch("TYPESENSE_DELIVERY_TARGET_KEY")
+
+SearchEngine.configure do |c|
+  c.schema.around_rebuild = lambda do |collection:, &rebuild|
+    Rails.logger.info("Guarding Typesense rebuild for #{collection} on #{typesense_target_key}")
+    SearchEngine::PostgresOutbox::Repository.new.with_delivery_target_claims_paused(
+      target_key: typesense_target_key,
+      timeout_s: SearchEngine.config.postgres_outbox.processing_timeout_s + 60,
+      poll_interval_s: 0.1,
+      &rebuild
+    )
+  end
+end
+```
+
+The target key is the exact delivery destination key, not the logical collection name. Claim transactions
+automatically take the matching transaction-scoped shared PostgreSQL advisory lock. The rebuild guard takes
+an exclusive session lock, then waits until that target has no `processing` deliveries. It deliberately does
+not reset timed-out leases: lease age cannot prove that an old worker's external Typesense request has
+stopped. A stuck processing delivery therefore times out the rebuild; recover it operationally before
+retrying. PostgreSQL releases the session lock if the owning connection or process dies.
+Set the guard timeout above `processing_timeout_s` with enough margin for the slowest legitimate external
+write and scheduling delay; a shorter fixed timeout causes avoidable rebuild failures.
+
+Every direct Typesense writer outside the delivery drainer must cooperate with the same exact target key:
+
+```ruby
+SearchEngine::PostgresOutbox::Repository.new.with_delivery_target_writes_allowed(
+  target_key: typesense_target_key,
+  timeout_s: 5
+) do
+  SearchEngine::Product.upsert(record: product)
+end
+```
+
+Claimed delivery requests must resolve the logical alias once and write to that pinned physical collection until
+the delivery is acknowledged. The built-in `EventProcessor` does this for both upserts and deletes. Custom
+collection processors must follow the same rule: a stale worker whose HTTP request completes after lease reclaim
+must only be able to mutate the retired physical collection, never whichever physical collection the logical alias
+points to after a later cutover.
+
+This protocol only gates delivery-target claims. Legacy single-target event claims have no target identity and
+must be stopped before a rebuild. Likewise, an unguarded direct writer can still cross the swap. In
+delivery-target mode, `reset_stale_processing!` rejects standalone use because reset without same-transaction
+reclaim creates a false-quiescence gap. Ordinary claims directly reclaim only the bounded timed-out rows they
+actually select; unselected stale rows remain `processing`, so a cutover continues to fail closed.
+
+Forced cascade rebuilds use the guarded blue/green path and propagate any rebuild/guard failure. They never
+downgrade to a live partition import. The maintenance tasks `search_engine:index:rebuild` and
+`search_engine:index:rebuild_partition` are intentionally different: they write directly into the resolved
+live collection and do not invoke `schema.around_rebuild`. When a guard is configured, these tasks refuse to
+run unless `ALLOW_LIVE_INDEX_MAINTENANCE=true` is explicitly set. Pause all outbox consumers and direct writers
+before using that override. For a guarded forced blue/green data rebuild, run
+`FORCE_REBUILD=true rails 'search_engine:schema:apply[collection]'`. Without `FORCE_REBUILD`, schema apply may
+complete as an in-place schema update and intentionally skip document reindexing. Hosts with no configured
+guard retain the legacy live-task behavior.
+
 ## PostgreSQL outbox sync
 
 Rails callbacks are convenient for ordinary `create`, `update`, and `destroy` flows, but they do not see

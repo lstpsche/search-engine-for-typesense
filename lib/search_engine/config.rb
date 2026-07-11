@@ -76,6 +76,9 @@ module SearchEngine
 
     # Lightweight nested configuration for schema lifecycle.
     class SchemaConfig
+      # @return [#call, nil] optional around hook for full blue/green rebuilds
+      attr_accessor :around_rebuild
+
       # Retention knobs for physical collections
       class RetentionConfig
         # @return [Integer] how many previous physical collections to keep after swap (default: 0)
@@ -91,6 +94,7 @@ module SearchEngine
 
       def initialize
         @retention = RetentionConfig.new
+        @around_rebuild = nil
       end
     end
 
@@ -776,6 +780,9 @@ module SearchEngine
       errors.concat(SearchEngine::Config::Validators.validate_host(host))
       errors.concat(SearchEngine::Config::Validators.validate_port(port))
       errors.concat(
+        SearchEngine::Config::Validators.validate_callable(schema.around_rebuild, name: 'schema.around_rebuild')
+      )
+      errors.concat(
         SearchEngine::Config::Validators.validate_dispatch_mode(indexer.dispatch, name: 'indexer.dispatch')
       )
       errors.concat(
@@ -862,7 +869,10 @@ module SearchEngine
     private
 
     def schema_hash_for_to_h
-      { retention: { keep_last: schema.retention.keep_last } }
+      {
+        retention: { keep_last: schema.retention.keep_last },
+        around_rebuild: schema.around_rebuild
+      }
     end
 
     def indexer_hash_for_to_h

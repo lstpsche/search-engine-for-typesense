@@ -146,87 +146,24 @@ into: nil
 
       private
 
-      # Perform a full reindex for a referencer collection, honoring partitioning
-      # directives when present. Falls back to a single non-partitioned rebuild
-      # when no partitions are configured.
-      #
-      # Strategy:
-      # 1. Try safe blue/green rebuild via index_collection(force_rebuild: true).
-      # 2. If that fails, fall through to partition-based import into the existing
-      #    collection. This is non-destructive: the collection stays available
-      #    with its current schema while documents are refreshed.
-      #
-      # The previous destructive fallback (drop + recreate) was removed because
-      # it caused availability gaps — the collection disappears entirely while
-      # being rebuilt, and if the rebuild fails, it stays gone.
+      # Perform a safe blue/green full reindex for a referencer collection.
+      # Failures deliberately propagate. Falling back to partition imports into
+      # the live collection would bypass the schema rebuild guard and could let
+      # writes cross an alias cutover.
       #
       # @param ref_klass [Class]
       # @return [Boolean]
       def __se_full_reindex_for_referrer(ref_klass, client:, alias_cache:)
         logical = ref_klass.respond_to?(:collection) ? ref_klass.collection.to_s : ref_klass.name.to_s
         physical = resolve_physical_collection_name(logical, client: client, cache: alias_cache)
-        coll_display = physical && physical != logical ? "#{logical} (physical: #{physical})" : logical
-
-        forced = reindex_referencer_with_fresh_schema!(
+        reindex_referencer_with_fresh_schema!(
           ref_klass,
           logical,
           physical,
           client: client,
           force_rebuild: true
         )
-        return true if forced
-
-        begin
-          compiled = SearchEngine::Partitioner.for(ref_klass)
-        rescue StandardError
-          compiled = nil
-        end
-
-        executed = false
-
-        if compiled
-          parts = begin
-            Array(compiled.partitions)
-          rescue StandardError
-            []
-          end
-
-          parts = parts.reject { |p| p.nil? || p.to_s.strip.empty? }
-
-          if parts.empty?
-            SearchEngine::Logging::Output.puts(
-              SearchEngine::Logging::Color.dim(%(  Referencer "#{coll_display}" — partitions=0 → skip))
-            )
-            return false
-          end
-
-          parts_str = SearchEngine::Logging::Color.bold("partitions=#{parts.size}")
-          SearchEngine::Logging::Output.puts(
-            %(  Referencer "#{coll_display}" — #{parts_str} parallel=#{compiled.max_parallel})
-          )
-          mp = compiled.max_parallel.to_i
-          if mp > 1 && parts.size > 1
-            require 'concurrent-ruby'
-            pool = Concurrent::FixedThreadPool.new(mp)
-            ctx = SearchEngine::Instrumentation.context
-            mtx = Mutex.new
-            on_interrupt = -> { warn("\n  Interrupted — stopping parallel cascade workers…") }
-            SearchEngine::InterruptiblePool.run(pool, on_interrupt: on_interrupt) do
-              post_partitions_to_pool!(pool, ctx, parts, ref_klass, mtx)
-            end
-            executed = true
-          else
-            executed = rebuild_partitions_sequential!(ref_klass, parts)
-          end
-
-        else
-          SearchEngine::Logging::Output.puts(
-            %(  Referencer "#{coll_display}" — #{SearchEngine::Logging::Color.bold('single')})
-          )
-          SearchEngine::Indexer.rebuild_partition!(ref_klass, partition: nil, into: nil)
-          executed = true
-        end
-        executed
+        true
       end
 
       # Resolve logical alias to physical name with optional per-run memoization.
@@ -350,33 +287,6 @@ into: nil
           ref_klass.index_collection(client: client, pre: :ensure, force_rebuild: force_rebuild)
         end
         true
-      rescue StandardError => error
-        err_line = %(  Referencer "#{logical}" — schema rebuild failed: #{error.message})
-        warn(SearchEngine::Logging::Color.apply(err_line, :red))
-        false
-      end
-
-      def post_partitions_to_pool!(pool, ctx, parts, ref_klass, mtx)
-        parts.each do |p|
-          pool.post do
-            SearchEngine::Instrumentation.with_context(ctx) do
-              summary = SearchEngine::Indexer.rebuild_partition!(ref_klass, partition: p, into: nil)
-              mtx.synchronize do
-                SearchEngine::Logging::Output.puts(SearchEngine::Logging::PartitionProgress.line(p, summary))
-              end
-            end
-          end
-        end
-      end
-
-      def rebuild_partitions_sequential!(ref_klass, parts)
-        executed = false
-        parts.each do |p|
-          summary = SearchEngine::Indexer.rebuild_partition!(ref_klass, partition: p, into: nil)
-          SearchEngine::Logging::Output.puts(SearchEngine::Logging::PartitionProgress.line(p, summary))
-          executed = true
-        end
-        executed
       end
 
       def build_from_typesense(client)

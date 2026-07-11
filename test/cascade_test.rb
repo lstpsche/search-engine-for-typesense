@@ -138,6 +138,64 @@ class CascadeTest < Minitest::Test
     )
   end
 
+  def test_cascade_reindex_propagates_safe_full_rebuild_guard_failure
+    source_klass, referrer_klass = build_collection_classes
+    reverse_graph = {
+      'source_items' => [
+        { referrer: 'ref_items', local_key: 'source_id', foreign_key: 'id' }
+      ]
+    }
+    guard_error = SearchEngine::Errors::Timeout.new('cutover lock unavailable')
+
+    with_stubbed_cascade(
+      reverse_graph: reverse_graph,
+      source_klass: source_klass,
+      referrer_klass: referrer_klass,
+      full_reindex: ->(*, **) { raise guard_error },
+      runner: lambda do
+        SearchEngine::Indexer.stub(:rebuild_partition!, ->(*, **) { raise 'partial failed' }) do
+          raised = assert_raises(SearchEngine::Errors::Timeout) do
+            SearchEngine::Cascade.cascade_reindex!(
+              source: source_klass,
+              ids: [42],
+              context: :update,
+              client: Object.new
+            )
+          end
+
+          assert_same guard_error, raised
+        end
+      end
+    )
+  end
+
+  def test_full_reindex_never_downgrades_safe_rebuild_failure_to_live_partition_import
+    guard_error = SearchEngine::Errors::Timeout.new('cutover lock unavailable')
+    referrer_klass = Class.new do
+      def self.collection = 'ref_items'
+
+      define_singleton_method(:index_collection) do |**|
+        raise guard_error
+      end
+    end
+    client = Object.new
+    client.define_singleton_method(:resolve_alias) { |_logical| 'ref_items_20260711_000000_001' }
+    live_import = ->(*, **) { raise 'live partition fallback must not run' }
+
+    SearchEngine::Indexer.stub(:rebuild_partition!, live_import) do
+      raised = assert_raises(SearchEngine::Errors::Timeout) do
+        SearchEngine::Cascade.send(
+          :__se_full_reindex_for_referrer,
+          referrer_klass,
+          client: client,
+          alias_cache: {}
+        )
+      end
+
+      assert_same guard_error, raised
+    end
+  end
+
   private
 
   def build_collection_classes

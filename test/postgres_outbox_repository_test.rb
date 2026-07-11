@@ -4,7 +4,7 @@ require 'test_helper'
 
 class PostgresOutboxRepositoryTest < Minitest::Test
   class FakeConnection
-    attr_reader :executed_sql, :selected_sql, :transaction_events
+    attr_reader :executed_sql, :selected_sql, :selected_values_sql, :transaction_events
 
     def initialize(
       rows: [],
@@ -12,7 +12,9 @@ class PostgresOutboxRepositoryTest < Minitest::Test
       data_source_exists: true,
       data_sources: nil,
       supersede_parent_candidates: [],
-      supersede_candidates: []
+      supersede_candidates: [],
+      advisory_results: nil,
+      processing_counts: nil
     )
       @rows = rows
       @row_sets = row_sets
@@ -20,8 +22,11 @@ class PostgresOutboxRepositoryTest < Minitest::Test
       @data_sources = data_sources
       @supersede_parent_candidates = supersede_parent_candidates
       @supersede_candidates = supersede_candidates
+      @advisory_results = advisory_results&.dup
+      @processing_counts = processing_counts&.dup
       @executed_sql = []
       @selected_sql = []
+      @selected_values_sql = []
       @transaction_events = []
       @transaction_depth = 0
     end
@@ -51,6 +56,20 @@ class PostgresOutboxRepositoryTest < Minitest::Test
     def execute(sql)
       executed_sql << sql
       transaction_events << [:execute, sql] if @transaction_depth.positive?
+    end
+
+    def select_value(sql)
+      selected_values_sql << sql
+      transaction_events << [:select_value, sql] if @transaction_depth.positive?
+      if sql.include?('SELECT COUNT(*)')
+        return @processing_counts.shift unless @processing_counts.nil? || @processing_counts.empty?
+
+        return 0
+      end
+
+      return @advisory_results.shift unless @advisory_results.nil? || @advisory_results.empty?
+
+      true
     end
 
     def quote(value)
@@ -467,7 +486,7 @@ class PostgresOutboxRepositoryTest < Minitest::Test
     assert_equal 4, connection.selected_sql.size
     assert_delivery_claim_select_sql(connection.selected_sql[0], lock: false)
     assert_supersede_parent_ids_sql(connection.selected_sql[1])
-    assert_delivery_claim_select_sql(connection.selected_sql[2], lock: false, delivery_ids: [101])
+    assert_delivery_claim_select_sql(connection.selected_sql[2], lock: true, delivery_ids: [101])
     assert_delivery_supersede_candidates_sql(connection.selected_sql[3])
     assert_delivery_claim_update_sql(connection.executed_sql)
   end
@@ -487,16 +506,19 @@ class PostgresOutboxRepositoryTest < Minitest::Test
     assert_equal [11], events.map(&:id)
     assert_delivery_claim_select_sql(connection.selected_sql[0], lock: false)
     assert_supersede_parent_ids_sql(connection.selected_sql[1])
-    assert_delivery_claim_select_sql(connection.selected_sql[2], lock: false, delivery_ids: [101])
+    assert_delivery_claim_select_sql(connection.selected_sql[2], lock: true, delivery_ids: [101])
     assert_delivery_supersede_candidates_sql(connection.selected_sql[3])
-    assert_event_row_lock_sql(connection.executed_sql[1], event_ids: [11, 10])
-    assert_delivery_row_lock_sql(connection.executed_sql[2], delivery_ids: [100, 101])
-    assert_supersede_by_id_sql(connection.executed_sql[3], event_ids: [10])
-    assert_pending_delivery_supersede_sql(connection.executed_sql[4], delivery_ids: [100])
-    assert_parent_refresh_sql(connection.executed_sql[5])
-    assert_includes connection.executed_sql[6], "status = 'processing'"
+    assert_event_row_lock_sql(connection.executed_sql[0], event_ids: [11, 10])
+    assert_delivery_row_lock_sql(connection.executed_sql[1], delivery_ids: [100])
+    assert_supersede_by_id_sql(connection.executed_sql[2], event_ids: [10])
+    assert_pending_delivery_supersede_sql(connection.executed_sql[3], delivery_ids: [100])
+    assert_parent_refresh_sql(connection.executed_sql[4])
+    assert_includes connection.executed_sql[5], "status = 'processing'"
     assert_equal(
-      %i[begin execute select select execute execute execute execute execute commit],
+      %i[
+        begin select_value select select execute select select
+        execute execute execute execute execute commit
+      ],
       connection.transaction_events.map(&:first)
     )
   end
@@ -514,11 +536,10 @@ class PostgresOutboxRepositoryTest < Minitest::Test
     events = repository.claim_pending(limit: 25, worker_id: 'worker-1')
 
     assert_equal [11], events.map(&:id)
-    assert_event_row_lock_sql(connection.executed_sql[1], event_ids: [11, 10])
-    assert_delivery_row_lock_sql(connection.executed_sql[2], delivery_ids: [101])
-    assert_supersede_by_id_sql(connection.executed_sql[3], event_ids: [10])
-    assert_parent_refresh_sql(connection.executed_sql[4])
-    assert_includes connection.executed_sql[5], "status = 'processing'"
+    assert_event_row_lock_sql(connection.executed_sql[0], event_ids: [11, 10])
+    assert_supersede_by_id_sql(connection.executed_sql[1], event_ids: [10])
+    assert_parent_refresh_sql(connection.executed_sql[2])
+    assert_includes connection.executed_sql[3], "status = 'processing'"
     refute(connection.executed_sql.any? { |sql| sql.include?("WHERE id IN ('100')") })
   end
 
@@ -537,11 +558,11 @@ class PostgresOutboxRepositoryTest < Minitest::Test
     assert_empty rows
     assert_delivery_claim_select_sql(connection.selected_sql[0], lock: false)
     assert_supersede_parent_ids_sql(connection.selected_sql[1])
-    assert_delivery_claim_select_sql(connection.selected_sql[2], lock: false, delivery_ids: [101])
+    assert_delivery_claim_select_sql(connection.selected_sql[2], lock: true, delivery_ids: [101])
     assert_event_row_lock_sql(connection.executed_sql[0], event_ids: [11, 10])
     assert_equal 1, connection.executed_sql.size
     refute(connection.executed_sql.any? { |sql| sql.include?("status = 'superseded'") })
-    refute(connection.executed_sql.any? { |sql| sql.include?("status = 'processing'") })
+    refute(connection.executed_sql.any? { |sql| sql.include?("SET status = 'processing'") })
   end
 
   def test_delivery_claim_uses_collection_batch_limits_when_limit_is_omitted
@@ -555,7 +576,7 @@ class PostgresOutboxRepositoryTest < Minitest::Test
 
     assert_equal [11], events.map(&:id)
     assert_collection_limited_delivery_claim_sql(connection.selected_sql[0], lock: false)
-    assert_collection_limited_delivery_claim_sql(connection.selected_sql[2], lock: false, delivery_ids: [101])
+    assert_collection_limited_delivery_claim_sql(connection.selected_sql[2], lock: true, delivery_ids: [101])
     assert_delivery_claim_update_sql(connection.executed_sql)
   end
 
@@ -578,12 +599,11 @@ class PostgresOutboxRepositoryTest < Minitest::Test
     assert_materialization_select_sql(connection.selected_sql[1], lock: false)
     assert_materialization_select_sql(connection.selected_sql[3], lock: true, event_ids: [11])
     assert_delivery_claim_select_sql(connection.selected_sql[5], lock: false)
-    assert_delivery_claim_select_sql(connection.selected_sql[7], lock: false, delivery_ids: [101])
-    assert_event_row_lock_sql(connection.executed_sql[1], event_ids: [11])
-    assert_materialization_insert_sql(connection.executed_sql[2])
-    assert_event_row_lock_sql(connection.executed_sql[3], event_ids: [11])
-    assert_delivery_row_lock_sql(connection.executed_sql[4], delivery_ids: [101])
-    assert_includes connection.executed_sql[5], "status = 'processing'"
+    assert_delivery_claim_select_sql(connection.selected_sql[7], lock: true, delivery_ids: [101])
+    assert_event_row_lock_sql(connection.executed_sql[0], event_ids: [11])
+    assert_materialization_insert_sql(connection.executed_sql[1])
+    assert_event_row_lock_sql(connection.executed_sql[2], event_ids: [11])
+    assert_includes connection.executed_sql[3], "status = 'processing'"
   end
 
   def test_delivery_claim_with_no_configured_targets_stays_in_delivery_mode
@@ -595,16 +615,235 @@ class PostgresOutboxRepositoryTest < Minitest::Test
     assert_empty events
     assert_equal 2, connection.selected_sql.size
     assert_empty connection.executed_sql.grep(/UPDATE "custom_outbox"\n          SET status = 'processing'/)
-    assert_includes connection.executed_sql.first, 'UPDATE "custom_outbox_deliveries"'
+    assert_empty connection.executed_sql
   end
 
-  def test_delivery_claim_reset_stale_processing_does_not_lock_or_refresh_parent_rows
+  def test_delivery_claim_does_not_target_wide_reset_stale_processing_rows
     connection = FakeConnection.new(rows: [])
     repository = SearchEngine::PostgresOutbox::Repository.new(connection: connection, target_key: 'target_1')
 
     repository.claim_pending(limit: 25, worker_id: 'worker-1')
 
-    assert_stale_delivery_reset_sql(connection.executed_sql.first)
+    assert_empty connection.executed_sql
+    connection.selected_sql.each do |sql|
+      assert_includes sql, "deliveries.status = 'processing'"
+      assert_includes sql, "deliveries.locked_at < (CURRENT_TIMESTAMP - interval '30 seconds')"
+    end
+  end
+
+  def test_delivery_claim_sql_reclaims_processing_sibling_before_newer_pending_sibling
+    connection = FakeConnection.new
+    repository = SearchEngine::PostgresOutbox::Repository.new(connection: connection, target_key: 'target_1')
+
+    sql = repository.send(:delivery_claim_select_sql, 25)
+
+    assert_includes sql, 'processing_deliveries.id <> deliveries.id'
+    processing_priority = sql.index("ORDER BY (latest_deliveries.status = 'processing') DESC")
+    newest_event_priority = sql.index('latest_events.id DESC', processing_priority)
+    refute_nil processing_priority
+    refute_nil newest_event_priority
+    assert_operator processing_priority, :<, newest_event_priority
+  end
+
+  def test_delivery_mode_rejects_standalone_stale_reset_to_avoid_false_quiescence_gap
+    connection = FakeConnection.new
+    repository = SearchEngine::PostgresOutbox::Repository.new(connection: connection, target_key: 'target_1')
+
+    error = assert_raises(ArgumentError) { repository.reset_stale_processing! }
+
+    assert_match(/standalone delivery stale reset is unsafe/, error.message)
+    assert_empty connection.executed_sql
+    assert_empty connection.selected_values_sql
+  end
+
+  def test_delivery_claim_gate_precedes_target_row_work_and_returns_no_events_while_paused
+    connection = FakeConnection.new(advisory_results: [false, false])
+    repository = SearchEngine::PostgresOutbox::Repository.new(connection: connection, target_key: 'target_1')
+
+    events = repository.claim_pending(limit: 25, worker_id: 'worker-1')
+
+    assert_empty events
+    assert_empty connection.executed_sql
+    assert_empty connection.selected_sql
+    assert_equal 2, connection.selected_values_sql.size
+    connection.selected_values_sql.each do |sql|
+      assert_includes sql, 'pg_try_advisory_xact_lock_shared'
+    end
+    assert_equal(
+      %i[begin select_value commit begin select_value commit],
+      connection.transaction_events.map(&:first)
+    )
+  end
+
+  def test_delivery_target_guards_validate_block_target_and_timing
+    connection = FakeConnection.new
+    repository = SearchEngine::PostgresOutbox::Repository.new(connection: connection)
+
+    assert_raises(ArgumentError) do
+      repository.with_delivery_target_claims_paused(target_key: 'target_1', timeout_s: 1)
+    end
+    assert_raises(ArgumentError) do
+      repository.with_delivery_target_writes_allowed(target_key: 'target_1', timeout_s: 1)
+    end
+    assert_raises(ArgumentError) do
+      repository.with_delivery_target_claims_paused(target_key: :target_1, timeout_s: 1) { nil }
+    end
+    assert_raises(ArgumentError) do
+      repository.with_delivery_target_writes_allowed(target_key: ' target_1', timeout_s: 1) { nil }
+    end
+    assert_raises(ArgumentError) do
+      repository.with_delivery_target_claims_paused(target_key: 'target_1', timeout_s: -1) { nil }
+    end
+    assert_raises(ArgumentError) do
+      repository.with_delivery_target_writes_allowed(
+        target_key: 'target_1', timeout_s: Float::INFINITY, poll_interval_s: 0.1
+      ) { nil }
+    end
+    assert_raises(ArgumentError) do
+      repository.with_delivery_target_writes_allowed(
+        target_key: 'target_1', timeout_s: 10 ** 10_000, poll_interval_s: 0.1
+      ) { nil }
+    end
+    assert_raises(ArgumentError) do
+      repository.with_delivery_target_claims_paused(
+        target_key: 'target_1', timeout_s: 1, poll_interval_s: 0
+      ) { nil }
+    end
+
+    assert_empty connection.selected_values_sql
+  end
+
+  def test_claim_pause_locks_even_without_delivery_table_and_preserves_block_result
+    connection = FakeConnection.new(data_sources: [])
+    repository = SearchEngine::PostgresOutbox::Repository.new(connection: connection)
+
+    result = repository.with_delivery_target_claims_paused(target_key: 'target_1', timeout_s: 1) { :rebuilt }
+
+    assert_equal :rebuilt, result
+    assert_equal 2, connection.selected_values_sql.size
+    assert_includes connection.selected_values_sql.first, 'pg_try_advisory_lock('
+    assert_includes connection.selected_values_sql.last, 'pg_advisory_unlock('
+    assert_empty connection.executed_sql
+  end
+
+  def test_claim_pause_waits_for_processing_deliveries_without_resetting_their_leases
+    now = 0.0
+    sleeps = []
+    connection = FakeConnection.new(processing_counts: [2, 1, 0])
+    repository = SearchEngine::PostgresOutbox::Repository.new(
+      connection: connection,
+      monotonic_clock: -> { now },
+      sleeper: lambda do |seconds|
+        sleeps << seconds
+        now += seconds
+      end
+    )
+    yielded = false
+
+    repository.with_delivery_target_claims_paused(
+      target_key: 'target_1', timeout_s: 1, poll_interval_s: 0.1
+    ) { yielded = true }
+
+    assert yielded
+    assert_equal [0.1, 0.1], sleeps
+    assert_equal(3, connection.selected_values_sql.count { |sql| sql.include?('SELECT COUNT(*)') })
+    assert_empty connection.executed_sql
+  end
+
+  def test_claim_pause_times_out_on_unacknowledged_processing_delivery_and_unlocks
+    now = 0.0
+    connection = FakeConnection.new(advisory_results: [true, true], processing_counts: [1, 1, 1])
+    repository = SearchEngine::PostgresOutbox::Repository.new(
+      connection: connection,
+      monotonic_clock: -> { now },
+      sleeper: ->(seconds) { now += seconds }
+    )
+    yielded = false
+
+    error = assert_raises(SearchEngine::Errors::Timeout) do
+      repository.with_delivery_target_claims_paused(
+        target_key: 'target_1', timeout_s: 0.2, poll_interval_s: 0.1
+      ) { yielded = true }
+    end
+
+    refute yielded
+    assert_match(/processing deliveries to quiesce/, error.message)
+    assert_includes connection.selected_values_sql.last, 'pg_advisory_unlock('
+    assert_empty connection.executed_sql
+  end
+
+  def test_delivery_target_guard_lock_timeout_never_yields_or_unlocks
+    now = 0.0
+    connection = FakeConnection.new(advisory_results: [false, false, false])
+    repository = SearchEngine::PostgresOutbox::Repository.new(
+      connection: connection,
+      monotonic_clock: -> { now },
+      sleeper: ->(seconds) { now += seconds }
+    )
+    yielded = false
+
+    error = assert_raises(SearchEngine::Errors::Timeout) do
+      repository.with_delivery_target_writes_allowed(
+        target_key: 'target_1', timeout_s: 0.2, poll_interval_s: 0.1
+      ) { yielded = true }
+    end
+
+    refute yielded
+    assert_match(/shared advisory lock/, error.message)
+    refute(connection.selected_values_sql.any? { |sql| sql.include?('pg_advisory_unlock') })
+  end
+
+  def test_delivery_target_guard_releases_on_exception_and_preserves_original_error
+    connection = FakeConnection.new(advisory_results: [true, false])
+    repository = SearchEngine::PostgresOutbox::Repository.new(connection: connection)
+    original = RuntimeError.new('writer failed')
+
+    raised = assert_raises(RuntimeError) do
+      repository.with_delivery_target_writes_allowed(target_key: 'target_1', timeout_s: 1) do
+        raise original
+      end
+    end
+
+    assert_same original, raised
+    assert_includes connection.selected_values_sql.last, 'pg_advisory_unlock_shared'
+  end
+
+  def test_delivery_target_guard_raises_when_postgres_does_not_release_lock
+    connection = FakeConnection.new(advisory_results: [true, false])
+    repository = SearchEngine::PostgresOutbox::Repository.new(connection: connection)
+
+    error = assert_raises(SearchEngine::Errors::Connection) do
+      repository.with_delivery_target_writes_allowed(target_key: 'target_1', timeout_s: 1) { :written }
+    end
+
+    assert_match(/did not release the shared delivery-target advisory lock/, error.message)
+  end
+
+  def test_delivery_target_guards_and_claims_use_the_same_deterministic_lock_key
+    pause_connection = FakeConnection.new(data_sources: [])
+    writer_connection = FakeConnection.new
+    claim_connection = FakeConnection.new(rows: [])
+
+    SearchEngine::PostgresOutbox::Repository
+      .new(connection: pause_connection)
+      .with_delivery_target_claims_paused(target_key: 'target_1', timeout_s: 1) { nil }
+    SearchEngine::PostgresOutbox::Repository
+      .new(connection: writer_connection)
+      .with_delivery_target_writes_allowed(target_key: 'target_1', timeout_s: 1) { nil }
+    SearchEngine::PostgresOutbox::Repository
+      .new(connection: claim_connection, target_key: 'target_1')
+      .send(:claim_pending_delivery_rows, limit: 1, worker_id: 'worker-1')
+
+    lock_sql = [
+      pause_connection.selected_values_sql.first,
+      writer_connection.selected_values_sql.first,
+      claim_connection.selected_values_sql.first
+    ]
+    keys = lock_sql.map { |sql| sql.match(/\((-?\d+)\)/)[1] }
+    assert_equal 1, keys.uniq.size
+    assert_includes lock_sql[0], 'pg_try_advisory_lock('
+    assert_includes lock_sql[1], 'pg_try_advisory_lock_shared('
+    assert_includes lock_sql[2], 'pg_try_advisory_xact_lock_shared('
   end
 
   def test_delivery_mark_processed_updates_target_delivery_and_refreshes_parent
@@ -982,6 +1221,8 @@ class PostgresOutboxRepositoryTest < Minitest::Test
     assert_includes sql, 'INNER JOIN "custom_outbox" events'
     assert_includes sql, "deliveries.target_key = 'target_1'"
     assert_includes sql, "deliveries.status = 'pending'"
+    assert_includes sql, "deliveries.status = 'processing'"
+    assert_includes sql, "deliveries.locked_at < (CURRENT_TIMESTAMP - interval '30 seconds')"
     assert_includes sql, 'PARTITION BY target_key, collection, document_id'
     assert_includes sql, 'FROM candidate_deliveries'
     assert_includes sql, 'ranked_candidate_deliveries.row_number = 1'
@@ -1004,6 +1245,7 @@ class PostgresOutboxRepositoryTest < Minitest::Test
     assert_includes sql, 'collection_row_number <= collection_batch_size'
     assert_includes sql, 'COALESCE(collection_limits.batch_size, 1000)'
     assert_includes sql, 'deliveries.id AS delivery_id'
+    assert_processing_delivery_exclusion_sql(sql)
     assert_latest_delivery_lookup_sql(sql, lock: lock)
     assert_bounded_candidate_sql(sql, candidate_limit: 4012, selected_limit: 1003) if lock
     assert_includes sql, 'LIMIT 4012'
@@ -1043,9 +1285,14 @@ class PostgresOutboxRepositoryTest < Minitest::Test
     assert_includes sql, 'FROM "custom_outbox" latest_events'
     assert_includes sql, 'INNER JOIN "custom_outbox_deliveries" latest_deliveries'
     assert_includes sql, 'latest_deliveries.target_key = ranked_candidate_deliveries.target_key'
+    assert_includes sql, "latest_deliveries.status = 'pending'"
+    assert_includes sql, "latest_deliveries.status = 'processing'"
+    assert_includes sql, "latest_deliveries.locked_at < (CURRENT_TIMESTAMP - interval '30 seconds')"
     assert_includes sql, 'latest_events.collection = ranked_candidate_deliveries.collection'
     assert_includes sql, 'latest_events.document_id = ranked_candidate_deliveries.document_id'
-    assert_includes sql, 'ORDER BY latest_events.id DESC, latest_deliveries.id DESC'
+    assert_includes sql, "ORDER BY (latest_deliveries.status = 'processing') DESC"
+    assert_includes sql, 'latest_events.id DESC'
+    assert_includes sql, 'latest_deliveries.id DESC'
     assert_includes sql, 'latest_delivery.next_attempt_at <= CURRENT_TIMESTAMP'
     if lock
       assert_includes sql, 'FOR UPDATE OF deliveries SKIP LOCKED'
@@ -1066,6 +1313,7 @@ class PostgresOutboxRepositoryTest < Minitest::Test
     assert_includes sql, 'INNER JOIN "custom_outbox" processing_events'
     assert_includes sql, 'processing_deliveries.target_key = deliveries.target_key'
     assert_includes sql, "processing_deliveries.status = 'processing'"
+    assert_includes sql, 'processing_deliveries.id <> deliveries.id'
     assert_includes sql, 'processing_events.collection = events.collection'
     assert_includes sql, 'processing_events.document_id = events.document_id'
   end
@@ -1087,16 +1335,15 @@ class PostgresOutboxRepositoryTest < Minitest::Test
   end
 
   def assert_delivery_claim_update_sql(executed_sql)
-    assert_includes executed_sql[0], 'UPDATE "custom_outbox_deliveries"'
-    assert_includes executed_sql[0], "target_key = 'target_1'"
-    assert_event_row_lock_sql(executed_sql[1], event_ids: [11])
-    assert_delivery_row_lock_sql(executed_sql[2], delivery_ids: [101])
-    assert_includes executed_sql[3], 'UPDATE "custom_outbox_deliveries"'
-    assert_includes executed_sql[3], "status = 'processing'"
-    assert_includes executed_sql[3], "locked_by = 'worker-1'"
-    assert_includes executed_sql[3], "WHERE id IN ('101')"
-    assert_includes executed_sql[3], "AND target_key = 'target_1'"
-    assert_includes executed_sql[3], "AND status = 'pending'"
+    assert_event_row_lock_sql(executed_sql[0], event_ids: [11])
+    assert_includes executed_sql[1], 'UPDATE "custom_outbox_deliveries"'
+    assert_includes executed_sql[1], "status = 'processing'"
+    assert_includes executed_sql[1], "locked_by = 'worker-1'"
+    assert_includes executed_sql[1], "WHERE id IN ('101')"
+    assert_includes executed_sql[1], "AND target_key = 'target_1'"
+    assert_includes executed_sql[1], "status = 'pending'"
+    assert_includes executed_sql[1], "status = 'processing'"
+    assert_includes executed_sql[1], "locked_at < (CURRENT_TIMESTAMP - interval '30 seconds')"
   end
 
   def assert_materialization_select_sql(sql, lock:, event_ids: nil)
@@ -1248,16 +1495,6 @@ class PostgresOutboxRepositoryTest < Minitest::Test
     assert_includes sql, "WHERE id IN (#{event_ids.map { |id| "'#{id}'" }.join(', ')})"
     assert_includes sql, "status = 'superseded'"
     assert_includes sql, "AND status = 'pending'"
-  end
-
-  def assert_stale_delivery_reset_sql(sql)
-    assert_includes sql, 'UPDATE "custom_outbox_deliveries"'
-    assert_includes sql, "status = 'pending'"
-    assert_includes sql, "target_key = 'target_1'"
-    assert_includes sql, "status = 'processing'"
-    assert_includes sql, "interval '30 seconds'"
-    refute_includes sql, 'UPDATE "custom_outbox" events'
-    refute_includes sql, 'RETURNING event_id'
   end
 
   def assert_delivery_status_refresh_transaction(connection)

@@ -74,8 +74,159 @@ class SchemaLifecycleTest < Minitest::Test
     # Global default: keep none unless overridden
     SearchEngine.configure do |c|
       c.schema.retention.keep_last = 0
+      c.schema.around_rebuild = nil
       c.indexer.partition_execution = :inline
     end
+  end
+
+  def test_around_rebuild_wraps_full_lifecycle_and_preserves_result
+    client = FakeClient.new(collections: [], alias_target: nil)
+    forced = 'products_lifecycle_20250101_000000_001'
+    events = []
+    SearchEngine.config.schema.around_rebuild = lambda do |collection:, &block|
+      assert_equal 'products_lifecycle', collection
+      assert_empty client.created
+      events << :guard_entered
+      block.call
+      events << :guard_exited
+      :ignored_guard_result
+    end
+
+    result = SearchEngine::Schema.stub(:generate_physical_name, forced) do
+      SearchEngine::Schema.apply!(Product, client: client, force_rebuild: true) do |physical|
+        events << :indexed
+        assert_equal forced, physical
+        assert_equal [forced], client.created
+        assert_empty client.upserts
+      end
+    end
+
+    assert_equal %i[guard_entered indexed guard_exited], events
+    assert_equal :rebuild, result[:action]
+    assert_equal forced, result[:new_physical]
+    assert_equal [['products_lifecycle', forced]], client.upserts
+  end
+
+  def test_around_rebuild_does_not_wrap_in_place_update
+    client = FakeClient.new(alias_target: 'products_lifecycle_current')
+    SearchEngine.config.schema.around_rebuild = ->(**) { flunk 'guard must not run for in-place update' }
+
+    result = SearchEngine::Schema.stub(:update!, true) do
+      SearchEngine::Schema.apply!(Product, client: client)
+    end
+
+    assert_equal :update, result[:action]
+    assert_equal 'products_lifecycle_current', result[:new_physical]
+    assert_empty client.created
+    assert_empty client.upserts
+  end
+
+  def test_around_rebuild_guard_error_prevents_lifecycle
+    client = FakeClient.new
+    guard_error = RuntimeError.new('cutover unavailable')
+    SearchEngine.config.schema.around_rebuild = ->(**) { raise guard_error }
+
+    raised = assert_raises(RuntimeError) do
+      SearchEngine::Schema.apply!(Product, client: client, force_rebuild: true) { |_physical| }
+    end
+
+    assert_same guard_error, raised
+    assert_empty client.created
+    assert_empty client.upserts
+    assert_empty client.deleted
+  end
+
+  def test_around_rebuild_rejects_guard_that_does_not_yield
+    client = FakeClient.new
+    SearchEngine.config.schema.around_rebuild = ->(**) { :skipped }
+
+    error = assert_raises(ArgumentError) do
+      SearchEngine::Schema.apply!(Product, client: client, force_rebuild: true) { |_physical| }
+    end
+
+    assert_match(/must yield exactly once \(did not yield\)/, error.message)
+    assert_empty client.created
+    assert_empty client.upserts
+    assert_empty client.deleted
+  end
+
+  def test_around_rebuild_rejects_guard_that_yields_more_than_once_without_repeating_lifecycle
+    client = FakeClient.new
+    SearchEngine.config.schema.around_rebuild = lambda do |**_kwargs, &block|
+      block.call
+      block.call
+    end
+
+    error = assert_raises(ArgumentError) do
+      SearchEngine::Schema.apply!(Product, client: client, force_rebuild: true) { |_physical| }
+    end
+
+    assert_match(/must yield exactly once \(yielded more than once\)/, error.message)
+    assert_equal 1, client.created.size
+    assert_equal 1, client.upserts.size
+  end
+
+  def test_around_rebuild_rejects_swallowed_second_yield_without_repeating_lifecycle
+    client = FakeClient.new
+    SearchEngine.config.schema.around_rebuild = lambda do |**_kwargs, &block|
+      block.call
+      begin
+        block.call
+      rescue ArgumentError
+        :swallowed
+      end
+    end
+
+    error = assert_raises(ArgumentError) do
+      SearchEngine::Schema.apply!(Product, client: client, force_rebuild: true) { |_physical| }
+    end
+
+    assert_match(/must yield exactly once \(yielded more than once\)/, error.message)
+    assert_equal 1, client.created.size
+    assert_equal 1, client.upserts.size
+  end
+
+  def test_around_rebuild_preserves_block_error_and_cleanup
+    client = FakeClient.new
+    block_error = RuntimeError.new('index failed')
+    events = []
+    SearchEngine.config.schema.around_rebuild = lambda do |collection:, &block|
+      events << [:entered, collection]
+      block.call
+    ensure
+      events << [:exited, collection]
+    end
+
+    raised = assert_raises(RuntimeError) do
+      SearchEngine::Schema.apply!(Product, client: client, force_rebuild: true) do |_physical|
+        raise block_error
+      end
+    end
+
+    assert_same block_error, raised
+    assert_equal [[:entered, 'products_lifecycle'], [:exited, 'products_lifecycle']], events
+    assert_equal client.created, client.deleted
+    assert_empty client.upserts
+  end
+
+  def test_around_rebuild_reraises_block_error_even_when_guard_swallows_it
+    client = FakeClient.new
+    block_error = RuntimeError.new('index failed')
+    SearchEngine.config.schema.around_rebuild = lambda do |**_kwargs, &block|
+      block.call
+    rescue RuntimeError
+      :swallowed
+    end
+
+    raised = assert_raises(RuntimeError) do
+      SearchEngine::Schema.apply!(Product, client: client, force_rebuild: true) do |_physical|
+        raise block_error
+      end
+    end
+
+    assert_same block_error, raised
+    assert_equal client.created, client.deleted
+    assert_empty client.upserts
   end
 
   def test_name_generator_sequence_increments_on_conflict

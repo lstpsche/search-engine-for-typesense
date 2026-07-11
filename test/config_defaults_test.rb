@@ -44,6 +44,13 @@ class ConfigDefaultsTest < Minitest::Test
     assert_equal :after_commit, h[:syncable_callback_timing]
   end
 
+  def test_schema_rebuild_guard_defaults_to_nil
+    config = SearchEngine::Config.new
+
+    assert_nil config.schema.around_rebuild
+    assert_nil config.to_h.dig(:schema, :around_rebuild)
+  end
+
   def test_postgres_outbox_config_defaults
     h = SearchEngine::Config.new.to_h.fetch(:postgres_outbox)
 

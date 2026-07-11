@@ -40,6 +40,12 @@ module SearchEngine
         ["#{name} must be :active_job or :inline"]
       end
 
+      def validate_callable(value, name:)
+        return [] if value.nil? || value.respond_to?(:call)
+
+        ["#{name} must be callable or nil"]
+      end
+
       def validate_timeouts(timeout_ms, open_timeout_ms)
         errors = []
         errors << 'timeout_ms must be a non-negative Integer' unless timeout_ms.is_a?(Integer) && !timeout_ms.negative?

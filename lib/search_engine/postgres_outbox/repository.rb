@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'json'
+require 'digest'
 
 module SearchEngine
   module PostgresOutbox
@@ -15,12 +16,15 @@ module SearchEngine
       RETIREMENT_REASON_LIMIT = 500
       RETIREMENT_OPERATOR_LIMIT = 255
       NON_TERMINAL_DELIVERY_STATUSES = %w[pending processing failed].freeze
+      DELIVERY_TARGET_LOCK_NAMESPACE = 'search_engine:delivery_target:'
 
       # @param connection [Object, nil] ActiveRecord-compatible connection
       # @param target_key [String, Symbol, nil] optional delivery target scope
-      def initialize(connection: nil, target_key: nil)
+      def initialize(connection: nil, target_key: nil, sleeper: nil, monotonic_clock: nil)
         @connection = connection
         @target_key = normalize_optional_target_key(target_key)
+        @sleeper = sleeper || ->(seconds) { sleep(seconds) }
+        @monotonic_clock = monotonic_clock || -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) }
       end
 
       # Claim pending rows for one worker and return event objects.
@@ -44,9 +48,16 @@ module SearchEngine
       end
 
       # Reset timed-out processing rows to pending.
+      # Delivery-mode recovery is intentionally available only inside the
+      # gated claim transaction, which directly reclaims only selected rows.
+      # A standalone delivery reset could leave a false-quiescence gap before
+      # the row is reclaimed.
       # @return [void]
       def reset_stale_processing!
-        return reset_stale_delivery_processing! if delivery_mode?
+        if delivery_mode?
+          raise ArgumentError,
+                'standalone delivery stale reset is unsafe; claim_pending performs gated recovery atomically'
+        end
 
         execute(<<~SQL)
           UPDATE #{quoted_table}
@@ -130,6 +141,46 @@ module SearchEngine
         )
       end
 
+      # Hold an exclusive target cutover lock, wait for claimed deliveries to
+      # quiesce, then execute a full rebuild/swap lifecycle.
+      #
+      # The advisory lock is session-scoped, so PostgreSQL releases it if the
+      # owning connection/process dies. The lock is acquired even when outbox is
+      # disabled or its delivery table is absent; only delivery quiescence is
+      # skipped when there is no table.
+      #
+      # @param target_key [String] exact delivery target key
+      # @param timeout_s [Numeric] total acquisition and quiescence timeout
+      # @param poll_interval_s [Numeric] positive retry interval
+      # @yield cutover work protected from claims and cooperating writers
+      # @return [Object] block return value
+      def with_delivery_target_claims_paused(target_key:, timeout_s:, poll_interval_s: 0.1)
+        raise ArgumentError, 'block required' unless block_given?
+
+        target = normalize_delivery_target_guard_key!(target_key)
+        timing = normalize_advisory_lock_timing(timeout_s, poll_interval_s)
+        with_delivery_target_session_lock(target, mode: :exclusive, timing: timing) do
+          wait_for_processing_deliveries!(target, timing)
+          yield
+        end
+      end
+
+      # Hold a shared target lock around a cooperating non-outbox direct writer.
+      # Full rebuild cutovers acquire the matching exclusive lock.
+      #
+      # @param target_key [String] exact delivery target key
+      # @param timeout_s [Numeric] lock acquisition timeout
+      # @param poll_interval_s [Numeric] positive retry interval
+      # @yield direct incremental write work
+      # @return [Object] block return value
+      def with_delivery_target_writes_allowed(target_key:, timeout_s:, poll_interval_s: 0.1, &block)
+        raise ArgumentError, 'block required' unless block
+
+        target = normalize_delivery_target_guard_key!(target_key)
+        timing = normalize_advisory_lock_timing(timeout_s, poll_interval_s)
+        with_delivery_target_session_lock(target, mode: :shared, timing: timing, &block)
+      end
+
       # Create missing delivery rows for all configured delivery targets.
       # @return [void]
       def materialize_deliveries!(limit: nil)
@@ -201,7 +252,7 @@ module SearchEngine
       # @param operator [String, nil] required for apply, defaults to "unspecified" for dry-run
       # @return [Hash] matched, superseded, and affected-parent counters
       def retire_delivery_target!(target_key:, dry_run:, reason:, operator: nil)
-        target = normalize_retirement_argument(target_key, 'target_key', RETIREMENT_TARGET_LIMIT)
+        target = normalize_delivery_target_guard_key!(target_key)
         audit_reason = normalize_retirement_argument(reason, 'reason', RETIREMENT_REASON_LIMIT)
         dry_run = normalize_retirement_dry_run(dry_run)
         audit_operator = normalize_retirement_operator(operator, dry_run: dry_run)
@@ -355,7 +406,7 @@ module SearchEngine
 
       private
 
-      attr_reader :target_key
+      attr_reader :target_key, :sleeper, :monotonic_clock
 
       def connection
         @connection ||= begin
@@ -365,7 +416,6 @@ module SearchEngine
       end
 
       def claim_pending_deliveries(limit:, worker_id:)
-        reset_stale_delivery_processing!
         rows = claim_pending_delivery_rows(limit: limit, worker_id: worker_id)
 
         if rows.empty?
@@ -460,15 +510,20 @@ module SearchEngine
       end
 
       def claim_pending_delivery_rows(limit:, worker_id:)
-        # A lock-free preview lets us discover older siblings without ever holding a delivery
-        # while waiting for a parent. Revalidation under the parent locks prevents stale previews
-        # from superseding work when the selected delivery is no longer claimable.
-        preview_rows = select_rows(delivery_claim_select_sql(limit, lock: false))
-        return [] if preview_rows.empty?
-
-        supersede_parents = select_rows(supersede_parent_ids_sql(preview_rows))
         rows = []
         connection.transaction do
+          # Claims take a transaction-scoped shared lock before any target row
+          # work. An exclusive cutover lock therefore either wins before this
+          # transaction starts, or waits until the complete claim commits.
+          next unless delivery_claim_gate_acquired?
+
+          # A lock-free preview lets us discover older siblings without ever holding a delivery
+          # while waiting for a parent. Revalidation under the parent locks prevents stale previews
+          # from superseding work when the selected delivery is no longer claimable.
+          preview_rows = select_rows(delivery_claim_select_sql(limit, lock: false))
+          next if preview_rows.empty?
+
+          supersede_parents = select_rows(supersede_parent_ids_sql(preview_rows))
           parent_ids = preview_rows.map { |row| row_value(row, :id) }
           parent_ids.concat(supersede_parents.map { |row| row_value(row, :event_id) })
           lock_event_rows!(parent_ids)
@@ -477,35 +532,163 @@ module SearchEngine
             delivery_claim_select_sql(
               limit,
               delivery_ids: preview_rows.map { |row| row_value(row, :delivery_id) },
-              lock: false
+              lock: true
             )
           )
           next if rows.empty?
 
+          # Candidate deliveries were locked by the revalidation query after
+          # their parent rows, so lease heartbeats cannot renew them between
+          # validation and claim. Lock only older siblings still eligible for
+          # supersession before mutating either table.
           supersede_candidates = select_rows(delivery_supersede_parent_candidates_sql(rows))
-          older_event_ids = supersede_candidates.map { |candidate| row_value(candidate, :event_id) }
           older_delivery_ids = supersede_candidates.map { |candidate| row_value(candidate, :delivery_id) }
-          delivery_ids = rows.map { |row| row_value(row, :delivery_id) }
-          lock_delivery_rows!(older_delivery_ids + delivery_ids)
-          supersede_pending_events_by_id!(older_event_ids)
-          supersede_pending_deliveries!(older_delivery_ids, event_ids: older_event_ids)
-          execute(delivery_claim_update_sql(delivery_ids, worker_id))
+          lock_delivery_rows!(older_delivery_ids)
+          finalize_delivery_claim!(rows, supersede_candidates, worker_id)
         end
 
         rows.map { |row| row.merge('delivery_lease_owner' => worker_id) }
       end
 
-      def reset_stale_delivery_processing!
-        execute(<<~SQL)
-          UPDATE #{quoted_delivery_table}
-          SET status = 'pending',
-              locked_at = NULL,
-              locked_by = NULL,
-              updated_at = CURRENT_TIMESTAMP
-          WHERE target_key = #{quote(target_key)}
-            AND status = 'processing'
-            AND locked_at < (CURRENT_TIMESTAMP - interval '#{processing_timeout_s} seconds')
-        SQL
+      def finalize_delivery_claim!(rows, supersede_candidates, worker_id)
+        older_event_ids = supersede_candidates.map { |candidate| row_value(candidate, :event_id) }
+        older_delivery_ids = supersede_candidates.map { |candidate| row_value(candidate, :delivery_id) }
+        delivery_ids = rows.map { |row| row_value(row, :delivery_id) }
+        supersede_pending_events_by_id!(older_event_ids)
+        supersede_pending_deliveries!(older_delivery_ids, event_ids: older_event_ids)
+        execute(delivery_claim_update_sql(delivery_ids, worker_id))
+      end
+
+      def delivery_claim_gate_acquired?
+        advisory_lock_truthy?(
+          select_scalar(
+            "SELECT pg_try_advisory_xact_lock_shared(#{delivery_target_advisory_lock_key(target_key)})"
+          )
+        )
+      end
+
+      def with_delivery_target_session_lock(target, mode:, timing:)
+        key = delivery_target_advisory_lock_key(target)
+        acquired = false
+        completed = false
+        begin
+          acquire_delivery_target_session_lock!(target, key, mode, timing)
+          acquired = true
+          result = yield
+          completed = true
+          result
+        ensure
+          if acquired
+            begin
+              release_delivery_target_session_lock!(key, mode)
+            rescue StandardError
+              raise if completed
+            end
+          end
+        end
+      end
+
+      def acquire_delivery_target_session_lock!(target, key, mode, timing)
+        function = mode == :exclusive ? 'pg_try_advisory_lock' : 'pg_try_advisory_lock_shared'
+        loop do
+          return if advisory_lock_truthy?(select_scalar("SELECT #{function}(#{key})"))
+
+          wait_for_advisory_retry!(target, timing, "#{mode} advisory lock")
+        end
+      end
+
+      def release_delivery_target_session_lock!(key, mode)
+        function = mode == :exclusive ? 'pg_advisory_unlock' : 'pg_advisory_unlock_shared'
+        released = select_scalar("SELECT #{function}(#{key})")
+        return if advisory_lock_truthy?(released)
+
+        raise SearchEngine::Errors::Connection,
+              "PostgreSQL did not release the #{mode} delivery-target advisory lock"
+      end
+
+      def wait_for_processing_deliveries!(target, timing)
+        return unless delivery_table_exists?
+
+        loop do
+          processing_count = select_scalar(<<~SQL).to_i
+            SELECT COUNT(*)
+            FROM #{quoted_delivery_table}
+            WHERE target_key = #{quote(target)}
+              AND status = 'processing'
+          SQL
+          return if processing_count.zero?
+
+          wait_for_advisory_retry!(target, timing, 'processing deliveries to quiesce')
+        end
+      end
+
+      def wait_for_advisory_retry!(target, timing, operation)
+        remaining = timing[:deadline] - monotonic_clock.call
+        if remaining <= 0
+          raise SearchEngine::Errors::Timeout,
+                "Timed out after #{timing[:timeout_s]} seconds waiting for #{operation} on target #{target.inspect}"
+        end
+
+        sleeper.call([timing[:poll_interval_s], remaining].min)
+      end
+
+      def normalize_advisory_lock_timing(timeout_s, poll_interval_s)
+        timeout = normalize_non_negative_finite_number(timeout_s, 'timeout_s')
+        poll_interval = normalize_positive_finite_number(poll_interval_s, 'poll_interval_s')
+        {
+          timeout_s: timeout,
+          poll_interval_s: poll_interval,
+          deadline: monotonic_clock.call + timeout
+        }
+      end
+
+      def normalize_non_negative_finite_number(value, name)
+        unless finite_numeric?(value) && !value.negative?
+          raise ArgumentError, "#{name} must be a non-negative finite Numeric"
+        end
+
+        value.to_f
+      end
+
+      def normalize_positive_finite_number(value, name)
+        unless finite_numeric?(value) && value.positive?
+          raise ArgumentError, "#{name} must be a positive finite Numeric"
+        end
+
+        value.to_f
+      end
+
+      def finite_numeric?(value)
+        value.is_a?(Numeric) &&
+          !value.is_a?(Complex) &&
+          value.respond_to?(:finite?) &&
+          value.finite? &&
+          value.abs <= Float::MAX
+      rescue StandardError
+        false
+      end
+
+      def normalize_delivery_target_guard_key!(value)
+        normalize_retirement_argument(value, 'target_key', RETIREMENT_TARGET_LIMIT)
+      end
+
+      def delivery_target_advisory_lock_key(target)
+        bytes = Digest::SHA256.digest("#{DELIVERY_TARGET_LOCK_NAMESPACE}#{target}")
+        unsigned = bytes.unpack1('Q>')
+        unsigned >= (1 << 63) ? unsigned - (1 << 64) : unsigned
+      end
+
+      def advisory_lock_truthy?(value)
+        value == true || %w[t true 1].include?(value.to_s.downcase)
+      end
+
+      def select_scalar(sql)
+        return connection.select_value(sql) if connection.respond_to?(:select_value)
+
+        result = connection.execute(sql)
+        return result.first.values.first if result.respond_to?(:first) && result.first.respond_to?(:values)
+
+        result
       end
 
       def retire_delivery_target_batch!(target, audit:)
@@ -716,7 +899,7 @@ module SearchEngine
             INNER JOIN #{quoted_table} events
               ON events.id = deliveries.event_id
             WHERE deliveries.target_key = #{quote(target_key)}
-              AND deliveries.status = 'pending'
+              AND #{claimable_delivery_status_sql('deliveries')}
               AND (deliveries.next_attempt_at IS NULL OR deliveries.next_attempt_at <= CURRENT_TIMESTAMP)
               #{delivery_id_filter_sql('deliveries', delivery_ids)}
               #{processing_delivery_exclusion_sql(delivery_relation: 'deliveries', event_relation: 'events')}
@@ -739,7 +922,7 @@ module SearchEngine
           latest_due AS (
             SELECT latest_delivery.id
             FROM ranked_candidate_deliveries
-            #{latest_pending_delivery_lateral_sql('ranked_candidate_deliveries')}
+            #{latest_claimable_delivery_lateral_sql('ranked_candidate_deliveries')}
             WHERE ranked_candidate_deliveries.row_number = 1
               AND (latest_delivery.next_attempt_at IS NULL OR latest_delivery.next_attempt_at <= CURRENT_TIMESTAMP)
               #{exact_delivery_candidate_sql(delivery_ids)}
@@ -769,7 +952,7 @@ module SearchEngine
               updated_at = CURRENT_TIMESTAMP
           WHERE id IN (#{ids_sql(delivery_ids)})
             AND target_key = #{quote(target_key)}
-            AND status = 'pending'
+            AND #{claimable_delivery_status_sql(nil)}
         SQL
       end
 
@@ -1489,7 +1672,7 @@ module SearchEngine
             INNER JOIN #{quoted_table} events
               ON events.id = deliveries.event_id
             WHERE deliveries.target_key = #{quote(target_key)}
-              AND deliveries.status = 'pending'
+              AND #{claimable_delivery_status_sql('deliveries')}
               AND (deliveries.next_attempt_at IS NULL OR deliveries.next_attempt_at <= CURRENT_TIMESTAMP)
               #{delivery_id_filter_sql('deliveries', delivery_ids)}
               #{processing_delivery_exclusion_sql(delivery_relation: 'deliveries', event_relation: 'events')}
@@ -1513,7 +1696,7 @@ module SearchEngine
             SELECT latest_delivery.id,
                    ranked_candidate_deliveries.collection
             FROM ranked_candidate_deliveries
-            #{latest_pending_delivery_lateral_sql('ranked_candidate_deliveries')}
+            #{latest_claimable_delivery_lateral_sql('ranked_candidate_deliveries')}
             WHERE ranked_candidate_deliveries.row_number = 1
               AND (latest_delivery.next_attempt_at IS NULL OR latest_delivery.next_attempt_at <= CURRENT_TIMESTAMP)
               #{exact_delivery_candidate_sql(delivery_ids)}
@@ -1634,6 +1817,7 @@ module SearchEngine
               ON processing_events.id = processing_deliveries.event_id
             WHERE processing_deliveries.target_key = #{delivery_relation}.target_key
               AND processing_deliveries.status = 'processing'
+              AND processing_deliveries.id <> #{delivery_relation}.id
               AND processing_events.collection = #{event_relation}.collection
               AND processing_events.document_id = #{event_relation}.document_id
           )
@@ -1658,7 +1842,8 @@ module SearchEngine
       end
 
       # Delivery rows are ordered by their parent event id so every target resolves the same latest document version.
-      def latest_pending_delivery_lateral_sql(candidate_relation)
+      # Timed-out processing rows remain processing and are reclaimed directly; they never pass through pending.
+      def latest_claimable_delivery_lateral_sql(candidate_relation)
         <<~SQL.chomp
           CROSS JOIN LATERAL (
             SELECT latest_deliveries.id,
@@ -1667,12 +1852,27 @@ module SearchEngine
             INNER JOIN #{quoted_delivery_table} latest_deliveries
               ON latest_deliveries.event_id = latest_events.id
             WHERE latest_deliveries.target_key = #{candidate_relation}.target_key
-              AND latest_deliveries.status = 'pending'
+              AND #{claimable_delivery_status_sql('latest_deliveries')}
               AND latest_events.collection = #{candidate_relation}.collection
               AND latest_events.document_id = #{candidate_relation}.document_id
-            ORDER BY latest_events.id DESC, latest_deliveries.id DESC
+            ORDER BY (latest_deliveries.status = 'processing') DESC,
+                     latest_events.id DESC,
+                     latest_deliveries.id DESC
             LIMIT 1
           ) latest_delivery
+        SQL
+      end
+
+      def claimable_delivery_status_sql(relation)
+        prefix = relation ? "#{relation}." : ''
+        <<~SQL.chomp
+          (
+            #{prefix}status = 'pending'
+            OR (
+              #{prefix}status = 'processing'
+              AND #{prefix}locked_at < (CURRENT_TIMESTAMP - interval '#{processing_timeout_s} seconds')
+            )
+          )
         SQL
       end
 

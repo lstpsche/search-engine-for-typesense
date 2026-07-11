@@ -104,6 +104,22 @@ module SearchEngine
         SearchEngine::Cli::Support.boolean_env?(name)
       end
 
+      # Refuse live-collection maintenance when the host has declared guarded
+      # blue/green rebuilds as its normal safety contract. Hosts without a
+      # schema guard retain the legacy task behavior.
+      #
+      # @return [true]
+      # @raise [ArgumentError] unless the explicit live-maintenance override is enabled
+      def ensure_live_index_maintenance_allowed!
+        return true unless SearchEngine.config.schema.around_rebuild
+        return true if boolean_env?('ALLOW_LIVE_INDEX_MAINTENANCE')
+
+        raise ArgumentError,
+              'live index maintenance is disabled while schema.around_rebuild is configured; ' \
+              'use search_engine:schema:apply, or set ALLOW_LIVE_INDEX_MAINTENANCE=true only after pausing ' \
+              'all outbox consumers and direct writers'
+      end
+
       # Whether JSON output is requested via FORMAT=json.
       # @return [Boolean]
       def json_output?

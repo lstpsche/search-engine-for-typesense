@@ -114,6 +114,11 @@ class PostgresOutboxRepositoryPostgresqlTest < Minitest::Test
       nil
     end
 
+    def select_value(sql)
+      invoke_hook(sql)
+      @session.run(sql).last
+    end
+
     def quote(value)
       return 'NULL' if value.nil?
 
@@ -312,6 +317,312 @@ class PostgresOutboxRepositoryPostgresqlTest < Minitest::Test
     assert_equal 0, repeated[:affected_parent_events]
   end
 
+  def test_exclusive_pause_blocks_claims_and_claims_resume_after_cutover
+    seed_claim_rows
+    pause_session = new_session('pause_claims')
+    claim_session = new_session('paused_claimer')
+    pause_repository = SearchEngine::PostgresOutbox::Repository.new(connection: PsqlConnection.new(pause_session))
+    claim_repository = SearchEngine::PostgresOutbox::Repository.new(
+      connection: PsqlConnection.new(claim_session),
+      target_key: 'target_1'
+    )
+    entered = Queue.new
+    release = Queue.new
+
+    pause_result = run_in_thread do
+      pause_repository.with_delivery_target_claims_paused(target_key: 'target_1', timeout_s: 2) do
+        entered << true
+        release.pop
+        :cutover_complete
+      end
+    end
+    Timeout.timeout(2) { entered.pop }
+
+    assert_empty claim_repository.claim_pending(limit: 10, worker_id: 'worker-paused')
+    assert_equal '0', scalar("SELECT COUNT(*) FROM #{deliveries_table} WHERE status = 'processing'")
+
+    release << true
+    assert_equal :cutover_complete, thread_result(pause_result)
+    resumed = claim_repository.claim_pending(limit: 10, worker_id: 'worker-resumed')
+    assert_equal([2], resumed.map { |event| event.id.to_i })
+    assert_equal 'worker-resumed', scalar("SELECT locked_by FROM #{deliveries_table} WHERE id = 102")
+  ensure
+    release << true if release
+  end
+
+  def test_exclusive_pause_waits_for_processing_delivery_to_acknowledge
+    seed_claim_rows
+    worker_session = new_session('processing_worker')
+    pause_session = new_session('quiescence_waiter')
+    worker_repository = SearchEngine::PostgresOutbox::Repository.new(
+      connection: PsqlConnection.new(worker_session),
+      target_key: 'target_1'
+    )
+    claimed = worker_repository.claim_pending(limit: 10, worker_id: 'worker-1')
+    assert_equal([2], claimed.map { |event| event.id.to_i })
+
+    count_observed = Queue.new
+    pause_connection = PsqlConnection.new(pause_session)
+    pause_connection.before_execute = lambda do |sql|
+      count_observed << true if sql.include?('SELECT COUNT(*)')
+    end
+    pause_repository = SearchEngine::PostgresOutbox::Repository.new(connection: pause_connection)
+    entered = Queue.new
+    pause_result = run_in_thread do
+      pause_repository.with_delivery_target_claims_paused(
+        target_key: 'target_1', timeout_s: 2, poll_interval_s: 0.01
+      ) do
+        entered << true
+        nil
+      end
+    end
+
+    Timeout.timeout(2) { count_observed.pop }
+    assert_raises(ThreadError) { entered.pop(true) }
+    assert_equal [2], worker_repository.mark_processed!(claimed).map(&:to_i)
+    assert_nil thread_result(pause_result)
+    assert Timeout.timeout(2) { entered.pop }
+  end
+
+  def test_shared_direct_writer_and_exclusive_pause_block_each_other
+    writer_session = new_session('shared_writer')
+    pause_session = new_session('writer_pause')
+    writer_repository = SearchEngine::PostgresOutbox::Repository.new(connection: PsqlConnection.new(writer_session))
+    exclusive_attempted = Queue.new
+    pause_connection = PsqlConnection.new(pause_session)
+    pause_connection.before_execute = lambda do |sql|
+      exclusive_attempted << true if sql.include?('pg_try_advisory_lock(')
+    end
+    pause_repository = SearchEngine::PostgresOutbox::Repository.new(connection: pause_connection)
+    writer_entered = Queue.new
+    release_writer = Queue.new
+
+    writer_result = run_in_thread do
+      writer_repository.with_delivery_target_writes_allowed(target_key: 'target_1', timeout_s: 2) do
+        writer_entered << true
+        release_writer.pop
+        nil
+      end
+    end
+    Timeout.timeout(2) { writer_entered.pop }
+
+    pause_entered = Queue.new
+    pause_result = run_in_thread do
+      pause_repository.with_delivery_target_claims_paused(
+        target_key: 'target_1', timeout_s: 2, poll_interval_s: 0.01
+      ) do
+        pause_entered << true
+        nil
+      end
+    end
+    Timeout.timeout(2) { exclusive_attempted.pop }
+    assert_raises(ThreadError) { pause_entered.pop(true) }
+
+    release_writer << true
+    assert_nil thread_result(writer_result)
+    assert_nil thread_result(pause_result)
+    assert Timeout.timeout(2) { pause_entered.pop }
+  ensure
+    release_writer << true if release_writer
+  end
+
+  def test_exclusive_pause_blocks_shared_direct_writer
+    pause_session = new_session('exclusive_cutover')
+    writer_session = new_session('blocked_writer')
+    pause_repository = SearchEngine::PostgresOutbox::Repository.new(connection: PsqlConnection.new(pause_session))
+    shared_attempted = Queue.new
+    writer_connection = PsqlConnection.new(writer_session)
+    writer_connection.before_execute = lambda do |sql|
+      shared_attempted << true if sql.include?('pg_try_advisory_lock_shared')
+    end
+    writer_repository = SearchEngine::PostgresOutbox::Repository.new(connection: writer_connection)
+    pause_entered = Queue.new
+    release_pause = Queue.new
+
+    pause_result = run_in_thread do
+      pause_repository.with_delivery_target_claims_paused(target_key: 'target_1', timeout_s: 2) do
+        pause_entered << true
+        release_pause.pop
+        nil
+      end
+    end
+    Timeout.timeout(2) { pause_entered.pop }
+
+    writer_entered = Queue.new
+    writer_result = run_in_thread do
+      writer_repository.with_delivery_target_writes_allowed(
+        target_key: 'target_1', timeout_s: 2, poll_interval_s: 0.01
+      ) do
+        writer_entered << true
+        nil
+      end
+    end
+    Timeout.timeout(2) { shared_attempted.pop }
+    assert_raises(ThreadError) { writer_entered.pop(true) }
+
+    release_pause << true
+    assert_nil thread_result(pause_result)
+    assert_nil thread_result(writer_result)
+    assert Timeout.timeout(2) { writer_entered.pop }
+  ensure
+    release_pause << true if release_pause
+  end
+
+  def test_advisory_guard_timeout_does_not_yield_and_block_exception_releases_lock
+    blocker_session = new_session('timeout_blocker')
+    timeout_session = new_session('timeout_waiter')
+    recovery_session = new_session('exception_recovery')
+    blocker_repository = SearchEngine::PostgresOutbox::Repository.new(
+      connection: PsqlConnection.new(blocker_session)
+    )
+    entered = Queue.new
+    release = Queue.new
+    blocker_result = run_in_thread do
+      blocker_repository.with_delivery_target_writes_allowed(target_key: 'target_1', timeout_s: 2) do
+        entered << true
+        release.pop
+        nil
+      end
+    end
+    Timeout.timeout(2) { entered.pop }
+
+    yielded = false
+    timeout_repository = SearchEngine::PostgresOutbox::Repository.new(connection: PsqlConnection.new(timeout_session))
+    assert_raises(SearchEngine::Errors::Timeout) do
+      timeout_repository.with_delivery_target_claims_paused(
+        target_key: 'target_1', timeout_s: 0.05, poll_interval_s: 0.01
+      ) { yielded = true }
+    end
+    refute yielded
+
+    release << true
+    assert_nil thread_result(blocker_result)
+    original = RuntimeError.new('cutover failed')
+    recovery_repository = SearchEngine::PostgresOutbox::Repository.new(
+      connection: PsqlConnection.new(recovery_session)
+    )
+    raised = assert_raises(RuntimeError) do
+      recovery_repository.with_delivery_target_claims_paused(target_key: 'target_1', timeout_s: 1) do
+        raise original
+      end
+    end
+    assert_same original, raised
+    assert_equal :reacquired,
+                 recovery_repository.with_delivery_target_writes_allowed(
+                   target_key: 'target_1', timeout_s: 1
+                 ) { :reacquired }
+  ensure
+    release << true if release
+  end
+
+  def test_postgres_releases_delivery_target_lock_when_session_dies
+    dead_session = new_session('dead_lock_owner')
+    recovery_session = new_session('dead_lock_recovery')
+    repository = SearchEngine::PostgresOutbox::Repository.new(connection: PsqlConnection.new(recovery_session))
+    key = repository.send(:delivery_target_advisory_lock_key, 'target_1')
+    dead_session.run("SELECT pg_advisory_lock(#{key})")
+
+    dead_session.close
+
+    result = repository.with_delivery_target_writes_allowed(target_key: 'target_1', timeout_s: 1) { :recovered }
+    assert_equal :recovered, result
+  end
+
+  def test_bounded_stale_reclaim_leaves_unselected_rows_processing_and_blocks_cutover
+    seed_stale_claim_rows
+    worker_session = new_session('bounded_stale_reclaim')
+    pause_session = new_session('stale_cutover_waiter')
+    worker_repository = SearchEngine::PostgresOutbox::Repository.new(
+      connection: PsqlConnection.new(worker_session),
+      target_key: 'target_1'
+    )
+
+    claimed = worker_repository.claim_pending(limit: 1, worker_id: 'recovery-worker')
+
+    assert_equal([301], claimed.map { |event| event.delivery_id.to_i })
+    assert_equal [31], worker_repository.mark_processed!(claimed).map(&:to_i)
+    assert_equal '0', scalar("SELECT COUNT(*) FROM #{deliveries_table} WHERE status = 'pending'")
+    assert_equal '2', scalar("SELECT COUNT(*) FROM #{deliveries_table} WHERE status = 'processing'")
+    assert_equal 'old-worker', scalar("SELECT locked_by FROM #{deliveries_table} WHERE id = 302")
+
+    yielded = false
+    pause_repository = SearchEngine::PostgresOutbox::Repository.new(connection: PsqlConnection.new(pause_session))
+    assert_raises(SearchEngine::Errors::Timeout) do
+      pause_repository.with_delivery_target_claims_paused(
+        target_key: 'target_1', timeout_s: 0.05, poll_interval_s: 0.01
+      ) { yielded = true }
+    end
+    refute yielded
+  end
+
+  def test_stale_older_delete_is_reclaimed_before_newer_recreation
+    seed_stale_delete_then_recreation
+    worker_session = new_session('stale_delete_ordering')
+    repository = SearchEngine::PostgresOutbox::Repository.new(
+      connection: PsqlConnection.new(worker_session),
+      target_key: 'target_1'
+    )
+
+    first = repository.claim_pending(limit: 10, worker_id: 'recovery-worker')
+    assert_equal([401], first.map { |event| event.delivery_id.to_i })
+    assert_equal %i[delete], first.map(&:operation)
+    assert_equal [41], repository.mark_processed!(first).map(&:to_i)
+
+    second = repository.claim_pending(limit: 10, worker_id: 'recovery-worker')
+    assert_equal([402], second.map { |event| event.delivery_id.to_i })
+    assert_equal %i[upsert], second.map(&:operation)
+    assert_equal [42], repository.mark_processed!(second).map(&:to_i)
+
+    assert_equal '0', scalar("SELECT COUNT(*) FROM #{deliveries_table} WHERE status = 'processing'")
+    assert_equal '2', scalar("SELECT COUNT(*) FROM #{deliveries_table} WHERE status = 'processed'")
+  end
+
+  def test_stale_reclaim_revalidates_lease_after_parent_wait
+    seed_single_stale_claim
+    blocker = new_session('stale_parent_blocker')
+    claimant_session = new_session('stale_reclaimer')
+    heartbeat_session = new_session('stale_heartbeat')
+    claimant_connection = PsqlConnection.new(claimant_session)
+    parent_lock_attempted = Queue.new
+    claimant_connection.before_execute = one_shot_parent_lock_hook(parent_lock_attempted)
+    claimant = SearchEngine::PostgresOutbox::Repository.new(
+      connection: claimant_connection,
+      target_key: 'target_1'
+    )
+    heartbeat = SearchEngine::PostgresOutbox::Repository.new(
+      connection: PsqlConnection.new(heartbeat_session),
+      target_key: 'target_1'
+    )
+    stale_event = SearchEngine::PostgresOutbox::Event.new(
+      'id' => 51,
+      'source_table' => 'products',
+      'source_model_name' => 'Product',
+      'collection' => 'products',
+      'record_id' => '51',
+      'document_id' => 'sku-51',
+      'operation' => 'upsert',
+      'attempts' => 0,
+      'payload' => {},
+      'delivery_id' => 501,
+      'target_key' => 'target_1',
+      'delivery_lease_owner' => 'old-worker'
+    )
+
+    blocker.run("BEGIN; SELECT id FROM #{events_table} WHERE id = 51 FOR UPDATE")
+    result = run_in_thread { claimant.claim_pending(limit: 10, worker_id: 'new-worker') }
+    wait_for_parent_lock(parent_lock_attempted, result)
+    wait_until_lock_blocked(claimant_session.application_name)
+
+    assert_equal [51], heartbeat.renew_leases!([stale_event]).map(&:to_i)
+    blocker.run('COMMIT')
+
+    assert_empty thread_result(result)
+    assert_equal 'old-worker', scalar("SELECT locked_by FROM #{deliveries_table} WHERE id = 501")
+    assert_equal 'processing', scalar("SELECT status FROM #{deliveries_table} WHERE id = 501")
+  ensure
+    rollback(blocker)
+  end
+
   private
 
   def postgresql_16?
@@ -500,6 +811,59 @@ class PostgresOutboxRepositoryPostgresqlTest < Minitest::Test
              (203, 11, 'target_1', 'queue_1', 'processing', CURRENT_TIMESTAMP, 'worker-1', NULL, NULL),
              (204, 12, 'target_1', 'queue_1', 'failed', NULL, NULL, NULL, 'old failure'),
              (205, 13, 'target_1', 'queue_1', 'processed', NULL, NULL, CURRENT_TIMESTAMP, NULL)
+    SQL
+  end
+
+  def seed_stale_claim_rows
+    @control.run(<<~SQL)
+      INSERT INTO #{events_table} (
+        id, source_table, source_model_name, collection, record_id, document_id, operation, status
+      )
+      VALUES (31, 'products', 'Product', 'products', '31', 'sku-31', 'upsert', 'pending'),
+             (32, 'products', 'Product', 'products', '32', 'sku-32', 'upsert', 'pending'),
+             (33, 'products', 'Product', 'products', '33', 'sku-33', 'upsert', 'pending');
+
+      INSERT INTO #{deliveries_table} (
+        id, event_id, target_key, queue_name, status, locked_at, locked_by
+      )
+      VALUES (301, 31, 'target_1', 'queue_1', 'processing',
+              CURRENT_TIMESTAMP - interval '60 seconds', 'old-worker'),
+             (302, 32, 'target_1', 'queue_1', 'processing',
+              CURRENT_TIMESTAMP - interval '60 seconds', 'old-worker'),
+             (303, 33, 'target_1', 'queue_1', 'processing',
+              CURRENT_TIMESTAMP - interval '60 seconds', 'old-worker')
+    SQL
+  end
+
+  def seed_stale_delete_then_recreation
+    @control.run(<<~SQL)
+      INSERT INTO #{events_table} (
+        id, source_table, source_model_name, collection, record_id, document_id, operation, status
+      )
+      VALUES (41, 'products', 'Product', 'products', '41', 'recreated-sku', 'delete', 'pending'),
+             (42, 'products', 'Product', 'products', '42', 'recreated-sku', 'upsert', 'pending');
+
+      INSERT INTO #{deliveries_table} (
+        id, event_id, target_key, queue_name, status, locked_at, locked_by
+      )
+      VALUES (401, 41, 'target_1', 'queue_1', 'processing',
+              CURRENT_TIMESTAMP - interval '60 seconds', 'old-worker'),
+             (402, 42, 'target_1', 'queue_1', 'pending', NULL, NULL)
+    SQL
+  end
+
+  def seed_single_stale_claim
+    @control.run(<<~SQL)
+      INSERT INTO #{events_table} (
+        id, source_table, source_model_name, collection, record_id, document_id, operation, status
+      )
+      VALUES (51, 'products', 'Product', 'products', '51', 'sku-51', 'upsert', 'pending');
+
+      INSERT INTO #{deliveries_table} (
+        id, event_id, target_key, queue_name, status, locked_at, locked_by
+      )
+      VALUES (501, 51, 'target_1', 'queue_1', 'processing',
+              CURRENT_TIMESTAMP - interval '60 seconds', 'old-worker')
     SQL
   end
 

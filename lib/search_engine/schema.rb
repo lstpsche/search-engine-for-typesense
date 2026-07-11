@@ -170,11 +170,8 @@ module SearchEngine
       # @raise [SearchEngine::Errors::Api, ArgumentError]
       # @see `https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/schema#lifecycle`
       # @see `https://typesense.org/docs/latest/api/collections.html`
-      def apply!(klass, client: nil, force_rebuild: false) # rubocop:disable Metrics/MethodLength
+      def apply!(klass, client: nil, force_rebuild: false, &reindex_step)
         client ||= SearchEngine.client
-        new_physical = nil
-        physical_created = false
-        apply_succeeded = false
 
         # Optimization: Try in-place update first if not forced to rebuild.
         # If update! returns true, the schema is synced (either no changes or successfully patched).
@@ -184,12 +181,62 @@ module SearchEngine
           # Resolve current physical to return consistent result
           physical = client.resolve_alias(logical) || logical
 
-          apply_succeeded = true
           return update_result_payload(logical, physical)
         end
 
         compiled = compile(klass, client: client)
         logical = compiled[:name]
+
+        with_around_rebuild(logical) do
+          perform_full_rebuild!(
+            klass,
+            client: client,
+            compiled: compiled,
+            logical: logical,
+            reindex_step: reindex_step
+          )
+        end
+      end
+
+      def with_around_rebuild(logical)
+        guard = SearchEngine.config.schema.around_rebuild
+        return yield unless guard
+
+        result = nil
+        yield_count = 0
+        block_error = nil
+        guard_error = nil
+        begin
+          guard.call(collection: logical) do
+            yield_count += 1
+            if yield_count > 1
+              raise ArgumentError, 'schema.around_rebuild must yield exactly once (yielded more than once)'
+            end
+
+            begin
+              result = yield
+            rescue StandardError => error
+              block_error = error
+              raise
+            end
+          end
+        rescue StandardError => error
+          guard_error = error
+        end
+
+        raise block_error if block_error
+        raise guard_error if guard_error
+        raise ArgumentError, 'schema.around_rebuild must yield exactly once (did not yield)' if yield_count.zero?
+        raise ArgumentError, 'schema.around_rebuild must yield exactly once (yielded more than once)' if yield_count > 1
+
+        result
+      end
+      private :with_around_rebuild
+
+      def perform_full_rebuild!(klass, client:, compiled:, logical:, reindex_step:)
+        new_physical = nil
+        physical_created = false
+        apply_succeeded = false
 
         cleanup_logical_collection_conflict!(logical, client: client)
 
@@ -212,8 +259,8 @@ module SearchEngine
         client.create_collection(create_schema)
         physical_created = true
 
-        if block_given?
-          yield new_physical
+        if reindex_step
+          reindex_step.call(new_physical)
         elsif klass.respond_to?(:reindex_all_to)
           klass.reindex_all_to(new_physical)
         else
@@ -257,6 +304,7 @@ module SearchEngine
       ensure
         cleanup_interrupted_physical!(new_physical, client) if physical_created && !apply_succeeded
       end
+      private :perform_full_rebuild!
 
       # Roll back the alias for the given klass to the previous retained physical collection.
       #

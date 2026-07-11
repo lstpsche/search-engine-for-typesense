@@ -67,6 +67,23 @@ class ConfigValidationTest < Minitest::Test
     assert_equal true, cfg.validate!
   end
 
+  def test_validate_accepts_nil_or_callable_schema_rebuild_guard
+    cfg = SearchEngine::Config.new
+    assert_equal true, cfg.validate!
+
+    cfg.schema.around_rebuild = ->(**, &block) { block.call }
+    assert_equal true, cfg.validate!
+  end
+
+  def test_validate_rejects_non_callable_schema_rebuild_guard
+    cfg = SearchEngine::Config.new
+    cfg.schema.around_rebuild = :pause_claims
+
+    error = assert_raises(ArgumentError) { cfg.validate! }
+
+    assert_equal 'schema.around_rebuild must be callable or nil', error.message
+  end
+
   def test_configure_runs_validation
     # Force invalid and ensure configure triggers validation
     assert_raises(ArgumentError) do

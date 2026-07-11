@@ -51,7 +51,8 @@ namespace :search_engine do
       Kernel.exit(1)
     end
 
-    desc "Apply schema (create + reindex + swap + retention). Usage: rails 'search_engine:schema:apply[collection]'"
+    desc 'Apply schema, optionally forcing blue/green rebuild with FORCE_REBUILD=true. ' \
+         "Usage: rails 'search_engine:schema:apply[collection]'"
     task :apply, [:collection] => :environment do |_t, args|
       begin
         klass = SearchEngine::Cli.resolve_collection!(args[:collection])
@@ -61,13 +62,15 @@ namespace :search_engine do
         Kernel.exit(1)
       end
 
+      force_rebuild = SearchEngine::Cli.boolean_env?('FORCE_REBUILD')
       payload = {
         task: 'schema:apply',
-        collection: (klass.respond_to?(:collection) ? klass.collection : klass.name)
+        collection: (klass.respond_to?(:collection) ? klass.collection : klass.name),
+        force_rebuild: force_rebuild
       }
       summary = nil
       SearchEngine::Cli.with_task_instrumentation('schema:apply', payload) do
-        summary = SearchEngine::Schema.apply!(klass) do |physical|
+        summary = SearchEngine::Schema.apply!(klass, force_rebuild: force_rebuild) do |physical|
           # Inline reindex across all partitions into the new physical
           parts = SearchEngine::Cli.partitions_for(klass)
           parts = [nil] if parts.nil? || parts.respond_to?(:empty?) && parts.empty?
@@ -175,7 +178,7 @@ namespace :search_engine do
 
   # ------------------------- Index tasks -------------------------
   namespace :index do
-    desc "Rebuild entire index (all partitions or single). Usage: rails 'search_engine:index:rebuild[collection]'"
+    desc "LIVE rebuild (bypasses blue/green guard). Usage: rails 'search_engine:index:rebuild[collection]'"
     task :rebuild, [:collection] => :environment do |_t, args|
       begin
         klass = SearchEngine::Cli.resolve_collection!(args[:collection])
@@ -214,6 +217,7 @@ namespace :search_engine do
       end
 
       # Non-dry run
+      enforce_live_index_maintenance_policy!
       actions = []
       SearchEngine::Cli.with_task_instrumentation('index:rebuild', payload) do
         compiled = SearchEngine::Partitioner.for(klass)
@@ -312,7 +316,8 @@ namespace :search_engine do
       Kernel.exit(1)
     end
 
-    desc "Rebuild a single partition. Usage: rails 'search_engine:index:rebuild_partition[collection,partition]'"
+    desc 'LIVE partition rebuild (bypasses blue/green guard). ' \
+         'Usage: rails \'search_engine:index:rebuild_partition[collection,partition]\''
     task :rebuild_partition, %i[collection partition] => :environment do |_t, args|
       begin
         klass = SearchEngine::Cli.resolve_collection!(args[:collection])
@@ -322,6 +327,7 @@ namespace :search_engine do
         Kernel.exit(1)
       end
       partition = SearchEngine::Cli.parse_partition(args[:partition])
+      enforce_live_index_maintenance_policy!
       payload = {
         task: 'index:rebuild_partition',
         collection: (klass.respond_to?(:collection) ? klass.collection : klass.name),
@@ -504,9 +510,11 @@ namespace :search_engine do
       Examples:
         rails 'search_engine:schema:diff[SearchEngine::Product]'
         rails 'search_engine:schema:apply[products]'
+        FORCE_REBUILD=true rails 'search_engine:schema:apply[products]'
         rails 'search_engine:schema:rollback[products]'
 
       Tips:
+        - FORCE_REBUILD=true forces the guarded physical create/reindex/swap lifecycle even when schema is current.
         - Quote rake tasks with brackets to avoid shell globbing (e.g., zsh):
           rails 'search_engine:index:rebuild_partition[SearchEngine::Product,42]'
     USAGE
@@ -525,6 +533,8 @@ namespace :search_engine do
         VERBOSE=1    More verbose output
         FORMAT=json  Machine-readable output
         STRICT=1     For delete_stale: treat missing filter as violation (exit 3)
+        ALLOW_LIVE_INDEX_MAINTENANCE=true
+                      Explicitly allow live rebuild tasks when schema.around_rebuild is configured
 
       Examples:
         rails 'search_engine:index:rebuild[SearchEngine::Product]'
@@ -532,9 +542,22 @@ namespace :search_engine do
         rails 'search_engine:index:delete_stale[SearchEngine::Product,42]'
 
       Tips:
+        - index:rebuild and index:rebuild_partition write into the live collection. They do not invoke
+          schema.around_rebuild. When that guard is configured, the tasks refuse to run unless
+          ALLOW_LIVE_INDEX_MAINTENANCE=true. Pause all outbox consumers and direct writers before overriding,
+          or use schema:apply with FORCE_REBUILD=true instead.
         - Use brackets without spaces.
         - Quote rake tasks with brackets to avoid shell globbing (e.g., zsh):
           rails 'search_engine:index:rebuild_partition[SearchEngine::Product,42]'
     USAGE
+  end
+
+  def enforce_live_index_maintenance_policy!
+    SearchEngine::Cli.ensure_live_index_maintenance_allowed!
+    warn(
+      'WARNING: this task writes into the currently resolved live collection; it does not invoke ' \
+      'schema.around_rebuild. Pause all outbox consumers and direct writers for the target before continuing, ' \
+      'or use FORCE_REBUILD=true search_engine:schema:apply for a guarded blue/green rebuild.'
+    )
   end
 end

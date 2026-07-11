@@ -58,9 +58,10 @@ module SearchEngine
         processed_ids = []
         failed_ids = []
         errors = {}
+        targets = {}
 
         Array(events).each do |event|
-          process_event(event, context: context)
+          process_event(event, context: context, targets: targets)
           processed_ids << event.id
         rescue StandardError => error
           failed_ids << event.id
@@ -77,36 +78,47 @@ module SearchEngine
 
       private
 
-      def process_event(event, context:)
+      def process_event(event, context:, targets:)
         case event.operation
         when :delete
-          delete_document(event, context: context)
+          delete_document(event, context: context, targets: targets)
         when :upsert
-          upsert_or_delete_missing_source(event, context: context)
+          upsert_or_delete_missing_source(event, context: context, targets: targets)
         else
           raise ArgumentError, "unsupported postgres outbox operation: #{event.operation.inspect}"
         end
       end
 
-      def upsert_or_delete_missing_source(event, context:)
+      def upsert_or_delete_missing_source(event, context:, targets:)
         source_model = constantize(event.source_model_name)
         record = source_model.find_by(id: event.record_id)
 
         unless record
-          delete_document(event, context: context)
+          delete_document(event, context: context, targets: targets)
           return
         end
 
         search_model = SearchEngine::CollectionResolver.model_for_logical(event.collection)
         raise NameError, "SearchEngine model not found for collection #{event.collection.inspect}" unless search_model
 
-        search_model.upsert(record: record)
+        search_model.upsert(record: record, into: target_for(event.collection, context: context, targets: targets))
       end
 
-      def delete_document(event, context:)
+      def delete_document(event, context:, targets:)
         client = context[:client] || SearchEngine.client
-        target = client.resolve_alias(event.collection) || event.collection
-        client.delete_document(collection: target, id: event.document_id)
+        client.delete_document(
+          collection: target_for(event.collection, context: context, targets: targets),
+          id: event.document_id
+        )
+      end
+
+      # A claimed delivery pins its physical collection until acknowledgement.
+      # A delayed stale HTTP request must never follow a logical alias across a
+      # later cutover and mutate the replacement physical collection.
+      def target_for(collection, context:, targets:)
+        client = context[:client] || SearchEngine.client
+        key = collection.to_s
+        targets[key] ||= client.resolve_alias(key) || key
       end
 
       def constantize(name)
