@@ -76,7 +76,7 @@ module SearchEngine
 
     # Lightweight nested configuration for schema lifecycle.
     class SchemaConfig
-      # @return [#call, nil] optional around hook for full blue/green rebuilds
+      # @return [#call, nil] optional around hook for alias-changing rebuilds and rollbacks
       attr_accessor :around_rebuild
 
       # Retention knobs for physical collections
@@ -314,6 +314,8 @@ module SearchEngine
       attr_accessor :drain_job_max_batches
       # @return [Integer, nil] optional runtime budget in seconds for slot-aware drain jobs
       attr_accessor :drain_job_max_runtime_s
+      # @return [Boolean] clear Typesense's server-side search cache before acknowledging a processed group
+      attr_accessor :clear_cache_after_write
 
       def initialize
         @enabled = false
@@ -338,6 +340,7 @@ module SearchEngine
         @drain_target_parallelism = 1
         @drain_job_max_batches = 1
         @drain_job_max_runtime_s = nil
+        @clear_cache_after_write = false
       end
 
       # Resolve the processing batch size for a collection.
@@ -950,7 +953,8 @@ module SearchEngine
         delivery_targets: postgres_outbox.delivery_targets,
         drain_target_parallelism: postgres_outbox.drain_target_parallelism,
         drain_job_max_batches: postgres_outbox.drain_job_max_batches,
-        drain_job_max_runtime_s: postgres_outbox.drain_job_max_runtime_s
+        drain_job_max_runtime_s: postgres_outbox.drain_job_max_runtime_s,
+        clear_cache_after_write: postgres_outbox.clear_cache_after_write ? true : false
       }
     end
 

@@ -9,7 +9,10 @@ class PostgresOutboxDrainerTest < Minitest::Test
                 :retryable_calls,
                 :terminal_retryable_calls,
                 :claim_args,
-                :claim_history
+                :claim_history,
+                :renewal_calls
+
+    attr_accessor :renewal_error, :renewal_results
 
     def initialize(events)
       @events = events
@@ -18,6 +21,8 @@ class PostgresOutboxDrainerTest < Minitest::Test
       @retryable_calls = []
       @terminal_retryable_calls = []
       @claim_history = []
+      @renewal_calls = []
+      @renewal_results = []
     end
 
     def claim_pending(limit:, worker_id:)
@@ -46,6 +51,14 @@ class PostgresOutboxDrainerTest < Minitest::Test
       end
       terminal_retryable_calls << [terminal_ids, error] if terminal_ids.any?
       ids
+    end
+
+    def renew_leases!(events)
+      raise renewal_error if renewal_error
+
+      ids = events.map(&:id)
+      renewal_calls << ids
+      renewal_results.empty? ? ids : renewal_results.shift
     end
   end
 
@@ -134,6 +147,17 @@ class PostgresOutboxDrainerTest < Minitest::Test
       end
     end
 
+    def renew_leases!(events)
+      Array(events).filter_map do |event|
+        delivery = delivery(event.delivery_id)
+        next unless delivery
+        next unless delivery[:status] == :processing
+        next unless delivery[:lease_owner] == event.delivery_lease_owner
+
+        event.id
+      end
+    end
+
     def expire_and_requeue!(delivery_id)
       delivery = delivery(delivery_id)
       delivery[:status] = :pending
@@ -191,13 +215,16 @@ class PostgresOutboxDrainerTest < Minitest::Test
   def setup
     @previous_processors = SearchEngine.config.postgres_outbox.collection_processors
     @previous_batch_sizes = SearchEngine.config.postgres_outbox.batch_sizes
+    @previous_clear_cache_after_write = SearchEngine.config.postgres_outbox.clear_cache_after_write
     SearchEngine.config.postgres_outbox.collection_processors = {}
     SearchEngine.config.postgres_outbox.batch_sizes = {}
+    SearchEngine.config.postgres_outbox.clear_cache_after_write = false
   end
 
   def teardown
     SearchEngine.config.postgres_outbox.collection_processors = @previous_processors
     SearchEngine.config.postgres_outbox.batch_sizes = @previous_batch_sizes
+    SearchEngine.config.postgres_outbox.clear_cache_after_write = @previous_clear_cache_after_write
   end
 
   def test_returns_empty_summary_without_events
@@ -482,6 +509,50 @@ class PostgresOutboxDrainerTest < Minitest::Test
     assert_empty default.calls
   end
 
+  def test_opted_in_search_cache_is_cleared_before_processed_events_are_acknowledged
+    SearchEngine.config.postgres_outbox.clear_cache_after_write = true
+    order = []
+    repository = FakeRepository.new([event(id: 1, collection: 'products')])
+    processor = CallbackProcessor.new do |events, _context|
+      order << :processor
+      SearchEngine::PostgresOutbox::ProcessorResult.success(events.map(&:id))
+    end
+    repository.define_singleton_method(:mark_processed!) do |events|
+      order << :acknowledge
+      super(events)
+    end
+
+    SearchEngine::Cache.stub(:clear, -> { order << :cache_clear }) do
+      SearchEngine::DependencyPlanner.stub(:order_events, ->(input) { input }) do
+        SearchEngine::PostgresOutbox::Drainer
+          .new(repository: repository, processor: processor, worker_id: 'w1')
+          .drain_once
+      end
+    end
+
+    assert_equal %i[processor cache_clear acknowledge], order
+    assert_equal [1], repository.processed_ids
+  end
+
+  def test_cache_clear_failure_retries_the_group_without_acknowledging_it
+    SearchEngine.config.postgres_outbox.clear_cache_after_write = true
+    cache_error = StandardError.new('cache clear failed')
+    repository = FakeRepository.new([event(id: 1, collection: 'products')])
+    processor = RecordingProcessor.new
+
+    SearchEngine::Cache.stub(:clear, -> { raise cache_error }) do
+      SearchEngine::DependencyPlanner.stub(:order_events, ->(input) { input }) do
+        summary = SearchEngine::PostgresOutbox::Drainer
+                  .new(repository: repository, processor: processor, worker_id: 'w1')
+                  .drain_once
+
+        assert_empty repository.processed_ids
+        assert_equal [[[1], cache_error]], repository.retryable_calls
+        assert_equal 1, summary[:retryable]
+      end
+    end
+  end
+
   def test_failure_marks_group_and_remaining_groups_retryable_without_processing_them
     error = StandardError.new('boom')
     failure = SearchEngine::PostgresOutbox::ProcessorResult.failure([1], error: error)
@@ -687,6 +758,73 @@ class PostgresOutboxDrainerTest < Minitest::Test
       assert_equal 'w1', context[:worker_id]
       assert_equal 'target_1', context[:target_key]
       assert_match(/\Aw1:[0-9a-f-]{36}\z/, context[:lease_owner])
+      assert_equal [[1]], repository.renewal_calls
+    end
+  end
+
+  def test_target_claim_renews_unstarted_groups_before_each_processor
+    repository = FakeRepository.new(
+      [
+        event(id: 1, collection: 'products', delivery_id: 101, target_key: 'target_1'),
+        event(id: 2, collection: 'product_barcodes', delivery_id: 102, target_key: 'target_1')
+      ]
+    )
+    processor = RecordingProcessor.new
+
+    SearchEngine::DependencyPlanner.stub(:order_events, ->(input) { input }) do
+      summary = SearchEngine::PostgresOutbox::Drainer
+                .new(repository: repository, processor: processor, worker_id: 'w1', target_key: 'target_1')
+                .drain_once(limit: 10)
+
+      assert_equal 2, summary[:processed]
+      assert_equal [[1, 2], [2]], repository.renewal_calls
+      assert_equal [[1], [2]], processor.calls.map(&:first)
+    end
+  end
+
+  def test_target_claim_never_processes_a_later_group_after_lease_renewal_is_lost
+    repository = FakeRepository.new(
+      [
+        event(id: 1, collection: 'products', delivery_id: 101, target_key: 'target_1'),
+        event(id: 2, collection: 'product_barcodes', delivery_id: 102, target_key: 'target_1')
+      ]
+    )
+    repository.renewal_results = [[1, 2], []]
+    processor = RecordingProcessor.new
+
+    SearchEngine::DependencyPlanner.stub(:order_events, ->(input) { input }) do
+      summary = SearchEngine::PostgresOutbox::Drainer
+                .new(repository: repository, processor: processor, worker_id: 'w1', target_key: 'target_1')
+                .drain_once(limit: 10)
+
+      assert_equal 1, summary[:processed]
+      assert_equal 1, summary[:stale]
+      assert_equal [[1]], processor.calls.map(&:first)
+      assert_equal [1], repository.processed_ids
+    end
+  end
+
+  def test_target_claim_retries_current_and_later_groups_when_lease_renewal_raises
+    repository = FakeRepository.new(
+      [
+        event(id: 1, collection: 'products', delivery_id: 101, target_key: 'target_1'),
+        event(id: 2, collection: 'product_barcodes', delivery_id: 102, target_key: 'target_1')
+      ]
+    )
+    renewal_error = StandardError.new('lease renewal unavailable')
+    repository.renewal_error = renewal_error
+    processor = RecordingProcessor.new
+
+    SearchEngine::DependencyPlanner.stub(:order_events, ->(input) { input }) do
+      summary = SearchEngine::PostgresOutbox::Drainer
+                .new(repository: repository, processor: processor, worker_id: 'w1', target_key: 'target_1')
+                .drain_once(limit: 10)
+
+      assert_empty processor.calls
+      assert_equal [[[1], renewal_error], [[2], SearchEngine::PostgresOutbox::Drainer::BLOCKED_ERROR]],
+                   repository.retryable_calls
+      assert_equal 2, summary[:retryable]
+      assert_equal 2, summary[:failed]
     end
   end
 

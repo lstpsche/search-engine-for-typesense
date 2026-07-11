@@ -10,6 +10,9 @@ module SearchEngine
   # - {.compile(klass)} => Hash
   # - {.diff(klass, client: SearchEngine.client)} => { diff: Hash, pretty: String }
   module Schema
+    # Raised when a guarded alias rollback no longer sees its expected source target.
+    class RollbackConflict < ArgumentError; end
+
     # Deterministic mapping from DSL types to Typesense field types.
     #
     # Policy:
@@ -306,47 +309,210 @@ module SearchEngine
       end
       private :perform_full_rebuild!
 
-      # Roll back the alias for the given klass to the previous retained physical collection.
+      # Roll back an alias to a retained older physical collection.
       #
-      # Chooses the most recent retained physical behind the current alias target. If none
-      # is available, raises an ArgumentError explaining that retention may be set to 0.
-      # The method is idempotent: if the alias already points to the chosen target, no-op.
+      # With no explicit target, the safe legacy form only rolls the newest physical
+      # back one generation. Repeating the same call is a no-op instead of toggling
+      # the alias forward again. Use +to+ when orphaned/newer physicals make the
+      # implicit destination ambiguous. +expected_current+ adds compare-and-swap
+      # protection; a retry that already reached +to+ remains successful.
+      #
+      # Alias resolution, validation, and the swap all run inside
+      # +schema.around_rebuild+ when configured, so delivery claims and cooperating
+      # direct writers cannot cross the rollback cutover.
       #
       # @param klass [Class]
       # @param client [SearchEngine::Client]
-      # @return [Hash] { logical: String, new_target: String, previous_target: String }
-      # @raise [ArgumentError] when no previous physical exists
+      # @param to [String, Symbol, nil] explicit retained older physical destination
+      # @param expected_current [String, Symbol, nil] optional compare-and-swap source
+      # @return [Hash] rollback result including :action and :changed
+      # @raise [ArgumentError] for invalid or unsafe rollback targets
+      # @raise [RollbackConflict] when the current alias violates the CAS contract
       # @see `https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/schema#retention`
-      def rollback(klass, client: nil)
+      def rollback(klass, client: nil, to: nil, expected_current: nil)
         client ||= SearchEngine.client
-        compiled = compile(klass)
-        logical = compiled[:name]
+        logical = compile(klass)[:name]
+        destination = normalize_rollback_target(to, 'to')
+        expected = normalize_rollback_target(expected_current, 'expected_current')
 
-        start_ms = monotonic_ms
-        current_target = client.resolve_alias(logical)
-
-        physicals = list_physicals(logical, client: client)
-        ordered = order_physicals_desc(logical, physicals)
-        previous = ordered.find { |name| name != current_target }
-        if previous.nil?
-          raise ArgumentError,
-                'No previous physical available for rollback; retention keep_last may be 0'
+        with_around_rebuild(logical) do
+          perform_rollback!(
+            logical,
+            client: client,
+            destination: destination,
+            expected_current: expected
+          )
         end
-
-        # Idempotent swap
-        client.upsert_alias(logical, previous) unless current_target == previous
-
-        if defined?(ActiveSupport::Notifications)
-          SearchEngine::Instrumentation.instrument('search_engine.schema.rollback',
-                                                   logical: logical,
-                                                   new_target: previous,
-                                                   previous_target: current_target,
-                                                   duration_ms: (monotonic_ms - start_ms)
-                                                  ) {}
-        end
-
-        { logical: logical, new_target: previous, previous_target: current_target }
       end
+
+      def perform_rollback!(logical, client:, destination:, expected_current:)
+        start_ms = monotonic_ms
+        current_target = client.resolve_alias(logical).to_s
+        ordered = order_physicals_desc(logical, list_physicals(logical, client: client))
+        validate_rollback_state!(
+          logical,
+          current_target: current_target,
+          ordered: ordered,
+          destination: destination,
+          expected_current: expected_current
+        )
+        plan = rollback_plan(
+          logical,
+          current_target: current_target,
+          ordered: ordered,
+          destination: destination,
+          expected_current: expected_current
+        )
+
+        client.upsert_alias(logical, plan[:new_target]) if plan[:changed]
+        instrument_rollback(logical, current_target, plan, start_ms)
+        rollback_result(logical, current_target, plan)
+      end
+      private :perform_rollback!
+
+      def normalize_rollback_target(value, name)
+        return nil if value.nil?
+
+        normalized = value.to_s
+        if normalized.empty? || normalized != normalized.strip
+          raise ArgumentError, "rollback #{name} must be an exact nonblank physical collection name"
+        end
+
+        normalized
+      end
+      private :normalize_rollback_target
+
+      def validate_rollback_state!(logical, current_target:, ordered:, destination:, expected_current:)
+        raise ArgumentError, "Logical collection '#{logical}' has no alias target to roll back" if current_target.empty?
+
+        unless ordered.include?(current_target)
+          raise ArgumentError,
+                "Current alias target '#{current_target}' is not a retained physical for '#{logical}'"
+        end
+
+        validate_retained_rollback_target!(logical, destination, ordered, 'destination') if destination
+        validate_retained_rollback_target!(logical, expected_current, ordered, 'expected current') if expected_current
+      end
+      private :validate_rollback_state!
+
+      def validate_retained_rollback_target!(logical, target, ordered, label)
+        return if ordered.include?(target)
+
+        raise ArgumentError, "Rollback #{label} '#{target}' is not a retained physical for '#{logical}'"
+      end
+      private :validate_retained_rollback_target!
+
+      def rollback_plan(logical, current_target:, ordered:, destination:, expected_current:)
+        if destination
+          explicit_rollback_plan(
+            logical,
+            current_target: current_target,
+            ordered: ordered,
+            destination: destination,
+            expected_current: expected_current
+          )
+        elsif expected_current
+          expected_rollback_plan(
+            logical,
+            current_target: current_target,
+            ordered: ordered,
+            expected_current: expected_current
+          )
+        else
+          implicit_rollback_plan(current_target, ordered)
+        end
+      end
+      private :rollback_plan
+
+      def explicit_rollback_plan(logical, current_target:, ordered:, destination:, expected_current:)
+        ensure_older_rollback_target!(expected_current, destination, ordered) if expected_current != destination
+        return unchanged_rollback_plan(current_target, :already_at_destination) if current_target == destination
+
+        ensure_expected_rollback_target!(logical, current_target, expected_current, destination) if expected_current
+        ensure_older_rollback_target!(current_target, destination, ordered)
+        changed_rollback_plan(destination)
+      end
+      private :explicit_rollback_plan
+
+      def expected_rollback_plan(logical, current_target:, ordered:, expected_current:)
+        destination = previous_rollback_target!(expected_current, ordered)
+        return unchanged_rollback_plan(current_target, :already_at_destination) if current_target == destination
+
+        ensure_expected_rollback_target!(logical, current_target, expected_current, destination)
+        changed_rollback_plan(destination)
+      end
+      private :expected_rollback_plan
+
+      def implicit_rollback_plan(current_target, ordered)
+        return unchanged_rollback_plan(current_target, :current_not_newest) if current_target != ordered.first
+
+        changed_rollback_plan(previous_rollback_target!(current_target, ordered))
+      end
+      private :implicit_rollback_plan
+
+      def previous_rollback_target!(source, ordered)
+        destination = ordered[ordered.index(source).to_i + 1]
+        return destination if destination
+
+        raise ArgumentError, 'No previous physical available for rollback; retention keep_last may be 0'
+      end
+      private :previous_rollback_target!
+
+      def ensure_expected_rollback_target!(logical, current_target, expected_current, destination)
+        return if current_target == expected_current
+
+        raise RollbackConflict,
+              "Rollback conflict for '#{logical}': expected alias '#{expected_current}', " \
+              "found '#{current_target}' (destination '#{destination}')"
+      end
+      private :ensure_expected_rollback_target!
+
+      def ensure_older_rollback_target!(source, destination, ordered)
+        return unless source
+        return if ordered.index(destination) > ordered.index(source)
+
+        raise ArgumentError,
+              "Rollback destination '#{destination}' must be older than source '#{source}'"
+      end
+      private :ensure_older_rollback_target!
+
+      def changed_rollback_plan(destination)
+        { new_target: destination, changed: true, action: :rollback, reason: nil }
+      end
+      private :changed_rollback_plan
+
+      def unchanged_rollback_plan(current_target, reason)
+        { new_target: current_target, changed: false, action: :already_rolled_back, reason: reason }
+      end
+      private :unchanged_rollback_plan
+
+      def instrument_rollback(logical, previous_target, plan, start_ms)
+        return unless defined?(ActiveSupport::Notifications)
+
+        SearchEngine::Instrumentation.instrument(
+          'search_engine.schema.rollback',
+          logical: logical,
+          new_target: plan[:new_target],
+          previous_target: previous_target,
+          alias_swapped: plan[:changed],
+          action: plan[:action],
+          reason: plan[:reason],
+          duration_ms: (monotonic_ms - start_ms)
+        ) {}
+      end
+      private :instrument_rollback
+
+      def rollback_result(logical, previous_target, plan)
+        {
+          logical: logical,
+          new_target: plan[:new_target],
+          previous_target: previous_target,
+          action: plan[:action],
+          changed: plan[:changed],
+          reason: plan[:reason]
+        }
+      end
+      private :rollback_result
 
       # Attempt to update the collection schema in-place (PATCH) if the changes are compatible.
       #

@@ -77,6 +77,12 @@ class ConfigDefaultsTest < Minitest::Test
     assert_nil h[:drain_job_max_runtime_s]
   end
 
+  def test_postgres_outbox_search_cache_invalidation_defaults_to_disabled
+    config = SearchEngine::Config.new
+
+    assert_equal false, config.to_h.dig(:postgres_outbox, :clear_cache_after_write)
+  end
+
   def test_postgres_outbox_config_mutation
     cfg = SearchEngine::Config.new
     processor = ->(event) { event }
@@ -149,12 +155,14 @@ class ConfigDefaultsTest < Minitest::Test
     cfg.postgres_outbox.drain_target_parallelism = 3
     cfg.postgres_outbox.drain_job_max_batches = 5
     cfg.postgres_outbox.drain_job_max_runtime_s = 45
+    cfg.postgres_outbox.clear_cache_after_write = true
 
     h = cfg.to_h.fetch(:postgres_outbox)
 
     assert_equal 3, h[:drain_target_parallelism]
     assert_equal 5, h[:drain_job_max_batches]
     assert_equal 45, h[:drain_job_max_runtime_s]
+    assert_equal true, h[:clear_cache_after_write]
   end
 
   def test_configure_yields_and_returns_config

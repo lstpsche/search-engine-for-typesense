@@ -316,7 +316,161 @@ class SchemaLifecycleTest < Minitest::Test
     res = SearchEngine::Schema.rollback(Product, client: client)
     assert_equal('products_lifecycle', res[:logical])
     assert_equal('products_lifecycle_20250101_000001_001', res[:new_target])
+    assert_equal :rollback, res[:action]
+    assert res[:changed]
     assert_equal([%w[products_lifecycle products_lifecycle_20250101_000001_001]], client.upserts)
+  end
+
+  def test_rollback_wraps_resolution_and_alias_swap_in_around_rebuild
+    newest, previous = rollback_physicals
+    client = FakeClient.new(collections: physical_collections(newest, previous), alias_target: newest)
+    timeline = []
+    SearchEngine.config.schema.around_rebuild = lambda do |collection:, &rollback|
+      assert_equal 'products_lifecycle', collection
+      assert_empty client.upserts
+      timeline << :guard_entered
+      result = rollback.call
+      timeline << :guard_exited
+      result
+    end
+
+    result = SearchEngine::Schema.rollback(Product, client: client)
+
+    assert_equal %i[guard_entered guard_exited], timeline
+    assert_equal previous, result[:new_target]
+    assert_equal [['products_lifecycle', previous]], client.upserts
+  end
+
+  def test_rollback_guard_error_prevents_alias_swap
+    newest, previous = rollback_physicals
+    client = FakeClient.new(collections: physical_collections(newest, previous), alias_target: newest)
+    guard_error = RuntimeError.new('cutover unavailable')
+    SearchEngine.config.schema.around_rebuild = ->(**) { raise guard_error }
+
+    raised = assert_raises(RuntimeError) { SearchEngine::Schema.rollback(Product, client: client) }
+
+    assert_same guard_error, raised
+    assert_equal newest, client.alias_target
+    assert_empty client.upserts
+  end
+
+  def test_implicit_rollback_retry_is_a_non_toggling_noop
+    newest, previous = rollback_physicals
+    client = FakeClient.new(collections: physical_collections(newest, previous), alias_target: newest)
+
+    first = SearchEngine::Schema.rollback(Product, client: client)
+    retry_result = SearchEngine::Schema.rollback(Product, client: client)
+
+    assert first[:changed]
+    refute retry_result[:changed]
+    assert_equal :already_rolled_back, retry_result[:action]
+    assert_equal :current_not_newest, retry_result[:reason]
+    assert_equal previous, retry_result[:new_target]
+    assert_equal [['products_lifecycle', previous]], client.upserts
+  end
+
+  def test_explicit_cas_rollback_is_idempotent_even_with_a_newer_orphan
+    orphan = 'products_lifecycle_20250103_000001_001'
+    source = 'products_lifecycle_20250102_000001_001'
+    destination = 'products_lifecycle_20250101_000001_001'
+    client = FakeClient.new(
+      collections: physical_collections(orphan, source, destination),
+      alias_target: source
+    )
+
+    first = SearchEngine::Schema.rollback(
+      Product,
+      client: client,
+      to: destination,
+      expected_current: source
+    )
+    retry_result = SearchEngine::Schema.rollback(
+      Product,
+      client: client,
+      to: destination,
+      expected_current: source
+    )
+
+    assert first[:changed]
+    refute retry_result[:changed]
+    assert_equal :already_at_destination, retry_result[:reason]
+    assert_equal destination, client.alias_target
+    assert_equal [['products_lifecycle', destination]], client.upserts
+  end
+
+  def test_expected_current_without_explicit_destination_is_retry_safe
+    orphan = 'products_lifecycle_20250103_000001_001'
+    source, destination = rollback_physicals
+    client = FakeClient.new(
+      collections: physical_collections(orphan, source, destination),
+      alias_target: source
+    )
+
+    first = SearchEngine::Schema.rollback(Product, client: client, expected_current: source)
+    retry_result = SearchEngine::Schema.rollback(Product, client: client, expected_current: source)
+
+    assert first[:changed]
+    refute retry_result[:changed]
+    assert_equal destination, retry_result[:new_target]
+    assert_equal [['products_lifecycle', destination]], client.upserts
+  end
+
+  def test_explicit_rollback_rejects_cas_conflict_without_swapping
+    newest = 'products_lifecycle_20250103_000001_001'
+    expected = 'products_lifecycle_20250102_000001_001'
+    destination = 'products_lifecycle_20250101_000001_001'
+    client = FakeClient.new(
+      collections: physical_collections(newest, expected, destination),
+      alias_target: newest
+    )
+
+    error = assert_raises(SearchEngine::Schema::RollbackConflict) do
+      SearchEngine::Schema.rollback(
+        Product,
+        client: client,
+        to: destination,
+        expected_current: expected
+      )
+    end
+
+    assert_match(/expected alias '#{expected}', found '#{newest}'/, error.message)
+    assert_equal newest, client.alias_target
+    assert_empty client.upserts
+  end
+
+  def test_explicit_rollback_rejects_newer_and_unknown_destinations
+    newest, previous = rollback_physicals
+    client = FakeClient.new(collections: physical_collections(newest, previous), alias_target: previous)
+
+    newer_error = assert_raises(ArgumentError) do
+      SearchEngine::Schema.rollback(Product, client: client, to: newest)
+    end
+    unknown_error = assert_raises(ArgumentError) do
+      SearchEngine::Schema.rollback(Product, client: client, to: 'products_lifecycle_20241231_000001_001')
+    end
+
+    assert_match(/must be older/, newer_error.message)
+    assert_match(/is not a retained physical/, unknown_error.message)
+    assert_equal previous, client.alias_target
+    assert_empty client.upserts
+  end
+
+  def test_rollback_rejects_missing_or_unretained_current_alias
+    newest, previous = rollback_physicals
+    collections = physical_collections(newest, previous)
+
+    missing_alias = FakeClient.new(collections: collections, alias_target: nil)
+    missing_error = assert_raises(ArgumentError) do
+      SearchEngine::Schema.rollback(Product, client: missing_alias)
+    end
+
+    missing_physical = FakeClient.new(collections: collections, alias_target: 'products_lifecycle_missing')
+    unretained_error = assert_raises(ArgumentError) do
+      SearchEngine::Schema.rollback(Product, client: missing_physical)
+    end
+
+    assert_match(/has no alias target/, missing_error.message)
+    assert_match(/is not a retained physical/, unretained_error.message)
   end
 
   def test_rollback_raises_when_no_previous
@@ -324,6 +478,21 @@ class SchemaLifecycleTest < Minitest::Test
     client = FakeClient.new(collections: names, alias_target: 'products_lifecycle_20250101_000001_001')
     assert_raises(ArgumentError) { SearchEngine::Schema.rollback(Product, client: client) }
   end
+
+  private
+
+  def rollback_physicals
+    %w[
+      products_lifecycle_20250102_000001_001
+      products_lifecycle_20250101_000001_001
+    ]
+  end
+
+  def physical_collections(*names)
+    names.flatten.map { |name| { name: name } }
+  end
+
+  public
 
   def test_reindex_failure_cleans_up_physical
     client = FakeClient.new(collections: [], alias_target: nil)

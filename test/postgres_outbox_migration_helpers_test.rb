@@ -193,11 +193,29 @@ class PostgresOutboxMigrationHelpersTest < Minitest::Test
     assert_includes sql, "jsonb_build_object('trigger_operation', TG_OP)"
     assert_includes sql, 'PERFORM pg_notify('
     assert_includes sql, "'search_engine_outbox'"
-    assert_includes sql, "'id', event_id"
-    assert_includes sql, "'table', TG_TABLE_NAME"
+    refute_includes sql, 'event_id bigint'
+    refute_includes sql, 'RETURNING id INTO event_id'
+    refute_includes sql, "'id', event_id"
+    assert_includes sql, "'table', 'products'"
     assert_includes sql, "'collection', 'products'"
     assert_includes sql, "RETURN OLD;\n"
     assert_includes sql, "RETURN NEW;\n"
+  end
+
+  def test_replace_search_engine_outbox_trigger_function_does_not_reinstall_the_trigger
+    @migration.replace_search_engine_outbox_trigger_function(
+      :products,
+      source_model: 'Product',
+      collection: 'products'
+    )
+
+    sql = @migration.executed_sql.join("\n")
+
+    assert_includes sql, 'CREATE OR REPLACE FUNCTION "search_engine_outbox_products_fn"()'
+    assert_includes sql, 'INSERT INTO "search_engine_outbox_events"'
+    assert_includes sql, 'PERFORM pg_notify('
+    refute_includes sql, 'DROP TRIGGER'
+    refute_includes sql, 'CREATE TRIGGER'
   end
 
   def test_create_search_engine_outbox_trigger_quotes_names_and_literals

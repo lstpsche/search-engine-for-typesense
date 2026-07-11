@@ -227,7 +227,8 @@ available.
 ## Guarded blue/green cutovers
 
 `SearchEngine::Schema.apply!` can run an optional guard around the complete full-rebuild lifecycle: physical
-collection creation, indexing, alias swap, and retention. In-place schema updates intentionally do not invoke
+collection creation, indexing, alias swap, and retention. `SearchEngine::Schema.rollback` uses the same guard
+around target resolution, validation, and its alias swap. In-place schema updates intentionally do not invoke
 the guard. The guard must yield exactly once; not yielding or yielding repeatedly raises `ArgumentError`.
 Guard errors and indexing errors propagate, and an interrupted pre-swap physical collection is still cleaned
 up.
@@ -278,6 +279,31 @@ collection processors must follow the same rule: a stale worker whose HTTP reque
 must only be able to mutate the retired physical collection, never whichever physical collection the logical alias
 points to after a later cutover.
 
+Rollback is conservative and retry-safe. The backward-compatible form rolls back one generation only when the
+alias points at the newest retained physical; once it no longer does, repeating the call returns
+`action: :already_rolled_back` without another swap. When newer orphaned physicals exist, or when an operator
+needs an auditable destination, pass the retained target explicitly. Add `expected_current` for compare-and-swap
+protection:
+
+```ruby
+SearchEngine::Schema.rollback(
+  SearchEngine::Product,
+  to: "products_20250101_000000_001",
+  expected_current: "products_20250102_000000_001"
+)
+```
+
+The equivalent task remains backward compatible and also accepts both safety arguments:
+
+```sh
+rails 'search_engine:schema:rollback[products]'
+rails 'search_engine:schema:rollback[products,products_20250101_000000_001,products_20250102_000000_001]'
+```
+
+An explicit destination must be a retained physical older than the current/expected source. Retrying after the
+alias already reached that destination is a successful no-op. Any other expected-current mismatch raises
+`SearchEngine::Schema::RollbackConflict` without changing the alias.
+
 This protocol only gates delivery-target claims. Legacy single-target event claims have no target identity and
 must be stopped before a rebuild. Likewise, an unguarded direct writer can still cross the swap. In
 delivery-target mode, `reset_stale_processing!` rejects standalone use because reset without same-transaction
@@ -305,7 +331,9 @@ The flow is:
 
 1. A row-level PostgreSQL trigger writes a durable outbox row in the same transaction as the source table
    change.
-2. The trigger calls `pg_notify` as a low-latency nudge after commit.
+2. The trigger calls `pg_notify` as a low-latency nudge after commit. Its payload is constant for a given
+   source table and collection, so PostgreSQL can fold repeated row-level notifications from one transaction
+   into a single wakeup.
 3. A host-managed listener receives notifications, or falls back to polling, and enqueues
    `SearchEngine::PostgresOutbox::DrainJob`.
 4. The drainer claims pending rows, coalesces older rows for the same collection/document pair, orders
@@ -336,6 +364,7 @@ SearchEngine.configure do |c|
   c.postgres_outbox.drain_target_parallelism = 1
   c.postgres_outbox.drain_job_max_batches = 1
   c.postgres_outbox.drain_job_max_runtime_s = nil
+  c.postgres_outbox.clear_cache_after_write = false
   c.postgres_outbox.poll_interval_s = 5
   c.postgres_outbox.retention_s = 7.days.to_i
 
@@ -352,9 +381,27 @@ SearchEngine.configure do |c|
 end
 ```
 
+When an upgrade changes only generated trigger-function behavior, migrations can call
+`replace_search_engine_outbox_trigger_function` with the same arguments used to create the trigger. It runs
+`CREATE OR REPLACE FUNCTION` without dropping and reattaching the existing trigger, avoiding unnecessary
+table-level trigger DDL locks. The trigger must already exist.
+
 `batch_size` is the global fallback for all collections. Use `batch_sizes` when some collections are much
 lighter or heavier than others. Omitted drain limits use the per-collection values; explicit `limit:`
 arguments still override the map and use one global cap for that drain.
+
+When searches set `use_cache`, enable `clear_cache_after_write` if incremental
+writes must be visible before their outbox rows are acknowledged. The drainer
+clears Typesense's server-side search cache once after each processed
+collection group and before database acknowledgement. If cache clearing fails,
+the group remains retryable and its idempotent document writes are replayed.
+The option defaults to `false` so hosts that do not use server-side search
+caching do not add an unnecessary API call.
+
+In delivery-target mode, a claim can contain several dependency-ordered collection groups. The drainer renews
+all unstarted fenced leases before each group and removes any delivery it no longer owns before calling the
+processor. Hosts must still size each individual collection group so its worst-case Typesense retry sequence
+fits below `processing_timeout_s`; renewal protects later groups, not an unbounded current group.
 
 Generate and edit the migrations:
 

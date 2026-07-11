@@ -160,8 +160,8 @@ SearchEngine.configure do |c|
   # Retention: how many previous physical collections to keep after swap. Default: 0
   # c.schema.retention.keep_last = 0
 
-  # Optional guard around full physical create/index/alias-swap/retention rebuilds. Default: nil.
-  # In-place schema updates do not invoke it. The callable must yield exactly once.
+  # Optional guard around full physical create/index/alias-swap/retention rebuilds and alias rollbacks.
+  # Default: nil. In-place schema updates do not invoke it. The callable must yield exactly once.
   # Delivery-target hosts can use Repository#with_delivery_target_claims_paused here; every direct
   # Typesense writer must also use Repository#with_delivery_target_writes_allowed with the same target key.
   # c.schema.around_rebuild = lambda do |collection:, &rebuild|
@@ -172,6 +172,11 @@ SearchEngine.configure do |c|
   #     &rebuild
   #   )
   # end
+
+  # When searches use Typesense's server-side cache, opt in to clearing it
+  # after each successfully processed outbox collection group and before the
+  # group is acknowledged. Default: false.
+  # c.postgres_outbox.clear_cache_after_write = false
 
   # --- Indexer -------------------------------------------------------------
   # See: https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/indexer

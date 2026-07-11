@@ -1,5 +1,24 @@
 # Changelog
 
+## 30.1.8.23
+
+- Run retained-physical alias rollbacks through the same cutover guard. Rollback accepts explicit destination
+  and expected-current compare-and-swap targets, validates older retained physicals, and makes legacy retries a
+  conservative no-op instead of toggling the alias forward again.
+- Make row-trigger notification payloads constant per source table and collection so PostgreSQL folds repeated
+  notifications from one transaction into one low-latency wakeup. Durable event identity remains in the outbox
+  table, which continues to be the source of truth.
+- Add `replace_search_engine_outbox_trigger_function` for forward migrations that only need to refresh generated
+  function bodies, without dropping triggers or taking avoidable trigger DDL locks on source tables.
+- Renew target-scoped delivery leases before every dependency-ordered collection group. Deliveries whose fenced
+  lease cannot be renewed are never passed to a processor, so slow earlier groups cannot consume the lease budget
+  of later groups in the same claim.
+- Add opt-in `postgres_outbox.clear_cache_after_write` invalidation. Enabled hosts clear Typesense's server-side
+  search cache before acknowledging each processed collection group; a clear failure keeps the group retryable.
+
+No database migration is added by this release. Existing PostgreSQL outbox delivery/slot migrations remain
+compatible.
+
 ## 30.1.8.22
 
 - Add `schema.around_rebuild`, an exact-once guard around full physical create/index/alias-swap/retention

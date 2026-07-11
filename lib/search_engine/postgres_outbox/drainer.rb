@@ -3,6 +3,7 @@
 require 'socket'
 require 'securerandom'
 require 'set'
+require 'search_engine/cache'
 
 module SearchEngine
   module PostgresOutbox
@@ -90,7 +91,11 @@ module SearchEngine
       def process_ordered_events(events, summary, lease_owner:)
         grouped = group_by_collection(events)
 
-        grouped.each_with_index do |(collection, collection_events), index|
+        grouped.each_with_index do |(collection, claimed_collection_events), index|
+          collection_events = claimed_collection_events
+          collection_events = renew_remaining_group_leases!(grouped, index, summary)
+          next if collection_events.empty?
+
           result = call_processor(collection, collection_events, lease_owner: lease_owner)
           processed_events = events_for_ids(collection_events, result.processed_event_ids)
           failed_events = events_for_ids(collection_events, result.failed_event_ids)
@@ -106,6 +111,33 @@ module SearchEngine
           mark_remaining_retryable(grouped[(index + 1)..], summary)
           break
         end
+      end
+
+      # A target claim can contain several dependency-ordered collection groups.
+      # Refresh all work that has not started before each group, then refuse to
+      # call a processor for any delivery whose fenced lease was not renewed.
+      # Host processors must still bound one collection group below the configured
+      # processing timeout; this prevents earlier groups from consuming the lease
+      # budget of later groups.
+      def renew_remaining_group_leases!(grouped, index, summary)
+        current_events = grouped.fetch(index).last
+        return current_events unless target_key
+
+        remaining_groups = grouped[index..]
+        remaining_events = remaining_groups.flat_map(&:last)
+        renewed_ids = repository.renew_leases!(remaining_events)
+        renewed_keys = Set.new(Array(renewed_ids).map(&:to_s))
+        stale_count = 0
+
+        remaining_groups.each do |group|
+          group_events = group.last
+          before = group_events.size
+          group_events.select! { |event| renewed_keys.include?(event.id.to_s) }
+          stale_count += before - group_events.size
+        end
+
+        summary[:stale] += stale_count
+        grouped.fetch(index).last
       end
 
       def group_by_collection(events)
@@ -126,7 +158,20 @@ module SearchEngine
 
       def call_processor(collection, events, lease_owner:)
         result = processor_for(collection).call(events: events, context: processor_context(lease_owner))
-        normalize_result(result, events)
+        result = normalize_result(result, events)
+        clear_search_cache_after_write!
+        result
+      end
+
+      # Typesense search-cache entries are not part of the durable outbox
+      # acknowledgement. When the host opts in, invalidate them after the
+      # processor returns but before any event is acknowledged. A cache-clear
+      # failure therefore retries the idempotent document writes instead of
+      # reporting convergence that clients cannot observe yet.
+      def clear_search_cache_after_write!
+        return unless SearchEngine.config.postgres_outbox.clear_cache_after_write
+
+        SearchEngine::Cache.clear
       end
 
       def processor_for(collection)

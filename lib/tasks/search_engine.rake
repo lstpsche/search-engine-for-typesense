@@ -98,8 +98,8 @@ namespace :search_engine do
       Kernel.exit(1)
     end
 
-    desc "Rollback schema alias to previous retained physical. Usage: rails 'search_engine:schema:rollback[collection]'"
-    task :rollback, [:collection] => :environment do |_t, args|
+    desc "Guarded alias rollback. Usage: rails 'search_engine:schema:rollback[collection,to,expected_current]'"
+    task :rollback, %i[collection to expected_current] => :environment do |_t, args|
       begin
         klass = SearchEngine::Cli.resolve_collection!(args[:collection])
       rescue ArgumentError => error
@@ -110,12 +110,18 @@ namespace :search_engine do
 
       payload = {
         task: 'schema:rollback',
-        collection: (klass.respond_to?(:collection) ? klass.collection : klass.name)
-      }
+        collection: (klass.respond_to?(:collection) ? klass.collection : klass.name),
+        destination: args[:to],
+        expected_current: args[:expected_current]
+      }.compact
       summary = nil
       begin
         SearchEngine::Cli.with_task_instrumentation('schema:rollback', payload) do
-          summary = SearchEngine::Schema.rollback(klass)
+          summary = SearchEngine::Schema.rollback(
+            klass,
+            to: args[:to],
+            expected_current: args[:expected_current]
+          )
         end
       rescue ArgumentError => error
         warn("schema:rollback not possible: #{error.message}")
@@ -128,6 +134,7 @@ namespace :search_engine do
         puts("Logical: #{summary[:logical]}")
         puts("New target: #{summary[:new_target]}")
         puts("Previous target: #{summary[:previous_target] || 'none'}")
+        puts("Action: #{summary[:action]}")
       end
 
       Kernel.exit(0)
@@ -505,16 +512,19 @@ namespace :search_engine do
       Usage:
         rails 'search_engine:schema:diff[collection]'
         rails 'search_engine:schema:apply[collection]'
-        rails 'search_engine:schema:rollback[collection]'
+        rails 'search_engine:schema:rollback[collection,to,expected_current]'
 
       Examples:
         rails 'search_engine:schema:diff[SearchEngine::Product]'
         rails 'search_engine:schema:apply[products]'
         FORCE_REBUILD=true rails 'search_engine:schema:apply[products]'
         rails 'search_engine:schema:rollback[products]'
+        rails 'search_engine:schema:rollback[products,products_20250101_000000_001,products_20250102_000000_001]'
 
       Tips:
         - FORCE_REBUILD=true forces the guarded physical create/reindex/swap lifecycle even when schema is current.
+        - Explicit rollback targets are compare-and-swap safe when expected_current is supplied.
+        - Repeating a successful rollback is a no-op; use an explicit target when newer orphaned physicals exist.
         - Quote rake tasks with brackets to avoid shell globbing (e.g., zsh):
           rails 'search_engine:index:rebuild_partition[SearchEngine::Product,42]'
     USAGE

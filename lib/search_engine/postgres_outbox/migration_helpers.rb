@@ -168,7 +168,43 @@ module SearchEngine
           document_id_sql: document_id_sql,
           operations: normalized_operations,
           channel: channel,
-          outbox_table: outbox_table
+          outbox_table: outbox_table,
+          install_trigger: true
+        )
+      end
+
+      # Replace only the function body used by an existing SearchEngine outbox trigger.
+      #
+      # This avoids dropping and recreating the trigger when a migration only needs to update
+      # generated function behavior, and therefore avoids taking a table-level trigger DDL lock.
+      # The trigger must already exist.
+      #
+      # @see #create_search_engine_outbox_trigger for parameter documentation
+      # @return [void]
+      def replace_search_engine_outbox_trigger_function(
+        table_name,
+        source_model:,
+        collection:,
+        record_id_sql: nil,
+        document_id_sql: nil,
+        operations: %i[insert update delete],
+        channel: SearchEngine.config.postgres_outbox.channel,
+        outbox_table: SearchEngine.config.postgres_outbox.table_name
+      )
+        normalized_operations = normalize_search_engine_outbox_operations(operations)
+        record_id_sql ||= 'record_data.id::text'
+        document_id_sql ||= record_id_sql
+
+        execute search_engine_outbox_trigger_sql(
+          table_name: table_name,
+          source_model: source_model,
+          collection: collection,
+          record_id_sql: record_id_sql,
+          document_id_sql: document_id_sql,
+          operations: normalized_operations,
+          channel: channel,
+          outbox_table: outbox_table,
+          install_trigger: false
         )
       end
 
@@ -197,20 +233,20 @@ module SearchEngine
         document_id_sql:,
         operations:,
         channel:,
-        outbox_table:
+        outbox_table:,
+        install_trigger:
       )
         names = search_engine_outbox_trigger_names(table_name)
         quoted_outbox_table = connection.quote_table_name(outbox_table)
         quoted_function_name = connection.quote_table_name(names.fetch(:function))
 
-        <<~SQL
+        function_sql = <<~SQL
           CREATE OR REPLACE FUNCTION #{quoted_function_name}()
           RETURNS trigger
           LANGUAGE plpgsql
           AS $$
           DECLARE
             record_data record;
-            event_id bigint;
             event_operation text;
           BEGIN
             IF TG_OP = 'DELETE' THEN
@@ -244,14 +280,12 @@ module SearchEngine
               jsonb_build_object('trigger_operation', TG_OP),
               CURRENT_TIMESTAMP,
               CURRENT_TIMESTAMP
-            )
-            RETURNING id INTO event_id;
+            );
 
             PERFORM pg_notify(
               #{connection.quote(channel.to_s)},
               json_build_object(
-                'id', event_id,
-                'table', TG_TABLE_NAME,
+                'table', #{connection.quote(table_name.to_s)},
                 'collection', #{connection.quote(collection.to_s)}
               )::text
             );
@@ -263,7 +297,12 @@ module SearchEngine
             RETURN NEW;
           END;
           $$;
+        SQL
 
+        return function_sql unless install_trigger
+
+        <<~SQL
+          #{function_sql}
           #{search_engine_outbox_create_trigger_sql(
             names: names,
             table_name: table_name,
