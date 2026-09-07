@@ -8,9 +8,9 @@ Mountless Rails::Engine for [Typesense](https://typesense.org). Expressive Relat
 
 ## Versioning
 
-The gem version mirrors the Typesense server major/minor it targets. Patch releases are reserved for gem-only fixes and enhancements.
+Versions use `{typesense_major}.{gem_minor}.{gem_patch}`. The first component identifies the targeted Typesense server major version; the remaining components track gem enhancements and fixes independently of Typesense minor releases.
 
-Example: `30.1.x` targets Typesense `30.1`.
+Example: `30.8.24` targets Typesense `30.x`. Typesense minor versions are not encoded in the gem version.
 
 ## Quickstart
 

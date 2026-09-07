@@ -1,5 +1,10 @@
 # Changelog
 
+## 30.8.24
+
+- Adopt `{typesense_major}.{gem_minor}.{gem_patch}` versioning, omitting the Typesense minor component.
+- Include the same runtime fixes as 30.1.8.24; no additional runtime behavior changes.
+
 ## 30.1.8.24
 
 - Preserve caller transactions during PostgreSQL streaming by rejecting active transactions before opening a cursor.
