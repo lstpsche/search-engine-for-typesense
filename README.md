@@ -26,6 +26,7 @@ SearchEngine.configure do |c|
   c.port = 8108
   c.protocol = "http"
   c.api_key = ENV.fetch("TYPESENSE_API_KEY")
+  c.default_infix = "off"
 end
 ```
 
@@ -33,10 +34,10 @@ end
 class SearchEngine::Product < SearchEngine::Base
   collection :products
 
-  attribute :id, :integer
+  identify_by :id
   attribute :name, :string
 
-  query_by %i[name brand description]
+  query_by :name
 end
 
 SearchEngine::Product.where(name: "milk").select(:id, :name).limit(5).to_a
@@ -58,22 +59,50 @@ SearchEngine.configure do |c|
 end
 ```
 
+SQL sources stream PostgreSQL queries in their own read-only transaction. Start streaming
+outside an existing transaction; an active transaction is rejected before cursor SQL runs.
+The configured statement timeout applies only to the streaming transaction.
+
+Joined filters execute as native Typesense joins and require valid collection references.
+Search configuration and missing-reference errors propagate to callers; they do not
+produce empty results or trigger client-side joins.
+
 ## Usage examples
 
 ```ruby
-# Model
+# Models (the source objects below are the host application's ActiveRecord models)
+class SearchEngine::Brand < SearchEngine::Base
+  collection "brands"
+  identify_by :id
+  attribute :name, :string
+  query_by :name
+end
+
 class SearchEngine::Product < SearchEngine::Base
   collection "products"
 
-  attribute :id, :integer
+  identify_by :id
   attribute :name, :string
+  attribute :price_cents, :integer, sort: true
+  attribute :brand_id, :string, facet: true
+  attribute :category, :string, facet: true
+  belongs_to :brands, collection: "brands", local_key: :brand_id, foreign_key: :id
+  query_by :name
+
+  index do
+    source :active_record, model: ::Product
+    map do |record|
+      { name: record.name, price_cents: record.price_cents,
+        brand_id: record.brand_id.to_s, category: record.category }
+    end
+  end
 end
 
 # Basic query
 SearchEngine::Product
   .where(name: "milk")
   # Explicit query_by always wins over model/global defaults
-  .options(query_by: 'name,brand')
+  .options(query_by: 'name')
   .select(:id, :name)
   .order(price_cents: :asc)
   .limit(5)
@@ -95,7 +124,7 @@ rel = SearchEngine::Product
 params = rel.to_h # compiled Typesense params
 
 # Multi-search
-result_set = SearchEngine.multi_search(common: { query_by: SearchEngine.config.default_query_by }) do |m|
+result_set = SearchEngine.multi_search(common: { query_by: "name" }) do |m|
   m.add :products, SearchEngine::Product.where("name:~rud").per(10)
   m.add :brands,   SearchEngine::Brand.all.per(5)
 end

@@ -56,6 +56,7 @@ class PostgresOutboxDrainJobTest < Minitest::Test
 
   def setup
     @previous_adapter = ActiveJob::Base.queue_adapter
+    ActiveJob::Base.queue_adapter = :test
     @previous_enabled = SearchEngine.config.postgres_outbox.enabled
     @previous_queue_name = SearchEngine.config.postgres_outbox.queue_name
     @previous_batch_size = SearchEngine.config.postgres_outbox.batch_size

@@ -26,8 +26,8 @@ module SearchEngine
         @binds = binds
         cfg = SearchEngine.config.sources.sql
         @fetch_size = (fetch_size || cfg.fetch_size).to_i
-        @row_shape = row_shape || :auto
-        @statement_timeout_ms = statement_timeout_ms
+        @row_shape = row_shape || cfg.row_shape
+        @statement_timeout_ms = statement_timeout_ms || cfg.statement_timeout_ms
       end
 
       # Iterate over batches produced by the SQL query.
@@ -38,9 +38,9 @@ module SearchEngine
       def each_batch(partition: nil, cursor: nil, &block)
         return enum_for(:each_batch, partition: partition, cursor: cursor) unless block_given?
 
-        run_with_connection do
-          if postgres_connection?(ActiveRecord::Base.connection.raw_connection)
-            stream_postgres(ActiveRecord::Base.connection.raw_connection, partition: partition, cursor: cursor, &block)
+        run_with_connection do |conn|
+          if postgres_connection?(conn)
+            stream_postgres(conn, partition: partition, cursor: cursor, &block)
           else
             stream_generic(nil, partition: partition, cursor: cursor, &block)
           end
@@ -78,13 +78,17 @@ module SearchEngine
       end
 
       def stream_postgres(conn, partition:, cursor:)
+        unless conn.transaction_status.zero?
+          raise SearchEngine::Errors::InvalidParams,
+                'SqlSource streaming requires a connection without an active transaction'
+        end
+
         cursor_name = "se_cursor_#{object_id}"
         sql, params = build_sql_and_params(partition: partition, cursor: cursor)
         started = monotonic_ms
+        conn.exec('BEGIN READ ONLY')
         begin
           set_statement_timeout(conn, @statement_timeout_ms) if @statement_timeout_ms
-          # Use unnamed prepared statement + DECLARE CURSOR for streaming
-          conn.exec('BEGIN READ ONLY')
           conn.exec_params("DECLARE #{cursor_name} NO SCROLL CURSOR FOR #{sql}", params)
           idx = 0
           loop do
@@ -101,18 +105,10 @@ module SearchEngine
             idx += 1
             started = monotonic_ms
           end
+          conn.exec("CLOSE #{cursor_name}")
+          conn.exec('COMMIT')
         ensure
-          begin
-            conn.exec("CLOSE #{cursor_name}")
-          rescue StandardError
-            # ignore
-          end
-          begin
-            conn.exec('COMMIT')
-          rescue StandardError
-            # ignore
-          end
-          reset_statement_timeout(conn) if @statement_timeout_ms
+          conn.exec('ROLLBACK') unless conn.transaction_status.zero?
         end
       end
 
@@ -181,15 +177,7 @@ module SearchEngine
       end
 
       def set_statement_timeout(conn, ms)
-        conn.exec_params('SET LOCAL statement_timeout = $1', [Integer(ms)])
-      rescue StandardError
-        # ignore
-      end
-
-      def reset_statement_timeout(conn)
-        conn.exec('RESET statement_timeout')
-      rescue StandardError
-        # ignore
+        conn.exec_params("SELECT set_config('statement_timeout', $1, true)", [Integer(ms).to_s])
       end
     end
   end

@@ -7,6 +7,7 @@
 # - https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/vector-search
 class SearchEngine::<%= class_name %> < SearchEngine::Base
   collection "<%= @collection_name %>"
+  identify_by :id
 <% Array(@attributes).each do |(name, type)| -%>
   attribute :<%= name %>, :<%= type %>
 <% end -%>

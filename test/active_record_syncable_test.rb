@@ -15,10 +15,12 @@ class ActiveRecordSyncableTest < Minitest::Test
 
         %i[
           after_create after_update after_destroy
-          after_create_commit after_update_commit after_destroy_commit
+          after_commit after_destroy_commit
         ].each do |cb|
-          define_method(cb) do |method_name|
-            @__registered_callbacks__ << [cb, method_name]
+          define_method(cb) do |method_name, **options|
+            entry = [cb, method_name]
+            entry << options unless options.empty?
+            @__registered_callbacks__ << entry
           end
         end
       end
@@ -32,8 +34,7 @@ class ActiveRecordSyncableTest < Minitest::Test
     SearchEngine::ActiveRecordSyncable.__register_callbacks_for(mock_klass, cfg)
 
     callbacks = mock_klass.__registered_callbacks__
-    assert_includes callbacks, %i[after_create_commit __se_syncable_upsert!]
-    assert_includes callbacks, %i[after_update_commit __se_syncable_upsert!]
+    assert_includes callbacks, [:after_commit, :__se_syncable_upsert!, { on: %i[create update] }]
     assert_includes callbacks, %i[after_destroy_commit __se_syncable_delete!]
 
     refute(callbacks.any? { |cb, _| cb == :after_create })
@@ -52,8 +53,7 @@ class ActiveRecordSyncableTest < Minitest::Test
     assert_equal %i[create update destroy], cfg[:actions]
 
     callbacks = mock_klass.__registered_callbacks__
-    assert_includes callbacks, %i[after_create_commit __se_syncable_upsert!]
-    assert_includes callbacks, %i[after_update_commit __se_syncable_upsert!]
+    assert_includes callbacks, [:after_commit, :__se_syncable_upsert!, { on: %i[create update] }]
     assert_includes callbacks, %i[after_destroy_commit __se_syncable_delete!]
   end
 
@@ -121,7 +121,7 @@ class ActiveRecordSyncableTest < Minitest::Test
 
     callbacks = mock_klass.__registered_callbacks__
     assert_equal 1, callbacks.size
-    assert_includes callbacks, %i[after_create_commit __se_syncable_upsert!]
+    assert_includes callbacks, [:after_commit, :__se_syncable_upsert!, { on: [:create] }]
   end
 
   def test_guard_against_double_install

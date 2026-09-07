@@ -1,5 +1,17 @@
 # Changelog
 
+## 30.1.8.24
+
+- Preserve caller transactions during PostgreSQL streaming by rejecting active transactions before opening a cursor.
+  Apply statement timeouts inside the streaming transaction and restore connection settings on completion or failure.
+- Synchronize both record creation and updates after commit, and propagate failed custom document identity calculations.
+- Propagate parallel import worker failures and timeouts instead of returning successful summaries for incomplete imports.
+- Execute ID-filtered queries through normal search materialization so text filters, selection, and memoization apply.
+- Use native Typesense joins without incomplete client-side key lookups. Missing references and invalid search
+  configurations now raise errors instead of returning empty results. Existing joins require valid server references.
+- Allow upserts to omit server-generated embeddings and preserve boolean coercions that produce false.
+- Correct generated models, documented declarations, and demo collection references and timestamp mappings.
+
 ## 30.1.8.23
 
 - Run retained-physical alias rollbacks through the same cutover guard. Rollback accepts explicit destination

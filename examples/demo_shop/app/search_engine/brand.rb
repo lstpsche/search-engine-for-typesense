@@ -5,7 +5,7 @@ module SearchEngine
   class Brand < SearchEngine::Base
     collection 'brands'
 
-    attribute :id, :integer
+    identify_by :id
     attribute :name, :string, sort: true
     attribute :updated_at, :datetime
 
@@ -17,7 +17,7 @@ module SearchEngine
         {
           id: r.id,
           name: r.name.to_s,
-          updated_at: r.updated_at&.utc&.iso8601
+          updated_at: r.updated_at.to_i
         }
       end
     end

@@ -161,6 +161,7 @@ module SearchEngine
         # @return [SearchEngine::Indexer::Summary]
         def call_parallel(klass:, into:, enum:, batch_size:, action:, log_batches:, max_parallel:, on_batch: nil)
           require 'concurrent-ruby'
+          require 'search_engine/interruptible_pool'
 
           docs_enum = normalize_enum(enum)
           total_batches_estimate = estimate_total_batches(klass)
@@ -186,7 +187,7 @@ module SearchEngine
             log_batches: log_batches, started_at: started_at, total_estimate: total_batches_estimate
           ) { |err| producer_error = err }
 
-          SearchEngine::InterruptiblePool.run(
+          pool_status = SearchEngine::InterruptiblePool.run(
             pool,
             on_interrupt: -> { interrupt_parallel!(shared_state[:cancelled], batch_queue) }
           ) do
@@ -196,17 +197,18 @@ module SearchEngine
               pool: pool, shared_state: shared_state, max_parallel: max_parallel
             )
           end
-          producer_thread.join if producer_thread.alive?
+          raise SearchEngine::Errors::InvalidParams, 'Parallel import workers timed out' if pool_status == :timed_out
+
+          producer_thread.join
+          raise shared_state[:worker_error] if shared_state[:worker_error]
 
           raise producer_error if producer_error
 
           build_summary(klass, shared_state)
         ensure
-          begin
-            producer_thread&.join(5) if producer_thread&.alive?
-          rescue StandardError
-            nil
-          end
+          shared_state[:cancelled].make_true if shared_state
+          batch_queue&.close
+          producer_thread&.join
         end
 
         # Initialize shared state hash for parallel batch processing.
@@ -267,6 +269,8 @@ module SearchEngine
                          end
               SearchEngine::Logging::Output.puts(SearchEngine::Logging::Color.dim(progress))
             end
+          rescue ClosedQueueError
+            raise unless cancelled.true?
           rescue StandardError => error
             yield error if block_given?
             err_msg = "  Producer failed at batch #{batch_count}: #{error.class}: #{error.message.to_s[0, 200]}"
@@ -327,6 +331,10 @@ module SearchEngine
                   shared_state: shared_state
                 )
               end
+            rescue StandardError => error
+              shared_state[:mtx].synchronize { shared_state[:worker_error] ||= error }
+              cancelled.make_true
+              batch_queue.close
             end
           end
         end

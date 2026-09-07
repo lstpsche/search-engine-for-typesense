@@ -5,13 +5,13 @@ module SearchEngine
   class Book < SearchEngine::Base
     collection 'books'
 
-    attribute :id, :integer
+    identify_by :id
     attribute :title, :string, sort: true
-    attribute :author_id, :integer
+    attribute :author_id, :string
     attribute :author_name, :string
     attribute :updated_at, :datetime
 
-    join :authors, collection: 'authors', local_key: :author_id, foreign_key: :id
+    belongs_to :authors, collection: 'authors', local_key: :author_id, foreign_key: :id
 
     query_by %i[title author_name]
 
@@ -21,9 +21,9 @@ module SearchEngine
         {
           id: r.id,
           title: r.title.to_s,
-          author_id: r.author_id,
+          author_id: r.author_id.to_s,
           author_name: r.author&.full_name.to_s,
-          updated_at: r.updated_at&.utc&.iso8601
+          updated_at: r.updated_at.to_i
         }
       end
     end

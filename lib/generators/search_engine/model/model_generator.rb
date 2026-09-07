@@ -48,12 +48,14 @@ module SearchEngine
         return [] if raw.nil?
 
         tokens = raw.split(/[\s,]+/).map(&:strip).reject(&:empty?)
-        tokens.map do |pair|
+        tokens.filter_map do |pair|
           name, type = pair.split(':', 2)
           raise Thor::Error, "invalid attribute token: #{pair.inspect} (expected name:type)" unless name
 
           type = (type || 'string').to_s
           normalized = normalize_type(type)
+          next if name.to_s.underscore == 'id'
+
           [name.to_s.underscore, normalized]
         end
       end

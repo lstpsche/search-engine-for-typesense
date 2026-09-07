@@ -355,13 +355,7 @@ module SearchEngine
           hash = normalize_document(@map_proc.call(row))
           hash.delete(:id)
           hash.delete('id')
-          begin
-            computed_id = @klass.compute_document_id(row)
-          rescue NoMethodError
-            rid = row.respond_to?(:id) ? row.id : nil
-            computed_id = rid.is_a?(String) ? rid : rid.to_s
-          end
-          hash[:id] = computed_id
+          hash[:id] = @klass.compute_document_id(row)
           hash[:doc_updated_at] = now_i
 
           strip_auto_embedding_fields!(hash)
@@ -441,7 +435,7 @@ module SearchEngine
           next if value.nil? && @__optional_blank_targets__.include?(fname)
 
           valid, coerced, err = validate_value(expected, value, field: fname)
-          if coerced
+          if !coerced.nil?
             stats[:coerced_count] += 1
             hash[key] = coerced
           elsif !valid && stats[:invalid_type_samples].size < @options[:max_error_samples]

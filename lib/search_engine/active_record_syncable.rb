@@ -265,8 +265,8 @@ module SearchEngine
       end
 
       if timing == :after_commit
-        ar_klass.after_create_commit :__se_syncable_upsert! if actions.include?(:create)
-        ar_klass.after_update_commit :__se_syncable_upsert! if actions.include?(:update)
+        upsert_actions = actions & %i[create update]
+        ar_klass.after_commit :__se_syncable_upsert!, on: upsert_actions unless upsert_actions.empty?
         ar_klass.after_destroy_commit :__se_syncable_delete! if actions.include?(:destroy)
       else
         ar_klass.after_create :__se_syncable_upsert! if actions.include?(:create)

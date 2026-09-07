@@ -111,7 +111,8 @@ module SearchEngine
         end
 
         def compute_required_keys_from_schema(klass, compiled_schema)
-          fields = Array(compiled_schema[:fields]).map { |f| (f[:name] || f['name']).to_s }
+          fields = Array(compiled_schema[:fields]).reject { |f| f[:embed] || f['embed'] }
+                                                  .map { |f| (f[:name] || f['name']).to_s }
           base = fields.reject { |fname| fname.include?('.') }.to_set
           begin
             opts = klass.respond_to?(:attribute_options) ? (klass.attribute_options || {}) : {}
@@ -229,7 +230,7 @@ module SearchEngine
             next if value.nil? && optional_fields.include?(key.to_s)
 
             valid, coerced, err = validate_value_for_type(expected, value, coercions_enabled: coercions_enabled)
-            if coerced
+            if !coerced.nil?
               document[key.to_s] = coerced
             elsif !valid
               raise SearchEngine::Errors::InvalidParams.new(
