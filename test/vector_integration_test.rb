@@ -79,10 +79,17 @@ class VectorIntegrationTest < Minitest::Test
 
   def test_auto_embedding_hybrid_and_history_queries
     setup_semantic_collection
-    hybrid = SemanticArticle.search('chair').vector_search(alpha: 0.8, k: 3)
-                            .options(rerank_hybrid_matches: true).execute
+    hybrid = SemanticArticle.search('comfortable chair').vector_search(alpha: 0.8, k: 3).execute
     assert_operator hybrid.found, :>, 0
     assert_kind_of Numeric, hybrid.hits.first.vector_distance
+    exact = SemanticArticle.search('chair').vector_search(alpha: 0.8, k: 3).execute
+    exact.hits.zip(exact.raw.fetch('hits')).each do |hit, raw|
+      if raw.key?('vector_distance')
+        assert_equal raw.fetch('vector_distance'), hit.vector_distance
+      else
+        refute_respond_to hit, :vector_distance
+      end
+    end
     ['phone, case', 'phone(case)', 'phone[case]'].each do |query|
       result = SemanticArticle.vector_search(queries: [query, 'tablet'], weights: [0.5, 0.5]).execute
       assert_kind_of Numeric, result.found

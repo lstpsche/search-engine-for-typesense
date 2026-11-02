@@ -518,8 +518,6 @@ module SearchEngine
 
         auto_include_embedding_in_query_by!(params, vq, field)
         auto_exclude_embedding_from_response!(params, field)
-        rerank = option_value(@state[:options] || {}, :rerank_hybrid_matches)
-        params[:rerank_hybrid_matches] = coerce_boolean_strict(rerank, :rerank_hybrid_matches) unless rerank.nil?
         instrument_vector_compile(vq, params, field)
       end
 

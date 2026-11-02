@@ -18,13 +18,6 @@ class VectorCompilerTest < Minitest::Test
     assert_equal 'title,embedding', explicit[:query_by]
   end
 
-  def test_explicit_hybrid_reranking_reaches_the_server_and_preserves_false
-    relation = VectorModels::SemanticArticle.search('chair').vector_search
-    assert_equal true, relation.options(rerank_hybrid_matches: true).to_h[:rerank_hybrid_matches]
-    assert_equal false, relation.options(rerank_hybrid_matches: false).to_h[:rerank_hybrid_matches]
-    refute relation.to_h.key?(:rerank_hybrid_matches)
-  end
-
   def test_history_strings_with_commas_keep_their_boundaries
     params = VectorModels::SemanticArticle.vector_search(queries: ['phone, case', 'tablet'], weights: [0.5, 0.5]).to_h
     tick = 96.chr

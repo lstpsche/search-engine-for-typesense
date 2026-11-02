@@ -54,8 +54,7 @@ module Docs
         nearest: Article.vector_search(query: [1, 0, 0], k: 3).order(vector_distance: :asc),
         similar: Article.find_similar('a', k: 3),
         hybrid: Article.search('chair').vector_search(query: [1, 0, 0], alpha: 0.8, k: 3),
-        semantic: SemanticArticle.search('chair').vector_search(alpha: 0.8, k: 3)
-                  .options(rerank_hybrid_matches: true),
+        semantic: SemanticArticle.search('comfortable chair').vector_search(alpha: 0.8, k: 3),
         history: SemanticArticle.vector_search(queries: ['phone, case', 'tablet'], weights: [0.5, 0.5])
       }
     end
