@@ -1,5 +1,18 @@
 # Changelog
 
+## 30.9.0
+
+- Qualify geo/vector search and native caching against Typesense 30.2 while keeping the gem major
+  version aligned with the Typesense major version.
+- Expose model-level geo/vector query methods, preserve external hybrid weights and historical query
+  boundaries, and sort the active vector query with Typesense's native distance token.
+- Validate finite real vectors, declared field types/dimensions and integer options before execution.
+  Preserve backend vector distance on flat, grouped and multi-search hits.
+- Redact scientific-notation vector components and forward single/multi-search cache options through
+  the Ruby SDK's request parameters.
+- Add database-free query examples and isolated Typesense 30.2 integration checks, including scoped-key
+  cache isolation and opt-in model-backed search. Upgrade older servers before using scoped-key caching.
+
 ## 30.8.24
 
 - Adopt `{typesense_major}.{gem_minor}.{gem_patch}` versioning, omitting the Typesense minor component.

@@ -63,6 +63,8 @@ module SearchEngine
 
           validate_vector_query_mode_exclusivity!(query, id, queries)
           validate_vector_query_array!(query)
+          validate_vector_dimensions!(field_sym, query) if query
+          validate_vector_id!(id)
           validate_vector_queries!(queries)
           validate_vector_weights!(weights, queries)
 
@@ -75,11 +77,11 @@ module SearchEngine
           result = { field: field_sym }
           result[:k] = coerced_k if coerced_k
           result[:alpha] = Float(alpha) if alpha
-          result[:query] = query if query
-          result[:id] = id.to_s if id
+          result[:query] = query.map(&:to_f) if query
+          result[:id] = id.to_s unless id.nil?
           result[:distance_threshold] = Float(distance_threshold) if distance_threshold
           result[:queries] = queries if queries
-          result[:weights] = weights if weights
+          result[:weights] = weights.map(&:to_f) if weights
           result[:ef] = coerced_ef if coerced_ef
           result[:flat_search_cutoff] = coerced_flat if coerced_flat
           result
@@ -106,11 +108,19 @@ module SearchEngine
 
           sym = field.to_sym
           attrs = safe_attributes_map
-          return if attrs.nil? || attrs.empty?
+          return if attrs.nil?
 
           embeddings = vector_embeddings_map
 
-          return if attrs.key?(sym) || embeddings.key?(sym)
+          return if embeddings.key?(sym) || [:vector, [:float], :'float[]', 'float[]'].include?(attrs[sym])
+
+          if attrs.key?(sym)
+            raise SearchEngine::Errors::InvalidVectorQuery.new(
+              "InvalidVectorQuery: field :#{sym} must be a vector or float array",
+              doc: VECTOR_SEARCH_DOC_URL,
+              details: { field: sym, type: attrs[sym] }
+            )
+          end
 
           known = (attrs.keys + embeddings.keys).uniq
           suggestions = suggest_fields(sym, known)
@@ -128,9 +138,9 @@ module SearchEngine
 
         def validate_vector_query_mode_exclusivity!(query, id, queries)
           modes = []
-          modes << :query if query
-          modes << :id if id
-          modes << :queries if queries
+          modes << :query unless query.nil?
+          modes << :id unless id.nil?
+          modes << :queries unless queries.nil?
           return if modes.length <= 1
 
           raise SearchEngine::Errors::InvalidVectorQuery.new(
@@ -146,9 +156,9 @@ module SearchEngine
         def validate_vector_query_array!(query)
           return if query.nil?
 
-          unless query.is_a?(Array) && query.all? { |v| v.is_a?(Numeric) }
+          unless query.is_a?(Array) && query.all? { |v| finite_vector_number?(v) }
             raise SearchEngine::Errors::InvalidVectorQuery.new(
-              'InvalidVectorQuery: query: must be an Array of Numeric values',
+              'InvalidVectorQuery: query: must be an Array of finite real numbers',
               hint: 'Pass a float array like [0.1, 0.2, ...]',
               doc: VECTOR_SEARCH_DOC_URL,
               details: { query_class: query.class.name }
@@ -160,6 +170,35 @@ module SearchEngine
           raise SearchEngine::Errors::InvalidVectorQuery.new(
             'InvalidVectorQuery: query: must be a non-empty Array',
             hint: 'Provide at least one dimension value',
+            doc: VECTOR_SEARCH_DOC_URL
+          )
+        end
+
+        def finite_vector_number?(value)
+          value.is_a?(Numeric) && value.real? && value.to_f.finite?
+        end
+
+        def validate_vector_dimensions!(field, query)
+          metadata = vector_embeddings_map[field] || {}
+          options = @klass.respond_to?(:attribute_options) ? @klass.attribute_options[field] || {} : {}
+          dimension = metadata[:num_dim] || options[:num_dim]
+          return if dimension.nil? || query.size == Integer(dimension)
+
+          raise SearchEngine::Errors::InvalidVectorQuery.new(
+            "InvalidVectorQuery: field :#{field} expects #{dimension} dimensions (got #{query.size})",
+            doc: VECTOR_SEARCH_DOC_URL,
+            details: { field: field, expected: dimension, actual: query.size }
+          )
+        end
+
+        def validate_vector_id!(id)
+          return if id.nil?
+
+          value = id.to_s
+          return if !value.empty? && value == value.strip && !value.match?(/[:,()[:cntrl:]]/)
+
+          raise SearchEngine::Errors::InvalidVectorQuery.new(
+            'InvalidVectorQuery: id: cannot be blank or contain vector-query delimiters or surrounding whitespace',
             doc: VECTOR_SEARCH_DOC_URL
           )
         end
@@ -183,6 +222,14 @@ module SearchEngine
             )
           end
 
+          if queries.any? { |query| query != query.strip || query.match?(/[:`[:cntrl:]]/) }
+            raise SearchEngine::Errors::InvalidVectorQuery.new(
+              'InvalidVectorQuery: queries: cannot contain unsupported delimiters or surrounding whitespace',
+              hint: 'Colons, backticks and control characters cannot be represented in historical queries',
+              doc: VECTOR_SEARCH_DOC_URL
+            )
+          end
+
           blank_indices = queries.each_index.select { |i| queries[i].strip.empty? }
           return if blank_indices.empty?
 
@@ -197,9 +244,9 @@ module SearchEngine
         def validate_vector_weights!(weights, queries)
           return if weights.nil?
 
-          unless weights.is_a?(Array) && weights.all? { |v| v.is_a?(Numeric) }
+          unless weights.is_a?(Array) && weights.all? { |v| finite_vector_number?(v) }
             raise SearchEngine::Errors::InvalidVectorQuery.new(
-              'InvalidVectorQuery: weights: must be an Array of Numeric',
+              'InvalidVectorQuery: weights: must be an Array of finite real numbers',
               doc: VECTOR_SEARCH_DOC_URL,
               details: { weights_class: weights.class.name }
             )
@@ -221,7 +268,7 @@ module SearchEngine
             )
           end
 
-          sum = weights.sum.to_f
+          sum = weights.sum(&:to_f)
           tolerance = SearchEngine.config.embedding.weights_sum_tolerance
           return if (sum - 1.0).abs <= tolerance
 
@@ -285,7 +332,7 @@ module SearchEngine
 
           begin
             iv = Integer(value)
-          rescue ArgumentError, TypeError
+          rescue ArgumentError, TypeError, RangeError
             raise SearchEngine::Errors::InvalidVectorQuery.new(
               "InvalidVectorQuery: #{name}: must be a positive Integer (got #{value.inspect})",
               doc: VECTOR_SEARCH_DOC_URL,
@@ -293,10 +340,10 @@ module SearchEngine
             )
           end
 
-          return iv if iv.positive?
+          return iv if iv.positive? && (value.is_a?(String) || value == iv)
 
           raise SearchEngine::Errors::InvalidVectorQuery.new(
-            "InvalidVectorQuery: #{name}: must be > 0 (got #{iv})",
+            "InvalidVectorQuery: #{name}: must be a positive Integer without truncation",
             doc: VECTOR_SEARCH_DOC_URL,
             details: { name => iv }
           )
@@ -342,8 +389,6 @@ module SearchEngine
           return {} unless @klass.respond_to?(:embeddings_config)
 
           @klass.embeddings_config || {}
-        rescue StandardError
-          {}
         end
 
         def build_vector_field_suggestion(suggestions)

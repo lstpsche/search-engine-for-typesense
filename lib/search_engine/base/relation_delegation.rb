@@ -19,6 +19,7 @@ module SearchEngine
         # Delegate materializers and query dsl to `.all` so callers can do `Model.first` etc.
         %i[
           where rewhere merge order preset ranking prefix search
+          where_geo order_geo order_eval vector_search find_similar
           pin hide curate clear_curation
           facet_by facet_query group_by unscope
           limit offset page per_page per options cache

@@ -29,3 +29,51 @@ jobs:
           ruby-version: .ruby-version
           bundler-cache: true
       - run: bundle exec bin/test
+
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      typesense:
+        image: typesense/typesense:30.2
+        env:
+          TYPESENSE_DATA_DIR: /data
+          TYPESENSE_API_KEY: query-fixture-key
+        ports:
+          - 8108:8108
+        options: --memory=2g --tmpfs /data:rw,size=2g
+    env:
+      TYPESENSE_HOST: 127.0.0.1
+      TYPESENSE_PORT: '8108'
+      TYPESENSE_PROTOCOL: http
+      TYPESENSE_API_KEY: query-fixture-key
+      TYPESENSE_INTEGRATION: '1'
+      TYPESENSE_TEST_ISOLATED: '1'
+      TYPESENSE_EMBEDDING_INTEGRATION: '1'
+      SEARCH_ENGINE_TEST_MODE: '0'
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: .ruby-version
+          bundler-cache: true
+      - name: Wait for Typesense
+        run: |
+          for attempt in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:8108/health > /dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          exit 1
+      - name: Verify server version
+        run: |
+          curl --fail --silent --header "X-TYPESENSE-API-KEY: $TYPESENSE_API_KEY" \
+            http://127.0.0.1:8108/debug |
+            ruby -rjson -e 'abort "Expected Typesense 30.2" unless JSON.parse(STDIN.read).fetch("version") == "30.2"'
+      - run: bundle exec ruby -Itest test/geo_integration_test.rb
+      - name: Vector and cache integration
+        run: >-
+          bundle exec ruby -Itest -e 'ARGV.each { |file| require_relative file }'
+          test/vector_integration_test.rb test/cache_integration_test.rb
+      - run: bundle exec ruby examples/demo_shop/bin/query_smoke --live --auto-embedding

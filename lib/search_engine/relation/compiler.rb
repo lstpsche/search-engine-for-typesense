@@ -518,7 +518,6 @@ module SearchEngine
 
         auto_include_embedding_in_query_by!(params, vq, field)
         auto_exclude_embedding_from_response!(params, field)
-        resolve_vector_distance_sort!(params, field)
         instrument_vector_compile(vq, params, field)
       end
 
@@ -538,7 +537,10 @@ module SearchEngine
           parts << "#{key}:#{vq[key]}" if vq.key?(key)
         end
         parts << "alpha:#{vq[:alpha]}" if vq.key?(:alpha) && hybrid_vector_mode?(params, vq)
-        parts << "queries:[#{vq[:queries].join(', ')}]" if vq[:queries]
+        if vq[:queries]
+          queries = vq[:queries].map { |query| "`#{query}`" }
+          parts << "queries:[#{queries.join(', ')}]"
+        end
         parts << "query_weights:[#{vq[:weights].join(', ')}]" if vq[:weights]
 
         inner = [vector_part, *parts].join(', ')
@@ -547,9 +549,10 @@ module SearchEngine
 
       # Hybrid mode: auto-append the embedding field to `query_by` so that
       # Typesense performs rank-fusion between keyword and vector results.
-      # Hybrid = text query present AND no explicit embedding vector supplied.
+      # Explicit vectors already supply the embedding and need no query_by addition.
       def auto_include_embedding_in_query_by!(params, vq, field)
         return unless hybrid_vector_mode?(params, vq)
+        return if vq.key?(:query)
 
         current = params[:query_by].to_s
         fields = current.split(',').map(&:strip)
@@ -571,19 +574,8 @@ module SearchEngine
         params[:exclude_fields] = current.empty? ? field : "#{current},#{field}"
       end
 
-      # Replace the `_vector_distance` sentinel produced by order normalization
-      # with the real Typesense sort token that references the embedding field.
-      def resolve_vector_distance_sort!(params, vq_field)
-        sort = params[:sort_by]
-        return unless sort&.include?(VECTOR_DISTANCE_SENTINEL)
-
-        params[:sort_by] = sort.gsub(/#{VECTOR_DISTANCE_SENTINEL}:(asc|desc)/) do
-          "_vector_query(#{vq_field}:([])):#{Regexp.last_match(1)}"
-        end
-      end
-
       def hybrid_vector_mode?(params, vq)
-        params[:q].to_s != '*' && !vq.key?(:query) && !vq.key?(:id) && !vq.key?(:queries)
+        params[:q].to_s != '*' && !vq.key?(:id) && !vq.key?(:queries)
       end
 
       def explicitly_selected_field?(field_name)

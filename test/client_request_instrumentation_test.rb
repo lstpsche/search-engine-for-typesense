@@ -54,7 +54,7 @@ class ClientRequestInstrumentationTest < Minitest::Test
       @calls = 0
     end
 
-    def perform(_payload, **_kwargs)
+    def perform(_payload, _query_params = {})
       @calls += 1
       raise ::Timeout::Error, 'transient timeout' if @calls == 1
 

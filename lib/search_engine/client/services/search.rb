@@ -45,7 +45,7 @@ module SearchEngine
           bodies = Array(searches).map { |s| sanitize_body_params(s) }
 
           result = with_exception_mapping(:post, path, cache_params, start) do
-            typesense.multi_search.perform({ searches: bodies }, common_params: cache_params)
+            typesense.multi_search.perform({ searches: bodies }, cache_params)
           end
 
           instrument(:post, path, current_monotonic_ms - start, cache_params, request_token: start)
@@ -170,19 +170,7 @@ module SearchEngine
         end
 
         def documents_search(docs, payload, common_params)
-          if documents_search_supports_common_params?(docs)
-            docs.search(payload, common_params: common_params)
-          else
-            docs.search(payload)
-          end
-        end
-
-        def documents_search_supports_common_params?(docs)
-          m = docs.method(:search)
-          params = m.parameters
-          params.any? { |(kind, _)| %i[key keyreq keyrest].include?(kind) }
-        rescue StandardError
-          false
+          docs.search(payload.merge(common_params))
         end
       end
     end

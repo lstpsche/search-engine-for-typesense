@@ -97,6 +97,51 @@ Note: presets are server-side in Typesense. With the demo namespace enabled,
 
 - Run `examples/demo_shop/bin/smoke` to verify offline flows compile and dry‑run successfully.
 
+## Query examples
+
+From the gem repository root, compile geo, vector, hybrid, history and highlighting requests without
+booting Rails, opening a database, seeding data, contacting Typesense or downloading a model:
+
+```bash
+bundle exec ruby examples/demo_shop/bin/query_smoke
+```
+
+The helper also checks backend-distance hydration using an explicit result fixture. Compilation is
+separate from live search acceptance. The older `bin/smoke` boots the demo app and can seed its database.
+
+For live checks, start a disposable local Typesense 30.2 server, then supply its explicit loopback
+endpoint and disposable admin key. The script creates unique collections and deletes only those
+collections in `ensure`; existing demo tables and collections are untouched.
+
+```bash
+docker run --detach --name typesense-query-demo \
+  --publish 127.0.0.1:8108:8108 --memory=2g --tmpfs /data:rw,size=2g \
+  --env TYPESENSE_DATA_DIR=/data --env TYPESENSE_API_KEY=disposable-key \
+  typesense/typesense:30.2
+
+TYPESENSE_TEST_ISOLATED=1 TYPESENSE_HOST=127.0.0.1 TYPESENSE_PORT=8108 \
+  TYPESENSE_API_KEY=disposable-key \
+  bundle exec ruby examples/demo_shop/bin/query_smoke --live
+```
+
+Append `--auto-embedding` to opt into the built-in `ts/all-MiniLM-L12-v2` model download and execute
+auto-embedded hybrid/history searches. External-vector checks use deterministic three-dimensional
+vectors and need no provider key or model download. Failures exit unsuccessfully and are not converted
+into sample hits. These examples have been executed against Typesense 30.2, including the model-backed modes.
+Remove the disposable server afterward with `docker rm --force typesense-query-demo`.
+
+In a console, load `lib/docs/query_examples.rb` and use
+`Docs::QueryExamples.relations.transform_values(&:to_h)` for compiled previews, or call
+`Docs::QueryExamples.run`. The existing `Client#search` API accepts `highlight_fields`; hydrated hits
+expose `snippet_for(:title)`. There is no `Relation#highlight` method.
+
+Rake entry points are `demo:queries:compile` and `demo:queries:live`. The live task uses
+`TYPESENSE_EMBEDDING_INTEGRATION=1` for the model-backed modes. To run the compile task without the app:
+
+```bash
+bundle exec rake --rakefile examples/demo_shop/lib/tasks/demo.rake demo:queries:compile
+```
+
 ## Troubleshooting
 
 - Missing API key or connection errors: run doctor `bin/rails search_engine:doctor`.

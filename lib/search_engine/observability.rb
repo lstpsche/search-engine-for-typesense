@@ -144,9 +144,18 @@ module SearchEngine
       return vq unless vq.is_a?(String)
       return vq if SearchEngine.config.observability.redact_vectors == false
 
-      vq.gsub(/\[(-?\d+(?:\.\d+)?(?:\s*,\s*-?\d+(?:\.\d+?))*)\]/) do
-        dims = Regexp.last_match(1).split(',').size
-        "[<#{dims} dims>]"
+      vector_array = /\A([^:]+:\(\s*)\[([^\[\]]*)\](?=\s*[,)])/
+      return '[REDACTED]' unless vq.match?(vector_array)
+
+      vq.sub(vector_array) do
+        prefix = Regexp.last_match(1)
+        values = Regexp.last_match(2)
+        next "#{prefix}[]" if values.strip.empty?
+        next "#{prefix}[#{values}]" if values.match?(/\A<\d+ dims>\z/)
+
+        numbers = values.split(',', -1).map(&:strip)
+        numeric = numbers.all? { |number| number.match?(/\A[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?\z/) }
+        "#{prefix}#{numeric ? "[<#{numbers.size} dims>]" : '[REDACTED]'}"
       end
     end
 

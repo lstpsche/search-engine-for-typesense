@@ -548,8 +548,7 @@ module SearchEngine
       ORDER_ALIASES = { 'text_match' => '_text_match', 'vector_distance' => '_vector_distance' }.freeze
 
       # Map DSL sort aliases to Typesense internal tokens.
-      # `_vector_distance` is a sentinel resolved by the compiler once the
-      # embedding field name is known.
+      # `_vector_distance` sorts the active vector query without re-embedding it.
       def resolve_order_alias(field)
         ORDER_ALIASES.fetch(field, field)
       end

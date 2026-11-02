@@ -96,6 +96,7 @@ module SearchEngine
           attach_curation!(obj, entry)
           attach_highlighting!(obj, entry)
           attach_geo_distance!(obj, entry)
+          attach_vector_distance!(obj, entry)
           hydrated << obj
         end
         @hits = hydrated.freeze
@@ -296,6 +297,14 @@ module SearchEngine
       end
     end
 
+    # Backend vector distance metadata, distinct from document attributes.
+    module VectorDistance
+      # @return [Numeric, nil] the unmodified distance supplied by Typesense
+      def vector_distance
+        instance_variable_get(:@__se_vector_distance__)
+      end
+    end
+
     # Per-hit curation mixin: added onto hydrated objects when Typesense
     # returns curated metadata for the hit.
     module HitCuration
@@ -414,6 +423,7 @@ module SearchEngine
           attach_curation!(obj, sym_sub)
           attach_highlighting!(obj, sym_sub)
           attach_geo_distance!(obj, sym_sub)
+          attach_vector_distance!(obj, sym_sub)
           hydrated << obj
         end
 
@@ -566,6 +576,14 @@ module SearchEngine
       obj.instance_variable_set(:@__se_curated_hit__, curated)
       obj
     rescue StandardError
+      obj
+    end
+
+    def attach_vector_distance!(obj, hit_entry)
+      return obj unless hit_entry.key?(:vector_distance)
+
+      obj.singleton_class.prepend(VectorDistance)
+      obj.instance_variable_set(:@__se_vector_distance__, hit_entry[:vector_distance])
       obj
     end
 
