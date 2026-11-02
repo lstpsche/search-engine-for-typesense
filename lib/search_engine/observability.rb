@@ -16,7 +16,7 @@ module SearchEngine
       group_by group_limit group_missing_values
       facet_by max_facet_values facet_query
       num_typos drop_tokens_threshold prioritize_exact_match query_by_weights
-      vector_query
+      vector_query rerank_hybrid_matches
     ].freeze
 
     # Maximum length for `q` values before truncation.

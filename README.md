@@ -196,6 +196,7 @@ end
 result = SearchEngine::Article
   .search('chair')
   .vector_search(query: [1, 0, 0], alpha: 0.8, k: 20)
+  .options(rerank_hybrid_matches: true)
   .order(vector_distance: :asc)
   .execute
 result.hits.first.vector_distance # Exact backend distance, including 0

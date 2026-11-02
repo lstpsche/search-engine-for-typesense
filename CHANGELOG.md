@@ -14,6 +14,7 @@
   mask malformed vector values. Align single-search adapters, telemetry and shell-quoted cURL previews
   with GET requests and URL cache controls.
 - Keep stale-deletion estimates uncached so maintenance previews observe current documents.
+- Forward explicit hybrid reranking so Typesense can provide vector distances on keyword-only hits.
 - Add database-free query examples and isolated Typesense 30.2 integration checks, including scoped-key
   cache isolation and opt-in model-backed search. Upgrade older servers before using scoped-key caching.
 

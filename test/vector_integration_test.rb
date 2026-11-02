@@ -79,7 +79,8 @@ class VectorIntegrationTest < Minitest::Test
 
   def test_auto_embedding_hybrid_and_history_queries
     setup_semantic_collection
-    hybrid = SemanticArticle.search('chair').vector_search(alpha: 0.8, k: 3).execute
+    hybrid = SemanticArticle.search('chair').vector_search(alpha: 0.8, k: 3)
+                            .options(rerank_hybrid_matches: true).execute
     assert_operator hybrid.found, :>, 0
     assert_kind_of Numeric, hybrid.hits.first.vector_distance
     ['phone, case', 'phone(case)', 'phone[case]'].each do |query|
