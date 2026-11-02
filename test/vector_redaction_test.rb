@@ -32,6 +32,13 @@ class VectorRedactionTest < Minitest::Test
     assert_equal query, redact(query)
   end
 
+  def test_masks_unrecognized_vector_query_types
+    [[0.123456, 0.654321], { embedding: [0.123456] }].each do |value|
+      assert_equal '[REDACTED]', redact(value)
+    end
+    assert_nil redact(nil)
+  end
+
   def test_request_event_preview_uses_central_redaction
     events = SearchEngine::Test.capture_events do
       SearchEngine::Instrumentation.instrument('search_engine.search',

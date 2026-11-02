@@ -21,8 +21,8 @@ module SearchEngine
 
           result = instrumented_search(collection, params_obj, cache_params, path, payload, start)
           duration = current_monotonic_ms - start
-          instrument(:post, path, duration, cache_params, request_token: start)
-          log_success(:post, path, start, cache_params)
+          instrument(:get, path, duration, cache_params, request_token: start)
+          log_success(:get, path, start, cache_params)
 
           klass = begin
             SearchEngine.collection_for(collection)
@@ -64,7 +64,7 @@ module SearchEngine
             result = nil
             SearchEngine::Instrumentation.instrument('search_engine.search', se_payload) do |ctx|
               ctx[:params_preview] = SearchEngine::Instrumentation.redact(params_obj.to_h)
-              result = with_exception_mapping(:post, path, cache_params, start) do
+              result = with_exception_mapping(:get, path, cache_params, start) do
                 docs = typesense.collections[collection].documents
                 documents_search(docs, payload, cache_params)
               end
@@ -80,7 +80,7 @@ module SearchEngine
             end
             result
           else
-            with_exception_mapping(:post, path, cache_params, start) do
+            with_exception_mapping(:get, path, cache_params, start) do
               docs = typesense.collections[collection].documents
               documents_search(docs, payload, cache_params)
             end

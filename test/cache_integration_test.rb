@@ -2,6 +2,8 @@
 
 require 'test_helper'
 require_relative 'support/typesense_integration'
+require 'open3'
+require 'shellwords'
 
 class CacheIntegrationTest < Minitest::Test
   include TypesenseIntegration
@@ -47,6 +49,31 @@ class CacheIntegrationTest < Minitest::Test
     assert_equal 2, search(name, use_cache: false).fetch('found')
     SearchEngine::Cache.clear(client: @client)
     assert_equal 2, search(name, use_cache: true).fetch('found')
+  end
+
+  def test_generated_curl_executes_a_real_get_search
+    command = Document.search('alpha').options(infix: 'off').cache(false).to_curl
+    arguments = Shellwords.split(command).map do |argument|
+      argument == 'X-TYPESENSE-API-KEY: ***' ? "X-TYPESENSE-API-KEY: #{@integration_config.api_key}" : argument
+    end
+    output, error, status = Open3.capture3(*arguments)
+    assert status.success?, error
+    assert_equal ['a'], response_ids(JSON.parse(output))
+  end
+
+  def test_stale_deletion_estimates_bypass_the_default_search_cache
+    @integration_config.use_cache = true
+    @integration_config.default_query_by = 'name'
+    stale_config = @integration_config.stale_deletes
+    stale_config.estimation_enabled = true
+    estimate = lambda {
+      SearchEngine::Indexer.send(:estimate_found_if_enabled, @integration_config, stale_config,
+                                 @collection, 'category:=red'
+      )
+    }
+    assert_equal 1, estimate.call
+    import_fixture(@collection, [{ id: 'b', name: 'beta', category: 'red' }])
+    assert_equal 2, estimate.call
   end
 
   def test_direct_key_url_ttl_does_not_override_the_native_default

@@ -57,5 +57,7 @@ class ClientCacheOptionsTest < Minitest::Test
     payload = events.find { |event| event[:name] == 'search_engine.search' }.fetch(:payload)
     assert_equal 'embedding:([<2 dims>], k:10)', payload.fetch(:params_preview).fetch(:vector_query)
     assert_equal vector_query, @api.requests.fetch(0).last.fetch(:vector_query)
+    request = events.find { |event| event[:name] == 'search_engine.request' }.fetch(:payload)
+    assert_equal :get, request.fetch(:method)
   end
 end

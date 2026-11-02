@@ -241,7 +241,7 @@ module SearchEngine
         client = SearchEngine.client
         payload = { q: '*', query_by: cfg.default_query_by, per_page: 0, filter_by: filter }
         params = SearchEngine::CompiledParams.new(payload)
-        res = client.search(collection: into, params: params, url_opts: {})
+        res = client.search(collection: into, params: params, url_opts: { use_cache: false })
         res&.found
       rescue StandardError
         nil

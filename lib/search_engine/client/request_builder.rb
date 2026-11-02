@@ -63,17 +63,15 @@ module SearchEngine
       # @see `https://typesense.org/docs/latest/api/documents.html#search-document`
       def self.build_search(collection:, compiled_params:, url_opts: {})
         name = collection.to_s
-        body_hash = sanitize_body_params(compiled_params.to_h)
-        # Ensure deterministic ordering even after sanitization
-        body_json = SearchEngine::CompiledParams.from(body_hash).to_json
+        query_params = sanitize_body_params(compiled_params.to_h).merge(url_opts || {})
 
         Request.new(
-          http_method: :post,
+          http_method: :get,
           path: COLLECTIONS_PREFIX + name + DOCUMENTS_SEARCH_SUFFIX,
-          params: url_opts || {},
+          params: query_params,
           headers: DEFAULT_HEADERS_JSON,
-          body: body_hash,
-          body_json: body_json
+          body: nil,
+          body_json: nil
         )
       end
 

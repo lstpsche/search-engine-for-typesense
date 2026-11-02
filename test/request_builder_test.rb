@@ -14,15 +14,13 @@ class RequestBuilderTest < Minitest::Test
       url_opts: url_opts
     )
 
-    assert_equal :post, req.http_method
+    assert_equal :get, req.http_method
     assert_equal '/collections/products/documents/search', req.path
-    assert_equal url_opts, req.params
+    assert_equal({ q: '*', query_by: 'name', per_page: 10, use_cache: true, cache_ttl: 30 }, req.params)
     assert_equal 'application/json', req.headers['Content-Type']
 
-    # body is a Hash; body_json is deterministic JSON
-    assert_equal({ q: '*', query_by: 'name', per_page: 10 }, req.body)
-    expected_json = SearchEngine::CompiledParams.from(req.body).to_json
-    assert_equal expected_json, req.body_json
+    assert_nil req.body
+    assert_nil req.body_json
   end
 
   def test_build_search_sanitizes_internal_keys
@@ -41,13 +39,13 @@ class RequestBuilderTest < Minitest::Test
       url_opts: {}
     )
 
-    refute_includes req.body.keys, :_join
-    refute_includes req.body.keys, :_selection
-    refute_includes req.body.keys, :_hits
-    assert_equal({ q: '*', query_by: 'name' }, req.body)
+    refute_includes req.params.keys, :_join
+    refute_includes req.params.keys, :_selection
+    refute_includes req.params.keys, :_hits
+    assert_equal({ q: '*', query_by: 'name' }, req.params)
   end
 
-  def test_body_json_is_deterministic
+  def test_get_parameters_preserve_the_compiled_input
     # Intentionally provide keys out of order; CompiledParams guarantees ordering
     raw = { per_page: 5, query_by: 'name,brand', q: 'milk' }
     compiled = SearchEngine::CompiledParams.from(raw)
@@ -57,10 +55,8 @@ class RequestBuilderTest < Minitest::Test
       url_opts: {}
     )
 
-    assert_equal(
-      SearchEngine::CompiledParams.from(req.body).to_json,
-      req.body_json
-    )
+    assert_equal raw, req.params
+    assert_equal raw, compiled.to_h
   end
 
   def test_constants_are_frozen_and_values

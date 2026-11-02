@@ -81,4 +81,26 @@ class VectorDslTest < Minitest::Test
       VectorModels::SemanticArticle.vector_search(queries: ['a'], weights: [Float::NAN])
     end
   end
+
+  def test_rejects_nonreal_scalar_options_with_a_vector_query_error
+    %i[alpha distance_threshold].each do |key|
+      assert_raises(SearchEngine::Errors::InvalidVectorQuery) do
+        VectorModels::Article.vector_search(query: [1, 0, 0], **{ key => Complex(1, 2) })
+      end
+    end
+  end
+
+  def test_does_not_freeze_caller_owned_history_or_ids
+    text = +'phone'
+    queries = [text]
+    historical = VectorModels::SemanticArticle.vector_search(queries: queries)
+    text.replace('tablet')
+    queries << 'case'
+    assert_includes historical.to_h[:vector_query], 'queries:[`phone`]'
+
+    id = +'article-1'
+    similar = VectorModels::Article.find_similar(id)
+    id.replace('article-2')
+    assert_includes similar.to_h[:vector_query], 'id:article-1'
+  end
 end

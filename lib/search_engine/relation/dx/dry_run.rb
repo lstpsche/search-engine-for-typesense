@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'json'
+require 'shellwords'
 
 module SearchEngine
   class Relation
@@ -36,13 +37,17 @@ module SearchEngine
           end
         end
 
-        # Build a single-line curl string with redacted body.
+        # Build a shell-quoted GET search command with redacted URL parameters.
         # @param url [String]
         # @param params [Hash]
+        # @param url_opts [Hash] request-level cache controls
         # @return [String]
-        def self.curl(url, params)
-          body_json = JSON.generate(redact_params(params))
-          %(curl -X POST #{url} -H 'Content-Type: application/json' -H 'X-TYPESENSE-API-KEY: ***' -d '#{body_json}')
+        def self.curl(url, params, url_opts: {})
+          query = redact_params(params).reject { |key, _value| key == :_hits }
+          query.merge!(SearchEngine::Observability.filtered_url_opts(url_opts))
+          arguments = ['curl', '--get', url, '-H', 'X-TYPESENSE-API-KEY: ***']
+          query.each { |key, value| arguments.concat(['--data-urlencode', "#{key}=#{value}"]) }
+          Shellwords.join(arguments)
         end
 
         # Return a structured dry-run payload with redacted JSON body and url options.

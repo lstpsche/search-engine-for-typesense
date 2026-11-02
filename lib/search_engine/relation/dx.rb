@@ -11,7 +11,7 @@ module SearchEngine
     # DX helpers are mixed into `Relation` to offer redaction‑aware, zero‑I/O explain and preview utilities.
     # These helpers are pure and never mutate relation state.
     module Dx
-      # Return the request body JSON after compile, fully redacted.
+      # Return the compiled search parameters as fully redacted JSON.
       # @param pretty [Boolean] pretty-print with stable key ordering when true
       # @return [String]
       # @since M8
@@ -22,14 +22,14 @@ module SearchEngine
         SearchEngine::Relation::Dx::DryRun.to_json(redacted, pretty: pretty)
       end
 
-      # Return a single-line curl command with redacted API key and JSON body.
+      # Return a shell-quoted GET curl command with redacted API key and parameters.
       # @return [String]
       # @since M8
       # @see https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/dx
       def to_curl
         url = compiled_url
         params = SearchEngine::CompiledParams.from(to_typesense_params).to_h
-        SearchEngine::Relation::Dx::DryRun.curl(url, params)
+        SearchEngine::Relation::Dx::DryRun.curl(url, params, url_opts: compiled_url_opts)
       end
 
       # Compile and validate without performing network I/O.

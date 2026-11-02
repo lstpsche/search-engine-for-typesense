@@ -141,8 +141,8 @@ module SearchEngine
     # @param vq [String]
     # @return [String]
     def self.redact_vector_query(vq)
-      return vq unless vq.is_a?(String)
-      return vq if SearchEngine.config.observability.redact_vectors == false
+      return vq if vq.nil? || SearchEngine.config.observability.redact_vectors == false
+      return '[REDACTED]' unless vq.is_a?(String)
 
       vector_array = /\A([^:]+:\(\s*)\[([^\[\]]*)\](?=\s*[,)])/
       return '[REDACTED]' unless vq.match?(vector_array)

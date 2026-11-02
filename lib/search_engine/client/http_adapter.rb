@@ -31,7 +31,7 @@ module SearchEngine
       # {Response#body}.
       #
       # Supported forms (current usage):
-      # - POST `/collections/:collection/documents/search` (with `common_params`)
+      # - GET `/collections/:collection/documents/search` (with URL search/cache parameters)
       #
       # @param request [SearchEngine::Client::RequestBuilder::Request] normalized request
       # @return [Response] response wrapper with status, headers and raw body
@@ -40,22 +40,14 @@ module SearchEngine
       def perform(request)
         method = request.http_method.to_sym
         path = request.path.to_s
-        if method == :post && path.match?(%r{\A/collections/[^/]+/documents/search\z})
+        if method == :get && path.match?(%r{\A/collections/[^/]+/documents/search\z})
           collection = path.split('/')[2]
           docs = @typesense.collections[collection].documents
-          begin
-            params = docs.method(:search).parameters
-            supports_common = params.any? { |(kind, _)| %i[key keyreq keyrest].include?(kind) }
-          rescue StandardError
-            supports_common = false
-          end
-          raw = supports_common ? docs.search(request.body, common_params: request.params) : docs.search(request.body)
+          raw = docs.search(request.params)
           # The official client returns parsed JSON (Hash). No headers/status exposed here.
           return Response.new(status: 200, headers: {}, body: raw)
         end
 
-        # Fallback: attempt a generic call via low-level typesense endpoint access if available.
-        # This keeps adapter permissive for future endpoints without adding Faraday here.
         raise ArgumentError, "Unsupported request path for adapter: #{request.http_method} #{request.path}"
       end
     end

@@ -10,6 +10,10 @@
   Preserve backend vector distance on flat, grouped and multi-search hits.
 - Redact scientific-notation vector components and forward single/multi-search cache options through
   the Ruby SDK's request parameters.
+- Preserve caller-owned history strings and IDs, reject invalid scalar conversions consistently, and
+  mask malformed vector values. Align single-search adapters, telemetry and shell-quoted cURL previews
+  with GET requests and URL cache controls.
+- Keep stale-deletion estimates uncached so maintenance previews observe current documents.
 - Add database-free query examples and isolated Typesense 30.2 integration checks, including scoped-key
   cache isolation and opt-in model-backed search. Upgrade older servers before using scoped-key caching.
 

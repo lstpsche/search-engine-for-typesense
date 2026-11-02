@@ -64,7 +64,8 @@ module SearchEngine
           validate_vector_query_mode_exclusivity!(query, id, queries)
           validate_vector_query_array!(query)
           validate_vector_dimensions!(field_sym, query) if query
-          validate_vector_id!(id)
+          normalized_id = id.to_s unless id.nil?
+          validate_vector_id!(normalized_id)
           validate_vector_queries!(queries)
           validate_vector_weights!(weights, queries)
 
@@ -78,9 +79,9 @@ module SearchEngine
           result[:k] = coerced_k if coerced_k
           result[:alpha] = Float(alpha) if alpha
           result[:query] = query.map(&:to_f) if query
-          result[:id] = id.to_s unless id.nil?
+          result[:id] = normalized_id.dup unless normalized_id.nil?
           result[:distance_threshold] = Float(distance_threshold) if distance_threshold
-          result[:queries] = queries if queries
+          result[:queries] = queries.map(&:dup) if queries
           result[:weights] = weights.map(&:to_f) if weights
           result[:ef] = coerced_ef if coerced_ef
           result[:flat_search_cutoff] = coerced_flat if coerced_flat
@@ -286,7 +287,7 @@ module SearchEngine
 
           begin
             fv = Float(alpha)
-          rescue ArgumentError, TypeError
+          rescue ArgumentError, TypeError, RangeError
             raise SearchEngine::Errors::InvalidVectorQuery.new(
               "InvalidVectorQuery: alpha: must be a Numeric between 0.0 and 1.0 (got #{alpha.inspect})",
               doc: VECTOR_SEARCH_DOC_URL,
@@ -309,7 +310,7 @@ module SearchEngine
 
           begin
             fv = Float(distance_threshold)
-          rescue ArgumentError, TypeError
+          rescue ArgumentError, TypeError, RangeError
             raise SearchEngine::Errors::InvalidVectorQuery.new(
               'InvalidVectorQuery: distance_threshold: must be a non-negative Numeric ' \
               "(got #{distance_threshold.inspect})",
