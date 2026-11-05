@@ -66,9 +66,21 @@ SQL sources stream PostgreSQL queries in their own read-only transaction. Start 
 outside an existing transaction; an active transaction is rejected before cursor SQL runs.
 The configured statement timeout applies only to the streaming transaction.
 
+Use hash predicates or bound placeholders for application values. A raw filter string is a Typesense
+expression and must come from trusted code. Values that Typesense cannot represent as exact literals,
+including a wildcard document ID or a string containing a backtick, raise before a search or bulk write.
+Numeric comparisons in `where.not` invert the operator.
+A relation with `limit(2).offset(1)` starts at the second matching document. An explicit `page` or
+`per` takes precedence over the offset. Use a stable sort when reading successive windows.
+
 Joined filters execute as native Typesense joins and require valid collection references.
 Search configuration and missing-reference errors propagate to callers; they do not
 produce empty results or trigger client-side joins.
+
+Single search, federated search and multi-page `all!` use the configured client. A failing entry in
+`multi_search` or `multi_search_result` raises with the entry label and provider status.
+Use `multi_search_raw` to handle successful and failed entries separately. Setting `.cache(false)`
+on an entry disables caching for the whole federated request.
 
 ## Usage examples
 
@@ -230,8 +242,8 @@ bundle exec ruby examples/demo_shop/bin/query_smoke
 This compiles geo/vector requests and checks metadata fixtures without HTTP requests or model downloads.
 See [the demo instructions](examples/demo_shop/README.md#query-examples) for explicitly isolated live execution,
 including highlighting through `Client#search` and `hit.snippet_for`.
-CI uses a disposable `typesense/typesense:30.2` service for geo, vector, cache and live CLI checks,
-including the built-in embedding model. The default unit suite runs separately without integration ENV.
+CI runs query, cache, schema and demo checks against Typesense 30.2, including the built-in embedding
+model. A separate PostgreSQL job exercises outbox claims and concurrency.
 
 `upsert_bulk` defaults to `on_failure: :raise`. Use the exact symbol `:return` when the caller needs to
 handle valid Typesense row failures itself. Malformed responses and response/document count mismatches always
@@ -301,7 +313,8 @@ only then lets the schema lifecycle swap the alias. If any partition fails or ti
 alias target remains active.
 
 Use a shared `Rails.cache` backend, or provide `c.indexer.partition_run_store`, so worker processes and
-the parent indexing process can see the same run metadata. Size the queue carefully: worker concurrency
+the parent indexing process can see the same run metadata. Worker transitions update one partition.
+Explicit snapshots read the complete run. Size the queue carefully: worker concurrency
 multiplies with any per-partition `max_parallel` setting.
 
 A custom partition run store must implement:
@@ -332,8 +345,10 @@ available.
 collection creation, indexing, alias swap, and retention. `SearchEngine::Schema.rollback` uses the same guard
 around target resolution, validation, and its alias swap. In-place schema updates intentionally do not invoke
 the guard. The guard must yield exactly once; not yielding or yielding repeatedly raises `ArgumentError`.
-Guard errors and indexing errors propagate, and an interrupted pre-swap physical collection is still cleaned
-up.
+The schema apply task requires every partition import to succeed before it publishes the new physical
+collection. On failure before the alias write, cleanup removes the candidate once it verifies the target. If the alias write raises,
+the server may already have accepted it. Both physical collections are retained. Check the live alias
+and the candidate before pruning or retrying.
 
 In delivery-target outbox deployments, use the guard to stop new target claims, wait for already-claimed
 deliveries to acknowledge, and prevent cooperating direct writers from crossing the alias swap:
@@ -384,8 +399,10 @@ points to after a later cutover.
 Rollback is conservative and retry-safe. The backward-compatible form rolls back one generation only when the
 alias points at the newest retained physical; once it no longer does, repeating the call returns
 `action: :already_rolled_back` without another swap. When newer orphaned physicals exist, or when an operator
-needs an auditable destination, pass the retained target explicitly. Add `expected_current` for compare-and-swap
-protection:
+needs an auditable destination, pass the retained target explicitly. To require a specific source, pass
+`expected_current` and configure `schema.around_rebuild` to acquire an exclusive, cross-process lock.
+Every writer of that logical alias must share the lock. Typesense exposes separate read and write operations,
+so direct administrative writes bypass the precondition.
 
 ```ruby
 SearchEngine::Schema.rollback(
@@ -402,9 +419,11 @@ rails 'search_engine:schema:rollback[products]'
 rails 'search_engine:schema:rollback[products,products_20250101_000000_001,products_20250102_000000_001]'
 ```
 
-An explicit destination must be a retained physical older than the current/expected source. Retrying after the
-alias already reached that destination is a successful no-op. Any other expected-current mismatch raises
-`SearchEngine::Schema::RollbackConflict` without changing the alias.
+An explicit destination must be a retained physical older than the current or expected source. A retry
+succeeds without another swap when the alias already points at the destination and the named generations
+are still retained. Any other expected-current mismatch raises
+`SearchEngine::Schema::RollbackConflict`. After an ambiguous alias response, reconcile the remote state
+before allowing another writer to proceed.
 
 This protocol only gates delivery-target claims. Legacy single-target event claims have no target identity and
 must be stopped before a rebuild. Likewise, an unguarded direct writer can still cross the swap. In
@@ -642,6 +661,14 @@ refreshes parent event status under parent-first locks. It is idempotent; a seco
 Drain slots are scheduler bookkeeping and are deliberately not changed. Configuration is rechecked directly
 before each database mutation, but Ruby configuration and PostgreSQL cannot share an atomic lock, so do not
 change delivery-target configuration concurrently with retirement.
+
+Single-target repository callers must pass the events returned by `claim_pending` to acknowledgement and
+failure methods. The database matches each event against its current processing claim. Expired workers
+can finish an external request, but only the current owner can change the event state. Drain and restart
+workers running earlier versions when enabling this protection.
+
+Active Record subclasses inherit the parent’s sync configuration and may override it. Callbacks resolve
+the current mapper at execution time, including the document identity used for destroy.
 
 Pair triggered source models with `sync_strategy: :postgres_outbox` so Active Record callbacks do not also
 write to Typesense for the same changes:
