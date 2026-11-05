@@ -1,5 +1,17 @@
 # Changelog
 
+## 30.9.3
+
+- Preserve tenant filters and scoped clients across searches and bulk writes. Reject ambiguous literals,
+  use the joined collection’s field types, and keep bound values out of parser errors.
+- Honor exact offsets, fetch one hit for `find_by`, and hydrate selected hits once. Typed multi-search
+  reports individual errors while raw multi-search preserves the server response.
+- Stop schema cutover on incomplete imports and retain both collections after an uncertain alias write.
+  Conditional rollback requires an exclusive guard shared by all alias writers.
+- Fence PostgreSQL outbox acknowledgements by the active claim. Drain and restart older workers during rollout.
+  Partition workers update their own entry without reading the full run.
+- Preserve mapped document IDs across STI, Rails autoloading and reload. Inline hosts can load Active Job later.
+
 ## 30.9.2
 
 - Check recent event IDs during catch-up so a returning delivery target can discover new work
