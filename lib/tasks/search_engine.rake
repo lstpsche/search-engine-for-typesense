@@ -75,7 +75,8 @@ namespace :search_engine do
           parts = SearchEngine::Cli.partitions_for(klass)
           parts = [nil] if parts.nil? || parts.respond_to?(:empty?) && parts.empty?
           parts.each do |part|
-            SearchEngine::Indexer.rebuild_partition!(klass, partition: part, into: physical)
+            imported = SearchEngine::Indexer.rebuild_partition!(klass, partition: part, into: physical)
+            raise SearchEngine::Errors::PartitionImportFailed, imported unless imported.status == :ok
           end
         end
       end
@@ -90,9 +91,6 @@ namespace :search_engine do
       end
 
       Kernel.exit(0)
-    rescue ArgumentError => error
-      warn("schema:apply failed: #{error.message}")
-      Kernel.exit(1)
     rescue StandardError => error
       warn("schema:apply failed: #{error.message}")
       Kernel.exit(1)
@@ -523,7 +521,7 @@ namespace :search_engine do
 
       Tips:
         - FORCE_REBUILD=true forces the guarded physical create/reindex/swap lifecycle even when schema is current.
-        - Explicit rollback targets are compare-and-swap safe when expected_current is supplied.
+        - expected_current requires a schema.around_rebuild lock shared by all alias writers.
         - Repeating a successful rollback is a no-op; use an explicit target when newer orphaned physicals exist.
         - Quote rake tasks with brackets to avoid shell globbing (e.g., zsh):
           rails 'search_engine:index:rebuild_partition[SearchEngine::Product,42]'

@@ -161,9 +161,9 @@ module SearchEngine
       # physical name). If no block is given, and the klass responds to
       # `reindex_all_to(physical_name)`, that method will be called. If neither is available,
       # an ArgumentError is raised and no alias swap occurs. If reindexing fails or
-      # is interrupted, the newly created physical collection is automatically deleted
-      # to prevent orphan accumulation. Retention cleanup only runs after a successful
-      # alias swap.
+      # is interrupted, the unused new physical is cleaned up. Once an alias swap is
+      # attempted, an error can leave its outcome unknown. Both generations are kept
+      # for reconciliation. Retention cleanup only runs after a successful cutover.
       #
       # @param klass [Class] model class inheriting from {SearchEngine::Base}
       # @param client [SearchEngine::Client] optional client wrapper (for tests)
@@ -201,8 +201,11 @@ module SearchEngine
         end
       end
 
-      def with_around_rebuild(logical)
+      def with_around_rebuild(logical, require_guard: false)
         guard = SearchEngine.config.schema.around_rebuild
+        if require_guard && !guard
+          raise ArgumentError, 'rollback expected_current requires schema.around_rebuild to serialize alias writers'
+        end
         return yield unless guard
 
         result = nil
@@ -237,10 +240,6 @@ module SearchEngine
       private :with_around_rebuild
 
       def perform_full_rebuild!(klass, client:, compiled:, logical:, reindex_step:)
-        new_physical = nil
-        physical_created = false
-        apply_succeeded = false
-
         cleanup_logical_collection_conflict!(logical, client: client)
 
         start_ms = monotonic_ms
@@ -260,7 +259,7 @@ module SearchEngine
         end
 
         client.create_collection(create_schema)
-        physical_created = true
+        cleanup_physical = new_physical
 
         if reindex_step
           reindex_step.call(new_physical)
@@ -270,11 +269,11 @@ module SearchEngine
           raise ArgumentError, 'reindex step is required: provide a block or implement klass.reindex_all_to(name)'
         end
 
-        # Idempotent: if alias already points to new physical, treat as no-op
         current_after_reindex = client.resolve_alias(logical)
         swapped = current_after_reindex != new_physical
+        # A timed-out alias PUT may still commit, even after a read sees the old target.
+        cleanup_physical = nil
         client.upsert_alias(logical, new_physical) if swapped
-        apply_succeeded = true
 
         # Retention cleanup
         _, dropped = enforce_retention!(logical, new_physical, client: client, keep_last: effective_keep_last(klass))
@@ -305,7 +304,7 @@ module SearchEngine
           action: :rebuild
         }
       ensure
-        cleanup_interrupted_physical!(new_physical, client) if physical_created && !apply_succeeded
+        cleanup_interrupted_physical!(logical, cleanup_physical, client) if cleanup_physical
       end
       private :perform_full_rebuild!
 
@@ -314,8 +313,9 @@ module SearchEngine
       # With no explicit target, the safe legacy form only rolls the newest physical
       # back one generation. Repeating the same call is a no-op instead of toggling
       # the alias forward again. Use +to+ when orphaned/newer physicals make the
-      # implicit destination ambiguous. +expected_current+ adds compare-and-swap
-      # protection; a retry that already reached +to+ remains successful.
+      # implicit destination ambiguous. +expected_current+ requires an exclusive
+      # +schema.around_rebuild+ guard shared by all alias writers across processes.
+      # A retry that already reached +to+ remains successful.
       #
       # Alias resolution, validation, and the swap all run inside
       # +schema.around_rebuild+ when configured, so delivery claims and cooperating
@@ -335,7 +335,7 @@ module SearchEngine
         destination = normalize_rollback_target(to, 'to')
         expected = normalize_rollback_target(expected_current, 'expected_current')
 
-        with_around_rebuild(logical) do
+        with_around_rebuild(logical, require_guard: !expected.nil?) do
           perform_rollback!(
             logical,
             client: client,
@@ -615,16 +615,15 @@ module SearchEngine
 
       private
 
-      # Best-effort cleanup of a physical collection left behind by an interrupted
-      # or failed {.apply!}. Rescues all errors so it never masks the original
-      # exception. If the delete itself fails, a warning directs users to
-      # {.prune_orphans!} as a fallback.
+      # Clean up a failed rebuild before cutover only if the alias is known to
+      # point elsewhere. Preserve the original exception if inspection or deletion fails.
       #
-      # @param physical_name [String, nil] the physical collection to remove
-      # @param client [SearchEngine::Client, nil]
+      # @param logical [String] alias for the rebuilt collection
+      # @param physical_name [String] the physical collection to remove
+      # @param client [SearchEngine::Client]
       # @return [void]
-      def cleanup_interrupted_physical!(physical_name, client)
-        return if physical_name.nil? || client.nil?
+      def cleanup_interrupted_physical!(logical, physical_name, client)
+        return if client.resolve_alias(logical) == physical_name
 
         client.delete_collection(physical_name, timeout_ms: 60_000)
 
@@ -637,7 +636,7 @@ module SearchEngine
       rescue StandardError => error
         warn(
           'SearchEngine::Schema — failed to clean up interrupted physical ' \
-          "'#{physical_name}': #{error.message}. Run prune_orphans! to remove it."
+          "'#{physical_name}': #{error.message}. Verify alias '#{logical}' before pruning unused generations."
         )
       end
 

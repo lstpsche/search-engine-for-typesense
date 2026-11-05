@@ -378,6 +378,7 @@ class SchemaLifecycleTest < Minitest::Test
   end
 
   def test_explicit_cas_rollback_is_idempotent_even_with_a_newer_orphan
+    configure_rollback_lock
     orphan = 'products_lifecycle_20250103_000001_001'
     source = 'products_lifecycle_20250102_000001_001'
     destination = 'products_lifecycle_20250101_000001_001'
@@ -407,6 +408,7 @@ class SchemaLifecycleTest < Minitest::Test
   end
 
   def test_expected_current_without_explicit_destination_is_retry_safe
+    configure_rollback_lock
     orphan = 'products_lifecycle_20250103_000001_001'
     source, destination = rollback_physicals
     client = FakeClient.new(
@@ -424,6 +426,7 @@ class SchemaLifecycleTest < Minitest::Test
   end
 
   def test_explicit_rollback_rejects_cas_conflict_without_swapping
+    configure_rollback_lock
     newest = 'products_lifecycle_20250103_000001_001'
     expected = 'products_lifecycle_20250102_000001_001'
     destination = 'products_lifecycle_20250101_000001_001'
@@ -444,6 +447,21 @@ class SchemaLifecycleTest < Minitest::Test
     assert_match(/expected alias '#{expected}', found '#{newest}'/, error.message)
     assert_equal newest, client.alias_target
     assert_empty client.upserts
+  end
+
+  def test_expected_current_requires_a_guard_before_reading_or_changing_the_alias
+    newest, previous = rollback_physicals
+    client = FakeClient.new(collections: physical_collections(newest, previous), alias_target: newest)
+    client.stub(:resolve_alias, ->(*) { flunk 'read the alias without a guard' }) do
+      error = assert_raises(ArgumentError) do
+        SearchEngine::Schema.rollback(Product, client: client, to: previous, expected_current: newest)
+      end
+      assert_match(/expected_current requires schema.around_rebuild/, error.message)
+    end
+    assert_empty client.upserts
+
+    assert SearchEngine::Schema.rollback(Product, client: client, to: previous)[:changed]
+    assert_equal previous, client.alias_target
   end
 
   def test_explicit_rollback_rejects_newer_and_unknown_destinations
@@ -489,6 +507,11 @@ class SchemaLifecycleTest < Minitest::Test
 
   private
 
+  def configure_rollback_lock
+    lock = Mutex.new
+    SearchEngine.config.schema.around_rebuild = ->(**, &rollback) { lock.synchronize(&rollback) }
+  end
+
   def rollback_physicals
     %w[
       products_lifecycle_20250102_000001_001
@@ -512,22 +535,65 @@ class SchemaLifecycleTest < Minitest::Test
     assert_equal(client.created, client.deleted)
   end
 
-  def test_swap_failure_cleans_up_physical
-    client = FakeClient.new(collections: [], alias_target: nil)
-    forced = 'products_lifecycle_20250101_000001_001'
-
-    # Monkey-patch upsert to raise API error
-    def client.upsert_alias(_logical, _physical)
-      raise SearchEngine::Errors::Api.new('fail', status: 500, body: nil)
+  def test_swap_timeout_preserves_candidate_for_a_delayed_alias_write
+    previous, = rollback_physicals
+    client = FakeClient.new(collections: physical_collections(previous), alias_target: previous)
+    timeout = SearchEngine::Errors::Timeout.new('alias request timed out')
+    pending = nil
+    pending_swap = lambda do |*args|
+      pending = args
+      raise timeout
     end
-
-    assert_raises(SearchEngine::Errors::Api) do
-      SearchEngine::Schema.stub(:generate_physical_name, forced) do
-        SearchEngine::Schema.apply!(Product, client: client) { |_name| }
+    client.stub(:upsert_alias, pending_swap) do
+      raised = assert_raises(SearchEngine::Errors::Timeout) do
+        SearchEngine::Schema.apply!(Product, client: client, force_rebuild: true) { |_name| }
       end
+      assert_same timeout, raised
     end
 
-    assert_equal([forced], client.deleted)
+    assert_equal previous, client.resolve_alias(Product.collection)
+    client.upsert_alias(*pending)
+    assert_includes client.collections, { name: client.alias_target }
+    assert_empty client.deleted
+  end
+
+  def test_failed_pre_swap_lookup_cleans_candidate_once_alias_can_be_verified
+    client = FakeClient.new
+    failure = SearchEngine::Errors::Connection.new('alias lookup interrupted')
+    fail_next_lookup = false
+    lookup = lambda do |_logical|
+      if fail_next_lookup
+        fail_next_lookup = false
+        raise failure
+      end
+      client.alias_target
+    end
+    client.stub(:resolve_alias, lookup) do
+      raised = assert_raises(SearchEngine::Errors::Connection) do
+        SearchEngine::Schema.apply!(Product, client: client, force_rebuild: true) { fail_next_lookup = true }
+      end
+      assert_same failure, raised
+    end
+    assert_equal client.created, client.deleted
+    assert_empty client.upserts
+  end
+
+  def test_reindex_failure_keeps_candidate_and_primary_error_if_alias_lookup_fails
+    client = FakeClient.new
+    failure = RuntimeError.new('index failed')
+    _, warning = capture_io do
+      raised = assert_raises(RuntimeError) do
+        SearchEngine::Schema.apply!(Product, client: client, force_rebuild: true) do |_physical|
+          def client.resolve_alias(_logical)
+            raise SearchEngine::Errors::Connection, 'alias unavailable'
+          end
+          raise failure
+        end
+      end
+      assert_same failure, raised
+    end
+    assert_match(/alias unavailable/, warning)
+    assert_empty client.deleted
   end
 
   def test_async_partition_success_swaps_alias_after_schema_apply
