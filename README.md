@@ -52,7 +52,13 @@ See [Quickstart](https://nikita-shkoda.mintlify.app/projects/search-engine-for-t
 
 By default, the gem manages a dedicated Zeitwerk loader for your SearchEngine models under `app/search_engine/`. The loader is initialized after Rails so that application models/constants are available, auto-reloads in development, and is eager-loaded in production/test.
 
-Customize or disable via configuration:
+Mappers under the host’s `app/models/search_engine` are registered by the Rails loader at boot and reload,
+including nested classes whose names differ from their declared collection. For a mapper managed outside
+these model directories, reference it in the callback declaration, for example
+`search_engine_syncable collection: Catalog::ItemIndex.collection`. This loads its identity strategy before
+the first callback. A bare collection uses the Active Record primary key for deletes.
+
+Configure the dedicated loader with:
 
 ```ruby
 # config/initializers/search_engine.rb

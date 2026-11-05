@@ -121,6 +121,20 @@ module SearchEngine
       end
     end
 
+    # Rails-managed mappers may declare a collection unrelated to their constant name.
+    # Register these mappings before a callback can interpret a miss as a bare collection.
+    initializer 'search_engine.rails_model_mappings' do |app|
+      app.reloader.to_prepare do
+        models = app.paths['app/models'].existent
+        Rails.autoloaders.each do |loader|
+          (loader.dirs & models).each do |root|
+            namespace_dir = File.join(root, 'search_engine')
+            loader.eager_load_dir(namespace_dir) if File.directory?(namespace_dir)
+          end
+        end
+      end
+    end
+
     # Manage a dedicated Zeitwerk loader for host app SearchEngine models.
     # Loads after Rails so application models/constants are available.
     initializer 'search_engine.models_loader' do

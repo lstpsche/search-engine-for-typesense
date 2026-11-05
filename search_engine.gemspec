@@ -33,4 +33,5 @@ Gem::Specification.new do |spec|
   spec.add_dependency 'concurrent-ruby', '>= 1.2'
   spec.add_dependency 'rails', '>= 6.1'
   spec.add_dependency 'typesense', '>= 5.0.0'
+  spec.add_dependency 'zeitwerk', '>= 2.6.2'
 end
