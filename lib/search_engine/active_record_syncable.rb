@@ -1,14 +1,16 @@
 # frozen_string_literal: true
 
 require 'active_support/concern'
+require 'active_support/core_ext/class/attribute'
+require 'active_support/inflector'
 
 module SearchEngine
   # ActiveRecord concern to keep a Typesense collection in sync.
   #
   # Include into an AR model and call {.search_engine_syncable} to store sync
-  # metadata. The default callback strategy installs lifecycle callbacks that
-  # upsert on create/update and delete on destroy; the postgres_outbox strategy
-  # stores metadata without installing callbacks.
+  # metadata. The default callback strategy upserts on create/update and deletes
+  # on destroy. The postgres_outbox strategy stores metadata without installing
+  # callbacks. Subclasses inherit the configuration unless they declare their own.
   #
   # @example
   #   class Product < ApplicationRecord
@@ -18,86 +20,61 @@ module SearchEngine
   module ActiveRecordSyncable
     extend ActiveSupport::Concern
 
+    # Rails deduplicates after_commit filters by method name, even for separate actions.
+    CALLBACKS = {
+      create: :__se_syncable_create!,
+      update: :__se_syncable_upsert!,
+      destroy: :__se_syncable_delete!
+    }.freeze
+    private_constant :CALLBACKS
+
+    included do
+      class_attribute :_se_syncable_config, instance_writer: false, instance_predicate: false
+    end
+
     class_methods do
-      # Configure SearchEngine synchronization for this ActiveRecord model.
+      # Configure SearchEngine synchronization for this model and its subclasses.
+      # SearchEngine models can register after this declaration.
       #
-      # - collection: defaults to the AR class tableized name (snake_case, plural)
-      # - on: one or many of :create, :update, :destroy (strings or symbols)
-      # - sync_strategy: :callbacks (default) or :postgres_outbox
-      #
-      # Validates that either a physical Typesense collection exists for the
-      # given name or a SearchEngine model is registered for it. Mapping for
-      # create/update requires a SearchEngine model; when missing, an error is
-      # raised with guidance.
-      #
-      # @param collection [Symbol, String, nil]
-      # @param on [Array<Symbol,String>, Symbol, String, nil]
-      # @param sync_strategy [Symbol, String, nil]
-      # @return [Class] self (for macro chaining)
+      # @param collection [Symbol, String, nil] defaults to the tableized model name
+      # @param on [Array<Symbol,String>, Symbol, String, nil] one or more of create, update and destroy
+      # @param sync_strategy [Symbol, String, nil] callbacks (default) or postgres_outbox
+      # @return [Class] self
       def search_engine_syncable(collection: nil, on: nil, sync_strategy: :callbacks)
-        effective_actions = on
-
-        cfg = SearchEngine::ActiveRecordSyncable.__normalize_config_for(
-          self,
-          collection: collection,
-          actions: effective_actions,
-          sync_strategy: sync_strategy
-        )
-
-        # Store config on the AR class (used by instance methods)
-        instance_variable_set(:@__se_syncable_cfg__, cfg)
-
-        SearchEngine::ActiveRecordSyncable.__register_callbacks_for(self, cfg) if cfg[:sync_strategy] == :callbacks
-
+        previous = _se_syncable_config
+        config = {
+          logical: (collection || ActiveSupport::Inflector.tableize(name)).to_s.dup.freeze,
+          actions: SearchEngine::ActiveRecordSyncable.__normalize_actions(on).freeze,
+          sync_strategy: SearchEngine::ActiveRecordSyncable.__normalize_sync_strategy(sync_strategy),
+          timing: SearchEngine.config.syncable_callback_timing
+        }.freeze
+        self._se_syncable_config = config
+        if config[:sync_strategy] == :callbacks && config != previous
+          SearchEngine::ActiveRecordSyncable.__register_callbacks_for(self, config)
+        end
         self
       end
     end
 
-    # Upsert this record into the configured Typesense collection using the
-    # mapping defined on the corresponding SearchEngine model.
-    # @return [void]
-    def __se_syncable_upsert!
-      cfg = self.class.instance_variable_get(:@__se_syncable_cfg__) || {}
-      se_klass = cfg[:se_klass]
-      unless se_klass
-        # Lazy-resolve the SearchEngine model to avoid boot-time ordering issues
-        begin
-          se_klass = SearchEngine.collection_for(cfg[:logical])
-          cfg[:se_klass] = se_klass if se_klass
-        rescue StandardError
-          se_klass = nil
-        end
-      end
-      unless se_klass
-        SearchEngine.config.logger&.warn(
-          "search_engine_syncable: no SearchEngine model registered for '#{cfg[:logical]}'; skip upsert"
-        )
-        return
-      end
-
-      se_klass.upsert(record: self)
-    rescue StandardError => error
-      SearchEngine.config.logger&.error("search_engine_syncable upsert failed: #{error}")
+    # @api private
+    def __se_syncable_create!
+      __se_syncable_upsert!
     end
 
-    # Delete this record's document from the configured Typesense collection.
-    # Uses the SearchEngine model's identity strategy when available.
+    # Upsert this record using the configured SearchEngine model.
+    # @return [void]
+    def __se_syncable_upsert!
+      sync_search_engine_record
+    end
+
+    # Delete the mapped document. Collections without a model use the ActiveRecord primary key.
     # @return [void]
     def __se_syncable_delete!
-      cfg = self.class.instance_variable_get(:@__se_syncable_cfg__) || {}
-      logical = cfg[:logical]
-      se_klass = cfg[:se_klass]
-
-      document_id = if se_klass
-                      se_klass.compute_document_id(self)
-                    else
-                      respond_to?(:id) ? id.to_s : nil
-                    end
-
-      if document_id.nil? || document_id.strip.empty?
-        SearchEngine.config.logger&.warn(
-          "search_engine_syncable: cannot delete without id for '#{logical}'"
-        )
+      logical = __se_syncable_logical
+      model = __se_syncable_model(logical)
+      document_id = model ? model.compute_document_id(self) : id.to_s
+      if document_id.blank?
+        SearchEngine.config.logger&.warn("search_engine_syncable: cannot delete without id for '#{logical}'")
         return
       end
 
@@ -108,123 +85,51 @@ module SearchEngine
       SearchEngine.config.logger&.error("search_engine_syncable delete failed: #{error}")
     end
 
-    # Return the associated SearchEngine record for this ActiveRecord instance.
-    #
-    # Resolves the SearchEngine model lazily when necessary and computes the
-    # document id via the model's `identify_by` strategy. Returns nil when the
-    # model mapping is unavailable or the id cannot be determined.
-    #
-    # @return [Object, nil] hydrated SearchEngine model instance or nil when not found
+    # Return the associated SearchEngine record using the current model and identity strategy.
+    # @return [Object, nil] hydrated SearchEngine model instance or nil when unavailable
     def search_engine_record
-      cfg = self.class.instance_variable_get(:@__se_syncable_cfg__) || {}
-      se_klass = cfg[:se_klass]
-      if se_klass.nil?
-        begin
-          logical = cfg[:logical] || self.class.name.to_s
-          se_klass = SearchEngine.collection_for(logical)
-          cfg[:se_klass] = se_klass if se_klass
-        rescue StandardError
-          return nil
-        end
-      end
+      model = __se_syncable_model
+      return unless model
 
-      doc_id = begin
-        se_klass.compute_document_id(self)
-      rescue StandardError => error
-        # When a custom identify_by is configured on the SearchEngine model,
-        # do not fall back to the ActiveRecord id on computation errors as it
-        # may point to a different document. Only fall back to AR id when
-        # identify_by is not defined at all.
-        if se_klass.instance_variable_defined?(:@identify_by_proc)
-          SearchEngine.config.logger&.warn(
-            "search_engine_syncable: identify_by failed to compute id for '#{cfg[:logical]}' (#{error.class})"
-          )
-          nil
-        else
-          respond_to?(:id) ? id.to_s : nil
-        end
-      end
-      return nil if doc_id.nil? || doc_id.to_s.strip.empty?
-
-      se_klass.find(doc_id)
-    rescue StandardError
+      document_id = model.compute_document_id(self)
+      model.find(document_id) if document_id.present?
+    rescue StandardError => error
+      SearchEngine.config.logger&.error("search_engine_syncable lookup failed: #{error}")
       nil
     end
 
     # Map this ActiveRecord instance using the associated SearchEngine model and
     # upsert it into the collection.
-    #
     # @return [Integer] number of upserted documents (0 or 1)
     def sync_search_engine_record
-      cfg = self.class.instance_variable_get(:@__se_syncable_cfg__) || {}
-      se_klass = cfg[:se_klass]
-      if se_klass.nil?
-        begin
-          logical = cfg[:logical] || self.class.name.to_s
-          se_klass = SearchEngine.collection_for(logical)
-          cfg[:se_klass] = se_klass if se_klass
-        rescue StandardError => error
-          SearchEngine.config.logger&.warn(
-            "search_engine_syncable: cannot resolve model for sync (#{error.class})"
-          )
-          return 0
-        end
-      end
+      model = __se_syncable_model
+      return model.upsert(record: self) if model
 
-      se_klass.upsert(record: self)
+      SearchEngine.config.logger&.warn(
+        "search_engine_syncable: no SearchEngine model registered for '#{__se_syncable_logical}'; skip upsert"
+      )
+      0
     rescue StandardError => error
       SearchEngine.config.logger&.error("search_engine_syncable sync failed: #{error}")
       0
     end
 
+    private
+
+    def __se_syncable_model(logical = __se_syncable_logical)
+      SearchEngine.collection_for(logical) { nil }
+    end
+
+    def __se_syncable_logical
+      _se_syncable_config ? _se_syncable_config.fetch(:logical) : self.class.name.to_s
+    end
+
     module_function
 
     # @api private
-    # @param ar_klass [Class]
-    # @param collection [String,Symbol,nil]
-    # @param actions [Array<String,Symbol>, String, Symbol, nil]
-    # @param sync_strategy [String, Symbol, nil]
-    # @return [Hash]
-    def __normalize_config_for(ar_klass, collection:, actions:, sync_strategy: :callbacks)
-      require 'active_support/inflector'
-
-      logical = (collection || ActiveSupport::Inflector.tableize(ar_klass.name)).to_s
-      normalized_actions = __normalize_actions(actions)
-      normalized_sync_strategy = __normalize_sync_strategy(sync_strategy)
-
-      # Best-effort resolve SearchEngine model now; fall back to lazy resolution
-      se_klass = begin
-        SearchEngine.collection_for(logical)
-      rescue StandardError
-        nil
-      end
-
-      if se_klass.nil? && (normalized_actions.include?(:create) || normalized_actions.include?(:update))
-        SearchEngine.config.logger&.warn(
-          "search_engine_syncable: mapping for '#{logical}' not found at boot; will resolve lazily at runtime"
-        )
-      end
-
-      {
-        logical: logical,
-        actions: normalized_actions,
-        sync_strategy: normalized_sync_strategy,
-        se_klass: se_klass
-      }
-    end
-
-    # @api private
-    # @param actions [Array<String,Symbol>, String, Symbol, nil]
-    # @return [Array<Symbol>]
     def __normalize_actions(actions)
-      allowed = %i[create update destroy]
-      list =
-        if actions.nil?
-          allowed
-        else
-          Array(actions).map { |a| a.to_s.downcase.strip.to_sym }
-        end
-
+      allowed = CALLBACKS.keys
+      list = actions.nil? ? allowed : Array(actions).map { |action| action.to_s.downcase.strip.to_sym }
       invalid = list - allowed
       raise ArgumentError, "search_engine_syncable: actions must be within #{allowed.inspect}" unless invalid.empty?
 
@@ -232,8 +137,6 @@ module SearchEngine
     end
 
     # @api private
-    # @param strategy [String, Symbol, nil]
-    # @return [Symbol]
     def __normalize_sync_strategy(strategy)
       allowed = %i[callbacks postgres_outbox]
       normalized = strategy.nil? ? :callbacks : strategy.to_s.downcase.strip.to_sym
@@ -245,37 +148,22 @@ module SearchEngine
       normalized
     end
 
-    # (no-op placeholder kept for backwards compatibility of method table in case of reloads)
-
     # @api private
-    # @param ar_klass [Class]
-    # @param cfg [Hash]
-    # @return [void]
-    def __register_callbacks_for(ar_klass, cfg)
-      if ar_klass.instance_variable_defined?(:@__se_syncable_callbacks_installed__) &&
-         ar_klass.instance_variable_get(:@__se_syncable_callbacks_installed__)
-        return
+    def __register_callbacks_for(ar_klass, config)
+      timing = config.fetch(:timing)
+      config.fetch(:actions).each do |action|
+        # An inherited callback can be narrowed or disabled by a subclass declaration.
+        enabled = lambda do
+          current = _se_syncable_config
+          current[:sync_strategy] == :callbacks && current[:timing] == timing && current[:actions].include?(action)
+        end
+        method = CALLBACKS.fetch(action)
+        if timing == :after_commit
+          ar_klass.after_commit method, on: action, if: enabled
+        else
+          ar_klass.public_send("after_#{action}", method, if: enabled)
+        end
       end
-
-      actions = cfg[:actions]
-      timing = begin
-        SearchEngine.config.syncable_callback_timing
-      rescue StandardError
-        :after_commit
-      end
-
-      if timing == :after_commit
-        upsert_actions = actions & %i[create update]
-        ar_klass.after_commit :__se_syncable_upsert!, on: upsert_actions unless upsert_actions.empty?
-        ar_klass.after_destroy_commit :__se_syncable_delete! if actions.include?(:destroy)
-      else
-        ar_klass.after_create :__se_syncable_upsert! if actions.include?(:create)
-        ar_klass.after_update :__se_syncable_upsert! if actions.include?(:update)
-        ar_klass.after_destroy :__se_syncable_delete! if actions.include?(:destroy)
-      end
-
-      ar_klass.instance_variable_set(:@__se_syncable_callbacks_installed__, true)
-      nil
     end
   end
 end
