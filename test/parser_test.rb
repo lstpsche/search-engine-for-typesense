@@ -144,6 +144,31 @@ class ParserTest < Minitest::Test
     end
   end
 
+  def test_filter_type_errors_keep_field_and_type_without_retaining_bound_data
+    private_value = 'customer-private@example.test'
+    field_types = { 'brand_id' => 'integer', 'price' => 'numeric', 'active' => 'boolean', 'created_at' => 'time' }
+    field_types.each do |field, type|
+      error = assert_raises(SearchEngine::Errors::InvalidType) { Product.where("#{field} = ?", private_value) }
+
+      refute_includes error.full_message, private_value
+      refute_includes error.to_h.inspect, private_value
+      assert_equal field, error.details[:field]
+      assert_equal type, error.details[:expected]
+      assert_equal 'String', error.details[:got]
+    end
+  end
+
+  def test_template_errors_do_not_include_fixed_literals
+    private_value = 'customer-private@example.test'
+    template = "name:=`#{private_value}` && price > ?"
+    [[], [1]].each do |binds|
+      error = assert_raises(SearchEngine::Errors::InvalidOperator) { Product.where(template, *binds) }
+
+      refute_includes error.full_message, private_value
+      refute_includes error.to_h.inspect, private_value
+    end
+  end
+
   def test_in_requires_non_empty_array
     assert_raises(SearchEngine::Errors::InvalidType) do
       SearchEngine::DSL::Parser.parse(['brand_id IN ?', []], klass: Product)

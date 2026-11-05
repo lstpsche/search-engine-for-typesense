@@ -47,7 +47,7 @@ module SearchEngine
         when String
           if placeholders?(input)
             needed = count_placeholders(input)
-            ensure_placeholder_arity!(needed, args.length, input)
+            ensure_placeholder_arity!(needed, args.length)
             parse_template(input, args, klass: klass)
           else
             parse_raw(input)
@@ -87,7 +87,7 @@ module SearchEngine
             if placeholders?(entry)
               needed = count_placeholders(entry)
               args_for_template = items[(i + 1)..(i + needed)] || []
-              ensure_placeholder_arity!(needed, args_for_template.length, entry)
+              ensure_placeholder_arity!(needed, args_for_template.length)
               nodes << parse_template(entry, args_for_template, klass: klass)
               i += 1 + needed
             else
@@ -132,7 +132,7 @@ module SearchEngine
                       entry[1..]
                     end
         needed = count_placeholders(template)
-        ensure_placeholder_arity!(needed, Array(args_list).length, template)
+        ensure_placeholder_arity!(needed, Array(args_list).length)
         parse_template(template, Array(args_list), klass: klass)
       end
 
@@ -206,9 +206,8 @@ module SearchEngine
         m = template.match(/\A\s*([A-Za-z_][A-Za-z0-9_]*)\s*(=|!=|>=|<=|>|<|IN|NOT\s+IN|MATCHES|PREFIX)\s*\?\s*\z/i)
         unless m
           raise SearchEngine::Errors::InvalidOperator.new(
-            "invalid template '#{template}'. Supported: =, !=, >, >=, <, <=, IN, NOT IN, MATCHES, PREFIX",
-            doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/query-dsl#troubleshooting',
-            details: { template: template }
+            'invalid filter template. Supported operators: =, !=, >, >=, <, <=, IN, NOT IN, MATCHES, PREFIX',
+            doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/query-dsl#troubleshooting'
           )
         end
 
@@ -268,7 +267,7 @@ module SearchEngine
                         arr[1..]
                       end
           needed = count_placeholders(template)
-          ensure_placeholder_arity!(needed, Array(args_list).length, template)
+          ensure_placeholder_arity!(needed, Array(args_list).length)
           parse_template(template, Array(args_list), klass: klass)
         else
           parse_list(arr, klass: klass, joins: joins)
@@ -285,13 +284,13 @@ module SearchEngine
         SearchEngine::Filters::Sanitizer.count_placeholders(str)
       end
 
-      def ensure_placeholder_arity!(needed, provided, template)
+      def ensure_placeholder_arity!(needed, provided)
         return if needed == provided
 
         raise SearchEngine::Errors::InvalidOperator.new(
-          "expected #{needed} args for #{needed} placeholders in template '#{template}', got #{provided}.",
+          "expected #{needed} args for #{needed} placeholders, got #{provided}.",
           doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/query-dsl#troubleshooting',
-          details: { needed: needed, provided: provided, template: template }
+          details: { needed: needed, provided: provided }
         )
       end
 
@@ -354,7 +353,7 @@ module SearchEngine
         return if values.is_a?(Array) && !values.empty?
 
         raise SearchEngine::Errors::InvalidType.new(
-          invalid_type_message(field: field, klass: klass, expectation: 'a non-empty Array', got: values),
+          "expected #{field.inspect} to be a non-empty Array for #{klass} (got #{values.class})",
           doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/query-dsl#troubleshooting',
           details: { field: field, got_class: values.class.name }
         )
@@ -374,7 +373,7 @@ module SearchEngine
         # If generic coercion returned :__no_coercion__, try to coerce based on type hint
         case type_hint
         when :boolean
-          coerce_boolean(value, type_hint)
+          coerce_boolean(value, type_hint, field: field, klass: klass)
         when :time, :datetime, :time_string, :datetime_string
           coerce_time(value, type_hint, field: field, klass: klass)
 
@@ -391,7 +390,7 @@ module SearchEngine
       end
 
       def coerce_value(value, type_hint: nil, field: nil, klass: nil)
-        coerced_bool = coerce_boolean(value, type_hint)
+        coerced_bool = coerce_boolean(value, type_hint, field: field, klass: klass)
         return coerced_bool unless coerced_bool.equal?(:__no_coercion__)
 
         coerced_time = coerce_time(value, type_hint, field: field, klass: klass)
@@ -403,18 +402,14 @@ module SearchEngine
         value
       end
 
-      def coerce_boolean(value, type_hint)
+      def coerce_boolean(value, type_hint, field:, klass:)
         return :__no_coercion__ unless type_boolean?(type_hint) && value.is_a?(String)
 
         lc = value.strip.downcase
         return true if lc == 'true'
         return false if lc == 'false'
 
-        raise SearchEngine::Errors::InvalidType.new(
-          invalid_type_message(field: nil, klass: nil, expectation: 'boolean', got: value),
-          doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/query-dsl#troubleshooting',
-          details: { got: value }
-        )
+        raise invalid_type(field, klass, 'boolean', value)
       end
       private_class_method :coerce_boolean
 
@@ -441,12 +436,9 @@ module SearchEngine
         else
           :__no_coercion__
         end
-      rescue StandardError
-        raise SearchEngine::Errors::InvalidType.new(
-          invalid_type_message(field: field, klass: klass, expectation: 'time', got: value),
-          doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/query-dsl#troubleshooting',
-          details: { field: field, got: value }
-        )
+      rescue ArgumentError, TypeError, RangeError
+        # Time.parse includes the input in its exception, which error reporters also traverse.
+        raise invalid_type(field, klass, 'time', value), cause: nil
       end
       private_class_method :coerce_time
 
@@ -455,29 +447,16 @@ module SearchEngine
           return value if value.is_a?(Integer)
 
           if value.is_a?(String)
-            begin
-              int_val = Integer(value, 10)
-              # Typesense compares document IDs byte-for-byte. Canonical numeric
-              # IDs may use the integer hint; converting "0042" would target "42".
-              return value if field.to_s == 'id' && value != int_val.to_s
+            number = Integer(value, 10, exception: false)
+            raise invalid_type(field, klass, 'integer', value) unless number
 
-              return int_val
-            rescue StandardError
-              raise SearchEngine::Errors::InvalidType.new(
-                invalid_type_message(field: field, klass: klass, expectation: 'integer', got: value),
-                doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/query-dsl#troubleshooting',
-                details: { field: field, got: value }
-              )
-            end
+            # Typesense compares document IDs byte-for-byte. Converting "0042" would target "42".
+            return value if field.to_s == 'id' && value != number.to_s
+
+            return number
           end
 
-          if value.is_a?(Numeric)
-            raise SearchEngine::Errors::InvalidType.new(
-              invalid_type_message(field: field, klass: klass, expectation: 'integer', got: value),
-              doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/query-dsl#troubleshooting',
-              details: { field: field, got: value }
-            )
-          end
+          raise invalid_type(field, klass, 'integer', value) if value.is_a?(Numeric)
 
           return :__no_coercion__
         end
@@ -487,16 +466,10 @@ module SearchEngine
           return value.to_f if value.is_a?(Numeric)
 
           if value.is_a?(String)
-            begin
-              Float(value)
-            rescue StandardError
-              raise SearchEngine::Errors::InvalidType.new(
-                invalid_type_message(field: field, klass: klass, expectation: 'numeric', got: value),
-                doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/query-dsl#troubleshooting',
-                details: { field: field, got: value }
-              )
-            end
-            return value.to_f
+            number = Float(value, exception: false)
+            raise invalid_type(field, klass, 'numeric', value) unless number
+
+            return number
           end
         end
 
@@ -574,10 +547,17 @@ module SearchEngine
         best.first.to_sym
       end
 
-      def invalid_type_message(field:, klass:, expectation:, got:)
-        klass_name = klass.respond_to?(:name) && klass.name ? klass.name : klass.to_s
-        %(expected #{field.inspect} to be #{expectation} for #{klass_name} (got #{got.class}: #{got.inspect}))
+      def invalid_type(field, klass, expectation, value)
+        subject = field ? field.inspect : 'filter value'
+        model = " for #{klass}" if klass
+        actual = value.class.name
+        SearchEngine::Errors::InvalidType.new(
+          "expected #{subject} to be #{expectation}#{model} (got #{actual})",
+          doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/query-dsl#troubleshooting',
+          details: { field: field, expected: expectation, got: actual }
+        )
       end
+      private_class_method :invalid_type
 
       def validate_assoc_and_join!(klass, assoc_name, joins)
         # Validate association exists and config completeness
