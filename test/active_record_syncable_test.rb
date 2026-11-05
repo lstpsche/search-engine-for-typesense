@@ -8,83 +8,51 @@ class ActiveRecordSyncableTest < Minitest::Test
     Class.new do
       include SearchEngine::ActiveRecordSyncable
 
-      @__registered_callbacks__ = []
+      @registered_callbacks = []
 
       class << self
-        attr_reader :__registered_callbacks__
+        attr_reader :registered_callbacks
 
-        %i[
-          after_create after_update after_destroy
-          after_commit after_destroy_commit
-        ].each do |cb|
-          define_method(cb) do |method_name, **options|
-            entry = [cb, method_name]
-            entry << options unless options.empty?
-            @__registered_callbacks__ << entry
+        %i[after_commit after_create after_update after_destroy].each do |callback|
+          define_method(callback) do |filter, **options|
+            @registered_callbacks << [callback, filter, options[:on]]
           end
         end
       end
     end
   end
 
-  def test_registers_after_commit_callbacks_by_default
-    mock_klass = build_mock_ar_class
-    cfg = { actions: %i[create update destroy] }
-
-    SearchEngine::ActiveRecordSyncable.__register_callbacks_for(mock_klass, cfg)
-
-    callbacks = mock_klass.__registered_callbacks__
-    assert_includes callbacks, [:after_commit, :__se_syncable_upsert!, { on: %i[create update] }]
-    assert_includes callbacks, %i[after_destroy_commit __se_syncable_delete!]
-
-    refute(callbacks.any? { |cb, _| cb == :after_create })
-    refute(callbacks.any? { |cb, _| cb == :after_update })
-    refute(callbacks.any? { |cb, _| cb == :after_destroy })
-  end
-
   def test_macro_uses_callbacks_strategy_by_default
-    mock_klass = build_mock_ar_class
+    model = build_mock_ar_class
+    model.search_engine_syncable(collection: :products)
 
-    mock_klass.search_engine_syncable(collection: :products)
-
-    cfg = mock_klass.instance_variable_get(:@__se_syncable_cfg__)
-    assert_equal :callbacks, cfg[:sync_strategy]
-    assert_equal 'products', cfg[:logical]
-    assert_equal %i[create update destroy], cfg[:actions]
-
-    callbacks = mock_klass.__registered_callbacks__
-    assert_includes callbacks, [:after_commit, :__se_syncable_upsert!, { on: %i[create update] }]
-    assert_includes callbacks, %i[after_destroy_commit __se_syncable_delete!]
+    config = model._se_syncable_config
+    assert_equal :callbacks, config[:sync_strategy]
+    assert_equal 'products', config[:logical]
+    assert_equal %i[create update destroy], config[:actions]
+    assert_equal [
+      %i[after_commit __se_syncable_create! create],
+      %i[after_commit __se_syncable_upsert! update],
+      %i[after_commit __se_syncable_delete! destroy]
+    ], model.registered_callbacks
   end
 
   def test_postgres_outbox_strategy_stores_config_without_callbacks
-    mock_klass = build_mock_ar_class
+    model = build_mock_ar_class
+    model.search_engine_syncable(collection: :products, on: %i[create destroy], sync_strategy: 'postgres_outbox')
 
-    mock_klass.search_engine_syncable(collection: :products, on: %i[create destroy], sync_strategy: :postgres_outbox)
-
-    cfg = mock_klass.instance_variable_get(:@__se_syncable_cfg__)
-    assert_equal :postgres_outbox, cfg[:sync_strategy]
-    assert_equal 'products', cfg[:logical]
-    assert_equal %i[create destroy], cfg[:actions]
-    assert_empty mock_klass.__registered_callbacks__
-    refute mock_klass.instance_variable_defined?(:@__se_syncable_callbacks_installed__)
-  end
-
-  def test_string_sync_strategy_normalizes_to_symbol
-    mock_klass = build_mock_ar_class
-
-    mock_klass.search_engine_syncable(collection: :products, sync_strategy: 'postgres_outbox')
-
-    cfg = mock_klass.instance_variable_get(:@__se_syncable_cfg__)
-    assert_equal :postgres_outbox, cfg[:sync_strategy]
-    assert_empty mock_klass.__registered_callbacks__
+    config = model._se_syncable_config
+    assert_equal :postgres_outbox, config[:sync_strategy]
+    assert_equal 'products', config[:logical]
+    assert_equal %i[create destroy], config[:actions]
+    assert_empty model.registered_callbacks
   end
 
   def test_invalid_sync_strategy_raises_clear_error
-    mock_klass = build_mock_ar_class
+    model = build_mock_ar_class
 
     error = assert_raises(ArgumentError) do
-      mock_klass.search_engine_syncable(collection: :products, sync_strategy: :sidekiq)
+      model.search_engine_syncable(collection: :products, sync_strategy: :sidekiq)
     end
 
     assert_includes error.message, 'search_engine_syncable: sync_strategy must be within'
@@ -93,47 +61,29 @@ class ActiveRecordSyncableTest < Minitest::Test
   end
 
   def test_registers_after_save_callbacks_with_legacy_config
-    original_timing = SearchEngine.config.syncable_callback_timing
-    SearchEngine.config.syncable_callback_timing = :after_save
+    model = build_mock_ar_class
 
-    mock_klass = build_mock_ar_class
-    cfg = { actions: %i[create update destroy] }
+    SearchEngine.config.stub(:syncable_callback_timing, :after_save) do
+      model.search_engine_syncable(collection: :products)
+    end
 
-    SearchEngine::ActiveRecordSyncable.__register_callbacks_for(mock_klass, cfg)
-
-    callbacks = mock_klass.__registered_callbacks__
-    assert_includes callbacks, %i[after_create __se_syncable_upsert!]
-    assert_includes callbacks, %i[after_update __se_syncable_upsert!]
-    assert_includes callbacks, %i[after_destroy __se_syncable_delete!]
-
-    refute(callbacks.any? { |cb, _| cb == :after_create_commit })
-    refute(callbacks.any? { |cb, _| cb == :after_update_commit })
-    refute(callbacks.any? { |cb, _| cb == :after_destroy_commit })
-  ensure
-    SearchEngine.config.syncable_callback_timing = original_timing
+    assert_equal [
+      [:after_create, :__se_syncable_create!, nil],
+      [:after_update, :__se_syncable_upsert!, nil],
+      [:after_destroy, :__se_syncable_delete!, nil]
+    ], model.registered_callbacks
   end
 
-  def test_registers_only_requested_actions
-    mock_klass = build_mock_ar_class
-    cfg = { actions: %i[create] }
+  def test_repeated_declarations_register_each_requested_action_once
+    model = build_mock_ar_class
+    2.times { model.search_engine_syncable(collection: :products, on: :create) }
 
-    SearchEngine::ActiveRecordSyncable.__register_callbacks_for(mock_klass, cfg)
-
-    callbacks = mock_klass.__registered_callbacks__
-    assert_equal 1, callbacks.size
-    assert_includes callbacks, [:after_commit, :__se_syncable_upsert!, { on: [:create] }]
+    assert_equal [%i[after_commit __se_syncable_create! create]], model.registered_callbacks
   end
 
-  def test_guard_against_double_install
-    mock_klass = build_mock_ar_class
-    cfg = { actions: %i[create update destroy] }
-
-    SearchEngine::ActiveRecordSyncable.__register_callbacks_for(mock_klass, cfg)
-    first_count = mock_klass.__registered_callbacks__.size
-
-    SearchEngine::ActiveRecordSyncable.__register_callbacks_for(mock_klass, cfg)
-    second_count = mock_klass.__registered_callbacks__.size
-
-    assert_equal first_count, second_count, 'Callbacks should not be registered twice'
+  def test_unmapped_physical_name_preserves_strict_and_optional_registry_lookups
+    assert_nil SearchEngine.collection_for('bare-products') { nil }
+    error = assert_raises(ArgumentError) { SearchEngine.collection_for('bare-products') }
+    assert_includes error.message, "Unregistered collection: 'bare-products'"
   end
 end

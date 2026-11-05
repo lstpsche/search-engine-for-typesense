@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require 'active_support/inflector'
+
 # Internal SearchEngine registry and APIs for model mapping.
 module SearchEngine
   # Internal registry for mapping Typesense collection names to model classes.
@@ -73,40 +75,22 @@ module SearchEngine
     # Resolve the model class for a given Typesense collection name.
     #
     # @param name [#to_s]
-    # @return [Class]
-    # @raise [ArgumentError] when the collection is not registered
+    # @yield when no model is registered after autoload
+    # @return [Class, Object] registered model or the value of the supplied block
+    # @raise [ArgumentError] when the collection is not registered and no block is supplied
     def collection_for(name)
       normalized_name = name.to_s
       klass = Registry.mapping[normalized_name]
-      return klass if klass
-
-      # Lazy autoload fallback: try to resolve a namespaced model constant
-      # based on the collection name and trigger its registration.
-      begin
-        begin
-          require 'active_support/inflector'
-        rescue StandardError
-          nil
-        end
-
-        demod = if defined?(ActiveSupport::Inflector)
-                  ActiveSupport::Inflector.classify(normalized_name)
-                else
-                  # Minimal classify fallback: singularize by dropping trailing 's' and camelize tokens
-                  base = normalized_name.end_with?('s') ? normalized_name[0..-2] : normalized_name
-                  base.split('_').map { |p| p[0] ? p[0].upcase + p[1..] : '' }.join
-                end
-
-        const_name = "SearchEngine::#{demod}"
-        # Trigger autoload; ignore when constant is missing
-        Object.const_get(const_name)
-      rescue NameError
-        # constant not found; proceed to error
+      if klass
+        # A class can call `collection` before the rest of its file has loaded.
+        # Let Ruby finish (or retry) its autoload before using its identity strategy.
+        load_model_constant(Object, klass.name) if klass.name
+      else
+        load_model_constant(self, ActiveSupport::Inflector.classify(normalized_name))
       end
-
-      # Re-check after potential autoload/registration
       klass = Registry.mapping[normalized_name]
       return klass if klass
+      return yield if block_given?
 
       message = 'Unregistered collection: ' \
                 "'#{normalized_name}'. " \
@@ -116,6 +100,21 @@ module SearchEngine
     end
 
     private
+
+    def load_model_constant(namespace, name)
+      name.split('::').each do |part|
+        break unless namespace.is_a?(Module) && collection_constant_defined?(namespace, part)
+
+        namespace = namespace.const_get(part, false)
+      end
+    end
+
+    def collection_constant_defined?(namespace, part)
+      namespace.const_defined?(part, false)
+    rescue NameError
+      # Physical collection names can contain characters that cannot appear in Ruby constants.
+      false
+    end
 
     def mapping_idempotent?(current, new_klass)
       return false unless current

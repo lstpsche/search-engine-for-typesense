@@ -15,6 +15,16 @@ module SearchEngine
     # Ensure app/search_engine is eager-loadable in production
     config.paths.add 'app/search_engine', eager_load: true
 
+    # Hosts can use inline indexing without loading the Active Job railtie.
+    initializer 'search_engine.optional_jobs', before: :setup_main_autoloader do
+      unless defined?(::ActiveJob::Base)
+        job_root = root.join('app/search_engine/search_engine')
+        Rails.autoloaders.main.do_not_eager_load(
+          job_root.join('index_partition_job.rb'), job_root.join('postgres_outbox/drain_job.rb')
+        )
+      end
+    end
+
     initializer 'search_engine.configuration' do
       cfg = SearchEngine.config
       # Hydrate only blank/unset fields from ENV to avoid clobbering
