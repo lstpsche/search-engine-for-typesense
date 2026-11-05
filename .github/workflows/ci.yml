@@ -30,6 +30,25 @@ jobs:
           bundler-cache: true
       - run: bundle exec bin/test
 
+  rails-6-1:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: .ruby-version
+      - name: Test classic and Zeitwerk hosts
+        run: |
+          export BUNDLE_GEMFILE="$RUNNER_TEMP/rails-6.1.gemfile"
+          cat > "$BUNDLE_GEMFILE" <<'GEMS'
+          source 'https://rubygems.org'
+          gemspec path: ENV.fetch('GITHUB_WORKSPACE')
+          gem 'rails', '~> 6.1.7'
+          gem 'minitest', '< 6'
+          GEMS
+          bundle install
+          bundle exec ruby -rlogger -Itest test/engine_boot_test.rb
+
   integration:
     runs-on: ubuntu-latest
     timeout-minutes: 10
