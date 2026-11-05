@@ -264,27 +264,26 @@ class AsyncPartitionCoordinatorTest < Minitest::Test
 
   def test_timeout_race_preserves_partition_that_completed_before_terminal_transition
     store = RacingTimeoutStore.new
-    jobs = Object.new
-    jobs.define_singleton_method(:set) { |**_kwargs| self }
-    jobs.define_singleton_method(:perform_later) { |*_args, **_kwargs| nil }
-
-    result = SearchEngine::IndexingRun.stub(:generate_id, 'run-timeout-race') do
-      SearchEngine::IndexPartitionJob.stub(:set, ->(queue:) { jobs.set(queue: queue) }) do
-        SearchEngine::AsyncPartitionCoordinator.call(
-          klass: SearchEngine::Author,
-          partitions: [1],
-          into: 'authors_20260604',
-          timeout_s: 0,
-          poll_interval_s: 0,
-          store: store
-        )
-      end
-    end
+    result = timeout_without_workers(store)
 
     assert_equal :ok, result[:status]
     assert_equal 1, result[:success_total]
     assert_equal 0, result[:failed_total]
     assert_nil result[:sample_error]
+  end
+
+  def test_timeout_reports_a_run_evicted_while_marking_pending_partitions
+    store = FakeRunStore.new
+    store.define_singleton_method(:mark_failed) do |run_id:, **|
+      expire(run_id: run_id)
+      raise SearchEngine::IndexingRunStore::StaleRun, 'run expired during timeout'
+    end
+
+    result = timeout_without_workers(store)
+
+    assert_equal :failed, result[:status]
+    assert_equal 1, result[:failed_total]
+    assert_match(/snapshot is missing/, result[:sample_error])
   end
 
   def test_call_returns_failed_result_when_run_snapshot_disappears
@@ -334,5 +333,18 @@ class AsyncPartitionCoordinatorTest < Minitest::Test
 
     assert_equal ['SearchEngine::Author', partition], jobs.enqueued.first[:args]
     assert_equal SearchEngine::IndexingRun.partition_key(partition), jobs.enqueued.first[:kwargs][:partition_key]
+  end
+
+  private
+
+  def timeout_without_workers(store)
+    jobs = Object.new
+    jobs.define_singleton_method(:perform_later) { |*_args, **_kwargs| nil }
+    SearchEngine::IndexPartitionJob.stub(:set, jobs) do
+      SearchEngine::AsyncPartitionCoordinator.call(
+        klass: SearchEngine::Author, partitions: [1], into: 'authors_20260604',
+        timeout_s: 0, poll_interval_s: 0, store: store
+      )
+    end
   end
 end

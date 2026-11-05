@@ -112,8 +112,9 @@ module SearchEngine
 
     def timeout_result(store, run_id, snapshot)
       mark_non_terminal_failed(store, run_id, snapshot)
-      snapshot = store.snapshot(run_id: run_id) || snapshot
-      current_result = SearchEngine::IndexingRun.aggregate_result(snapshot)
+      snapshot = store.snapshot(run_id: run_id)
+      current_result = result_for_snapshot(snapshot)
+      return finish_failure(snapshot, current_result) if invalid_snapshot_result?(current_result)
       return finish_success(snapshot, current_result) if current_result[:status] == :ok
 
       result = failed_result(
@@ -130,11 +131,12 @@ module SearchEngine
       partitions = snapshot && snapshot[:partitions]
       return unless partitions.is_a?(Hash)
 
+      writer = SearchEngine::IndexingRunStore.partition_writer(store)
       partitions.each do |partition_key, entry|
         status = entry[:status].to_s
         next if %w[succeeded failed].include?(status)
 
-        store.mark_failed(
+        writer.mark_failed(
           run_id: run_id,
           partition_key: partition_key,
           error: 'partition did not finish before timeout'

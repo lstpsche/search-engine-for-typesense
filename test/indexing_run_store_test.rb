@@ -7,7 +7,8 @@ class IndexingRunStoreTest < Minitest::Test
   Summary = Struct.new(:docs_total, :success_total, :failed_total, :sample_error, keyword_init: true)
 
   def setup
-    @store = SearchEngine::IndexingRunStore::RailsCache.new(cache: ActiveSupport::Cache::MemoryStore.new)
+    @cache = ActiveSupport::Cache::MemoryStore.new
+    @store = SearchEngine::IndexingRunStore::RailsCache.new(cache: @cache)
   end
 
   def test_partition_keys_are_stable_for_equivalent_hashes
@@ -242,7 +243,7 @@ class IndexingRunStoreTest < Minitest::Test
       ttl_s: 60
     )
     first_key = snapshot[:partitions].keys.first
-    @store.instance_variable_get(:@cache).delete(
+    @cache.delete(
       "search_engine:indexing_run:run-missing-partition:partition:#{first_key}"
     )
 
@@ -250,6 +251,38 @@ class IndexingRunStoreTest < Minitest::Test
     assert_equal :failed, aggregate[:status]
     assert_equal 1, aggregate[:failed_total]
     assert_match(/partition metadata missing/, aggregate[:sample_error])
+  end
+
+  def test_snapshots_batch_partition_reads_and_support_single_read_caches
+    snapshot = @store.create_run(
+      run_id: 'run-batch', collection: 'products', collection_class_name: 'SearchEngine::Product',
+      into: 'products_v2', partitions: [1, 2, 3], ttl_s: 60
+    )
+    reads = SearchEngine::Test.capture_events(/\Acache_read(?:_multi)?\.active_support\z/) do
+      assert_equal snapshot, @store.snapshot(run_id: 'run-batch')
+    end
+    assert_equal(%w[cache_read.active_support cache_read_multi.active_support], reads.map { |event| event[:name] })
+    assert_equal 3, reads.last[:payload][:key].size
+
+    @cache.singleton_class.undef_method(:read_multi)
+    assert_equal snapshot, @store.snapshot(run_id: 'run-batch')
+  end
+
+  def test_failed_cache_writes_are_reported_to_partition_workers
+    snapshot = @store.create_run(
+      run_id: 'run-write-failure', collection: 'products', collection_class_name: 'SearchEngine::Product',
+      into: 'products_v2', partitions: [1], ttl_s: 60
+    )
+    key = snapshot[:partitions].keys.first
+    writer = SearchEngine::IndexingRunStore.partition_writer(@store)
+
+    [nil, false].each do |result|
+      error = @cache.stub(:write, result) do
+        assert_raises(IOError) { writer.mark_started(run_id: 'run-write-failure', partition_key: key) }
+      end
+      assert_includes error.message, "run-write-failure:partition:#{key}"
+    end
+    assert_equal 'pending', @store.snapshot(run_id: 'run-write-failure')[:partitions][key][:status]
   end
 
   def test_missing_run_and_partition_fail_loudly
@@ -281,7 +314,7 @@ class IndexingRunStoreTest < Minitest::Test
       ttl_s: 60
     )
     partition_key = snapshot[:partitions].keys.first
-    @store.instance_variable_get(:@cache).delete(
+    @cache.delete(
       "search_engine:indexing_run:run-missing-mutation-partition:partition:#{partition_key}"
     )
 

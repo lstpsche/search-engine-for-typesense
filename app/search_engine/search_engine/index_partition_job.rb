@@ -139,7 +139,7 @@ module SearchEngine
     def indexing_run_store(run_id)
       return nil if run_id.nil?
 
-      SearchEngine::IndexingRunStore.resolve
+      SearchEngine::IndexingRunStore.partition_writer
     end
 
     def retryable_error?(error)
