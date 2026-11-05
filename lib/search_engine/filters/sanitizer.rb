@@ -2,6 +2,7 @@
 
 require 'date'
 require 'time'
+require 'search_engine/joins/guard'
 
 module SearchEngine
   module Filters
@@ -55,6 +56,10 @@ module SearchEngine
         else
           string = if value.respond_to?(:to_time) && !value.is_a?(String)
                      type = Array(klass.attributes[field.to_sym]).first if field && klass.respond_to?(:attributes)
+                     if joined && type.nil? && field.to_s != 'id'
+                       raise ArgumentError, 'joined time filters require a declared type or a string or epoch value'
+                     end
+
                      time = value.to_time
                      return time.to_i.to_s if %i[time datetime integer].include?(type)
 
@@ -182,10 +187,7 @@ module SearchEngine
           return [')', model, joined] if prefix.empty?
 
           if (name = prefix[/\A!?\$([[:alnum:]_-]+)\z/, 1])
-            association = model.joins_config[name.to_sym] if model.respond_to?(:joins_config)
-            collection = association ? association[:collection] : name
-            target = SearchEngine.collection_for(collection) { nil } if model
-            return [')', target, true]
+            return [')', SearchEngine::Joins::Guard.target_model(model, name), true]
           end
         end
         # Lists, object filters and geopoint tuples use their own grammars.

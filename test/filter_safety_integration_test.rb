@@ -90,6 +90,33 @@ class FilterSafetyIntegrationTest < Minitest::Test
     assert_equal ['alpha-ref'], relation.ids
   end
 
+  def test_joined_filters_use_the_target_schema_and_accept_explicit_values_without_a_local_model
+    instant = Time.at(2).utc
+    model, target = opaque_join_fixture(instant)
+    joined = model.joins(:linked)
+    assert_equal ['iso'], joined.where(linked: { stamp: instant.iso8601 }).ids
+    assert_equal ['iso'], joined.where(linked: { code: '002', ref_id: 2.5 }).ids
+    assert_equal ['digits'], joined.where(linked: { stamp: 2 }).ids
+    assert_equal "$#{target}(id:=[`#{instant.iso8601}`])", joined.where(linked: { id: instant }).filter_params
+    assert_raises(ArgumentError) { joined.where(linked: { stamp: instant }).ids }
+    assert_raises(ArgumentError) do
+      joined.where(label: 'row', linked: { stamp: [instant] }).update_all(label: 'changed')
+    end
+    state = { joins: [:linked], filters: ['$linked(stamp:=?)', instant] }
+    assert_raises(ArgumentError) { SearchEngine::Relation.new(model, state) }
+    assert_equal %w[digits iso], model.where(label: 'row').ids.sort
+
+    Class.new(SearchEngine::Base) do
+      collection target
+      attribute :stamp, :time_string
+      attribute :code, :string
+    end
+    assert_equal ['iso'], joined.where(linked: { stamp: instant }).ids
+    assert_equal ['iso'], joined.where(linked: { stamp: instant, code: '002' }).ids
+    assert_equal ['iso'], SearchEngine::Relation.new(model, state).ids
+    assert_raises(SearchEngine::Errors::UnknownJoinField) { joined.where(linked: { missing: 1 }) }
+  end
+
   def test_an_id_wildcard_cannot_become_a_bulk_mutation
     assert_raises(ArgumentError) { Document.where(id: '*').update_all(marker: 'changed') }
     assert_raises(ArgumentError) { Document.delete_by(id: ['2', '*']) }
@@ -121,5 +148,31 @@ class FilterSafetyIntegrationTest < Minitest::Test
     assert_equal %w[4 id,5], Document.where(marker: 'after').ids.sort
     assert_raises(SearchEngine::Errors::InvalidOperator) { Document.where.not('position:<=2').delete_all }
     assert_equal 5, Document.all.count
+  end
+
+  private
+
+  def opaque_join_fixture(instant)
+    fields = [{ name: 'stamp', type: 'string' }, { name: 'code', type: 'string' }, { name: 'ref_id', type: 'float' }]
+    target = fixture_collection(fields)
+    targets = [
+      { id: 'iso', stamp: instant.iso8601, code: '002', ref_id: 2.5 },
+      { id: 'digits', stamp: '2', code: '2', ref_id: 5.5 }
+    ]
+    import_fixture(target, targets)
+    source = fixture_collection([{ name: 'label', type: 'string' },
+                                 { name: 'ref_id', type: 'string', reference: "#{target}.id" }]
+                               )
+    import_fixture(source, targets.map { |row| { id: row[:id], label: 'row', ref_id: row[:id] } })
+    model = Class.new(SearchEngine::Base) do
+      collection source
+      attribute :label, :string
+      attribute :ref_id, :string
+      attribute :stamp, :time
+      attribute :code, :integer
+      join :linked, collection: target, local_key: :ref_id, foreign_key: :id
+      query_by :label
+    end
+    [model, target]
   end
 end

@@ -70,22 +70,8 @@ module SearchEngine
 
     def compile_node(node, parent_prec:, klass: nil)
       case node
-      when SearchEngine::AST::Eq
-        compile_binary(node.field, ':=', node.value, klass: klass)
-      when SearchEngine::AST::NotEq
-        compile_binary(node.field, ':!=', node.value, klass: klass)
-      when SearchEngine::AST::Gt
-        compile_binary(node.field, ':>', node.value, klass: klass)
-      when SearchEngine::AST::Gte
-        compile_binary(node.field, ':>=', node.value, klass: klass)
-      when SearchEngine::AST::Lt
-        compile_binary(node.field, ':<', node.value, klass: klass)
-      when SearchEngine::AST::Lte
-        compile_binary(node.field, ':<=', node.value, klass: klass)
-      when SearchEngine::AST::In
-        compile_binary(node.field, ':=', node.values, klass: klass)
-      when SearchEngine::AST::NotIn
-        compile_binary(node.field, ':!=', node.values, klass: klass)
+      when SearchEngine::AST::BinaryOp
+        compile_binary(node, klass: klass)
       when SearchEngine::AST::And
         compile_boolean(node.children, ' && ', parent_prec: parent_prec, my_prec: precedence(:and), klass: klass)
       when SearchEngine::AST::Or
@@ -104,45 +90,24 @@ module SearchEngine
     end
     private_class_method :compile_node
 
-    def compile_binary(field, op, value, klass: nil)
-      fstr = field.to_s
-      if (m = fstr.match(/\A\$([^.]*)\.(.+)\z/))
-        assoc = m[1]
-        inner = m[2]
-        # Render joined field as $assoc(inner OP value) per expected Typesense join filter syntax
-        target_klass = begin
-          cfg = klass.respond_to?(:join_for) ? klass.join_for(assoc.to_sym) : nil
-          coll = cfg ? cfg[:collection] : nil
-          coll ? SearchEngine.collection_for(coll) : nil
-        rescue StandardError
-          nil
-        end
-        rhs = quote(value, field: inner, klass: target_klass || klass, joined: true)
-        "$#{assoc}(#{inner}#{op}#{rhs})"
-      else
-        rhs = quote(value, field: fstr, klass: klass)
-        binary(field, op, rhs)
+    def compile_binary(node, klass:)
+      if (joined = extract_join_inner_binary(node, klass: klass))
+        assoc, inner = joined
+        return "$#{assoc}(#{inner})"
       end
+
+      "#{node.field}#{op_for(node)}#{quote(node.right, field: node.field, klass: klass)}"
     end
     private_class_method :compile_binary
-
-    def binary(field, op, rhs)
-      "#{field}#{op}#{rhs}"
-    end
-    private_class_method :binary
 
     def compile_boolean(children, joiner, parent_prec:, my_prec:, klass: nil)
       # For conjunctions only, merge multiple $assoc(inner ...) predicates targeting
       # the same association into a single $assoc(inner && inner ...) expression
       # to satisfy Typesense join filter rules.
       if joiner == ' && '
-        merged = merge_join_predicates(children, parent_prec: parent_prec, my_prec: my_prec, klass: klass,
-joiner: joiner
-        )
-        return merged if merged
+        return merge_join_predicates(children, parent_prec: parent_prec, my_prec: my_prec, klass: klass)
       end
 
-      # Fallback/default behavior
       parts = children.map do |child|
         cstr = compile_node(child, parent_prec: my_prec, klass: klass)
         if needs_parentheses?(child, parent_prec: my_prec)
@@ -172,40 +137,26 @@ joiner: joiner
     # @param parent_prec [Integer] parent operator precedence
     # @param my_prec [Integer] current operator precedence
     # @param klass [Class, nil] model class for context
-    # @param joiner [String] operator joiner (' && ' or ' || ')
-    # @return [String, nil] merged expression string, or nil if no joins to merge
-    def merge_join_predicates(children, parent_prec:, my_prec:, klass:, joiner:)
-      items = [] # [{ pos:, str: }]
-      assoc_first_pos = {}
-      assoc_inner_map = {} # { assoc => [inner_str, ...] }
-
-      children.each_with_index do |child, idx|
-        inner = extract_join_inner_binary(child, klass: klass)
-        if inner
-          assoc, inner_expr = inner
-          assoc_first_pos[assoc] = idx unless assoc_first_pos.key?(assoc)
-          assoc_inner_map[assoc] ||= []
-          assoc_inner_map[assoc] << inner_expr
+    # @return [String] compiled conjunction
+    def merge_join_predicates(children, parent_prec:, my_prec:, klass:)
+      groups = {}
+      parts = children.map.with_index do |child, position|
+        if (joined = extract_join_inner_binary(child, klass: klass))
+          assoc, predicate = joined
+          group = groups[assoc] ||= { position: position, predicates: [] }
+          group[:predicates] << predicate
           next
         end
 
-        cstr = compile_node(child, parent_prec: my_prec, klass: klass)
-        cstr = "(#{cstr})" if needs_parentheses?(child, parent_prec: my_prec)
-        items << { pos: idx, str: cstr }
+        expression = compile_node(child, parent_prec: my_prec, klass: klass)
+        needs_parentheses?(child, parent_prec: my_prec) ? "(#{expression})" : expression
       end
 
-      return nil if assoc_inner_map.empty?
-
-      # Emit one consolidated token per assoc at the first position it appeared
-      assoc_first_pos.sort_by { |_a, pos| pos }.each do |assoc, pos|
-        inners = Array(assoc_inner_map[assoc]).flatten.compact
-        next if inners.empty?
-
-        token = "$#{assoc}(#{inners.join(' && ')})"
-        items << { pos: pos, str: token }
+      groups.each do |assoc, group|
+        parts[group[:position]] = "$#{assoc}(#{group[:predicates].join(' && ')})"
       end
 
-      inner = items.sort_by { |it| it[:pos] }.map { |it| it[:str] }.join(joiner)
+      inner = parts.compact.join(' && ')
       parent_prec > my_prec ? "(#{inner})" : inner
     end
     private_class_method :merge_join_predicates
@@ -213,37 +164,12 @@ joiner: joiner
     # Try to extract join association and compiled inner expression for a binary node
     # with a joined field like "$assoc.field". Returns [assoc(String), inner(String)] or nil.
     def extract_join_inner_binary(node, klass: nil)
-      case node
-      when SearchEngine::AST::Eq, SearchEngine::AST::NotEq,
-           SearchEngine::AST::Gt, SearchEngine::AST::Gte,
-           SearchEngine::AST::Lt, SearchEngine::AST::Lte,
-           SearchEngine::AST::In, SearchEngine::AST::NotIn
-        field = node.respond_to?(:field) ? node.field.to_s : nil
-        return nil unless field&.start_with?('$')
+      return unless node.is_a?(SearchEngine::AST::BinaryOp) && node.field.start_with?('$')
 
-        m = field.match(/\A\$([^.]*)\.(.+)\z/)
-        return nil unless m
-
-        assoc = m[1]
-        inner_field = m[2]
-        op = op_for(node)
-        target_klass = begin
-          cfg = klass.respond_to?(:join_for) ? klass.join_for(assoc.to_sym) : nil
-          coll = cfg ? cfg[:collection] : nil
-          coll ? SearchEngine.collection_for(coll) : nil
-        rescue StandardError
-          nil
-        end
-        rhs = if node.respond_to?(:value)
-                quote(node.value, field: inner_field, klass: target_klass || klass, joined: true)
-              elsif node.respond_to?(:values)
-                quote(node.values, field: inner_field, klass: target_klass || klass, joined: true)
-              else
-                return nil
-              end
-
-        [assoc, "#{inner_field}#{op}#{rhs}"]
-      end
+      assoc, field = node.field.delete_prefix('$').split('.', 2)
+      target = SearchEngine::Joins::Guard.target_model(klass, assoc)
+      rhs = quote(node.right, field: field, klass: target, joined: true)
+      [assoc, "#{field}#{op_for(node)}#{rhs}"]
     end
     private_class_method :extract_join_inner_binary
 
@@ -258,7 +184,7 @@ joiner: joiner
       when SearchEngine::AST::In then ':='
       when SearchEngine::AST::NotIn then ':!='
       else
-        raise Error, "Unknown binary node for join extraction: #{node.class}"
+        raise Error, "Compiler: unsupported binary predicate #{node.class}"
       end
     end
     private_class_method :op_for
