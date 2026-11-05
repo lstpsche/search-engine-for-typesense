@@ -30,6 +30,12 @@ module SearchEngine
         @monotonic_clock = monotonic_clock || -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) }
       end
 
+      # Single-target claims issue a fresh owner even when a caller reuses its worker id.
+      # Target-scoped repositories accept the caller's per-attempt owner.
+      def assigns_event_lease_owner?
+        !delivery_mode?
+      end
+
       # Claim pending rows for one worker and return event objects.
       # @param limit [Integer]
       # @param worker_id [String]
@@ -38,16 +44,15 @@ module SearchEngine
         return claim_pending_deliveries(limit: limit, worker_id: worker_id) if delivery_mode?
 
         reset_stale_processing!
-        rows = []
-
         connection.transaction do
           rows = select_rows(claim_select_sql(limit))
-          ids = rows.map { |row| row_value(row, :id) }
-          execute(supersede_older_pending_sql(rows)) unless rows.empty?
-          execute(claim_update_sql(ids, worker_id)) unless ids.empty?
-        end
+          next [] if rows.empty?
 
-        rows.map { |row| Event.new(row) }
+          execute(supersede_older_pending_sql(rows))
+          ids = rows.map { |row| row_value(row, :id) }
+          owner = Event.new_lease_owner(worker_id)
+          select_rows(claim_update_sql(ids, owner)).map { |row| Event.new(row) }.sort_by { |event| event.id.to_i }
+        end
       end
 
       # Reset timed-out processing rows to pending.
@@ -73,62 +78,37 @@ module SearchEngine
         SQL
       end
 
-      # @param events [Array<SearchEngine::PostgresOutbox::Event, Integer, String>]
+      # @param events [Array<SearchEngine::PostgresOutbox::Event>]
       # @return [Array<Integer, String>] event ids whose current lease was acknowledged
       def mark_processed!(events)
-        return update_delivery_status!(events, 'processed', extra: PROCESSED_AT_ASSIGNMENT) if delivery_mode?
-
-        update_status!(events, 'processed', extra: PROCESSED_AT_ASSIGNMENT)
+        acknowledge!(events) { "status = 'processed', #{PROCESSED_AT_ASSIGNMENT}" }
       end
 
-      # @param events [Array<SearchEngine::PostgresOutbox::Event, Integer, String>]
+      # @param events [Array<SearchEngine::PostgresOutbox::Event>]
       # @return [Array<Integer, String>] event ids whose current lease was acknowledged
       def mark_superseded!(events)
-        return update_delivery_status!(events, 'superseded', extra: PROCESSED_AT_ASSIGNMENT) if delivery_mode?
-
-        update_status!(events, 'superseded', extra: PROCESSED_AT_ASSIGNMENT)
+        acknowledge!(events) { "status = 'superseded', #{PROCESSED_AT_ASSIGNMENT}" }
       end
 
-      # @param events [Array<SearchEngine::PostgresOutbox::Event, Integer, String>]
+      # @param events [Array<SearchEngine::PostgresOutbox::Event>]
       # @param error [Exception, String]
       # @return [Array<Integer, String>] event ids whose current lease was acknowledged
       def mark_retryable!(events, error:)
-        ids = event_ids(events)
-        return [] if ids.empty?
-        return mark_delivery_retryable!(events, error: error) if delivery_mode?
-
-        execute(<<~SQL)
-          UPDATE #{quoted_table}
-          SET attempts = attempts + 1,
-              status = CASE WHEN attempts + 1 >= #{max_attempts} THEN 'failed' ELSE 'pending' END,
-              next_attempt_at = CURRENT_TIMESTAMP + #{retry_interval_case_sql},
-              locked_at = NULL,
-              locked_by = NULL,
-              last_error = #{quote(truncate_error(error))},
-              updated_at = CURRENT_TIMESTAMP
-          WHERE id IN (#{ids_sql(ids)})
-        SQL
-        ids
+        acknowledge!(events) do
+          <<~SQL.chomp
+            attempts = attempts + 1,
+            status = CASE WHEN attempts + 1 >= #{max_attempts} THEN 'failed' ELSE 'pending' END,
+            next_attempt_at = CURRENT_TIMESTAMP + #{retry_interval_case_sql},
+            last_error = #{quote(truncate_error(error))}
+          SQL
+        end
       end
 
-      # @param events [Array<SearchEngine::PostgresOutbox::Event, Integer, String>]
+      # @param events [Array<SearchEngine::PostgresOutbox::Event>]
       # @param error [Exception, String]
       # @return [Array<Integer, String>] event ids whose current lease was acknowledged
       def mark_failed!(events, error:)
-        ids = event_ids(events)
-        return [] if ids.empty?
-        return mark_delivery_failed!(events, error: error) if delivery_mode?
-
-        execute(<<~SQL)
-          UPDATE #{quoted_table}
-          SET status = 'failed',
-              locked_at = NULL,
-              locked_by = NULL,
-              last_error = #{quote(truncate_error(error))},
-              updated_at = CURRENT_TIMESTAMP
-          WHERE id IN (#{ids_sql(ids)})
-        SQL
-        ids
+        acknowledge!(events) { "status = 'failed', last_error = #{quote(truncate_error(error))}" }
       end
 
       # Refresh the lock timestamp only for deliveries still owned by these claims.
@@ -885,7 +865,7 @@ module SearchEngine
             ORDER BY ranked_candidate_events.id ASC
             LIMIT #{limit}
           )
-          SELECT outbox.*
+          SELECT outbox.id, outbox.collection, outbox.document_id
           FROM #{quoted_table} outbox
           INNER JOIN latest_due
             ON latest_due.id = outbox.id
@@ -903,6 +883,7 @@ module SearchEngine
               updated_at = CURRENT_TIMESTAMP
           WHERE id IN (#{ids_sql(ids)})
             AND status = 'pending'
+          RETURNING *, locked_by AS event_lease_owner
         SQL
       end
 
@@ -1098,58 +1079,29 @@ module SearchEngine
         refresh_event_statuses!(parent_ids)
       end
 
-      def update_status!(events, status, extra:)
-        ids = event_ids(events)
-        return [] if ids.empty?
+      def acknowledge!(events)
+        events = Array(events).compact
+        return [] if events.empty?
 
-        execute(<<~SQL)
+        assignments = "#{yield}, locked_at = NULL, locked_by = NULL"
+        return mutate_claimed_deliveries!(events, assignments: assignments) if delivery_mode?
+
+        claims = events.map do |event|
+          unless event.is_a?(Event) && event.id && event.delivery_id.nil? && !event.event_lease_owner.to_s.empty?
+            raise ArgumentError, 'single-target mutations require Event objects returned by claim_pending'
+          end
+
+          "(CAST(#{quote(event.id)} AS bigint), #{quote(event.event_lease_owner)})"
+        end
+
+        rows = select_rows(<<~SQL)
           UPDATE #{quoted_table}
-          SET status = #{quote(status)},
-              #{extra},
-              locked_at = NULL,
-              locked_by = NULL,
-              updated_at = CURRENT_TIMESTAMP
-          WHERE id IN (#{ids_sql(ids)})
+          SET #{assignments}, updated_at = CURRENT_TIMESTAMP
+          WHERE status = 'processing'
+            AND (id, locked_by) IN (VALUES #{claims.join(', ')})
+          RETURNING id
         SQL
-        ids
-      end
-
-      def update_delivery_status!(events, status, extra:)
-        mutate_claimed_deliveries!(
-          events,
-          assignments: <<~SQL.chomp
-            status = #{quote(status)},
-            #{extra},
-            locked_at = NULL,
-            locked_by = NULL
-          SQL
-        )
-      end
-
-      def mark_delivery_retryable!(events, error:)
-        mutate_claimed_deliveries!(
-          events,
-          assignments: <<~SQL.chomp
-            attempts = attempts + 1,
-            status = CASE WHEN attempts + 1 >= #{max_attempts} THEN 'failed' ELSE 'pending' END,
-            next_attempt_at = CURRENT_TIMESTAMP + #{retry_interval_case_sql},
-            locked_at = NULL,
-            locked_by = NULL,
-            last_error = #{quote(truncate_error(error))}
-          SQL
-        )
-      end
-
-      def mark_delivery_failed!(events, error:)
-        mutate_claimed_deliveries!(
-          events,
-          assignments: <<~SQL.chomp
-            status = 'failed',
-            locked_at = NULL,
-            locked_by = NULL,
-            last_error = #{quote(truncate_error(error))}
-          SQL
-        )
+        rows.map { |row| row_value(row, :id) }
       end
 
       def mutate_claimed_deliveries!(events, assignments:, refresh_parent: true)
@@ -1306,12 +1258,6 @@ module SearchEngine
 
       def ids_sql(ids)
         ids.map { |id| quote(id) }.join(', ')
-      end
-
-      def event_ids(events)
-        Array(events).compact.map do |event|
-          event.respond_to?(:id) ? event.id : event
-        end
       end
 
       def delivery_claims(events)
@@ -1600,7 +1546,7 @@ module SearchEngine
             ORDER BY id ASC
             LIMIT #{collection_limited_candidate_limit}
           )
-          SELECT outbox.*
+          SELECT outbox.id, outbox.collection, outbox.document_id
           FROM #{quoted_table} outbox
           INNER JOIN selected_due
             ON selected_due.id = outbox.id

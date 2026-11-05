@@ -111,7 +111,7 @@ class PostgresOutboxRepositoryTest < Minitest::Test
 
     assert_equal [1, 2], events.map(&:id)
     assert_claim_select_sql(connection.selected_sql.first)
-    assert_claim_update_sql(connection.executed_sql)
+    assert_claim_update_sql(connection)
   end
 
   def test_claim_pending_uses_collection_batch_limits_when_limit_is_omitted
@@ -123,7 +123,7 @@ class PostgresOutboxRepositoryTest < Minitest::Test
 
     assert_equal [1, 2], events.map(&:id)
     assert_collection_limited_claim_sql(connection.selected_sql.first)
-    assert_claim_update_sql(connection.executed_sql)
+    assert_claim_update_sql(connection)
   end
 
   def test_claim_pending_does_not_supersede_when_no_rows_are_claimed
@@ -137,37 +137,79 @@ class PostgresOutboxRepositoryTest < Minitest::Test
     assert_includes connection.executed_sql.first, "status = 'pending'"
   end
 
-  def test_mark_methods_are_noops_for_empty_ids
+  def test_mark_methods_are_noops_for_empty_events
+    repository = SearchEngine::PostgresOutbox::Repository.new
+
+    assert_empty repository.mark_processed!([])
+    assert_empty repository.mark_superseded!([])
+    assert_empty repository.mark_retryable!([], error: 'nope')
+    assert_empty repository.mark_failed!([], error: 'nope')
+  end
+
+  def test_single_target_acknowledgements_require_claimed_events
+    valid = SearchEngine::PostgresOutbox::Event.new(event_row(id: 5).merge('event_lease_owner' => 'worker'))
+    unclaimed = SearchEngine::PostgresOutbox::Event.new(event_row(id: 6))
+    delivery = claimed_event(id: 5, delivery_id: 6, lease_owner: 'worker')
     connection = FakeConnection.new
     repository = SearchEngine::PostgresOutbox::Repository.new(connection: connection)
 
-    repository.mark_processed!([])
-    repository.mark_superseded!([])
-    repository.mark_retryable!([], error: 'nope')
-    repository.mark_failed!([], error: 'nope')
-
+    [5, '5', unclaimed, delivery].each do |invalid|
+      assert_raises(ArgumentError) { repository.mark_processed!([valid, invalid]) }
+      assert_raises(ArgumentError) { repository.mark_superseded!([valid, invalid]) }
+      assert_raises(ArgumentError) { repository.mark_retryable!([valid, invalid], error: 'retry') }
+      assert_raises(ArgumentError) { repository.mark_failed!([valid, invalid], error: 'failed') }
+    end
+    assert_empty connection.selected_sql
     assert_empty connection.executed_sql
   end
 
-  def test_mark_processed_and_superseded_statuses
-    connection = FakeConnection.new
+  def test_mark_processed_and_superseded_report_only_rows_updated_by_the_owned_claim
+    connection = FakeConnection.new(row_sets: [[{ 'id' => 3 }], []])
     repository = SearchEngine::PostgresOutbox::Repository.new(connection: connection)
+    events = [3, 4].map { |id| SearchEngine::PostgresOutbox::Event.new(event_row(id: id).merge(event_lease_owner: 'w')) }
 
-    repository.mark_processed!([3])
-    repository.mark_superseded!([4])
+    assert_equal [3], repository.mark_processed!(events)
+    assert_empty repository.mark_superseded!(events)
+    assert_includes connection.selected_sql[0], "status = 'processed'"
+    assert_includes connection.selected_sql[0], 'processed_at = CURRENT_TIMESTAMP'
+    assert_includes connection.selected_sql[1], "status = 'superseded'"
+    connection.selected_sql.each do |sql|
+      assert_includes sql, "status = 'processing'"
+      assert_includes sql, '(id, locked_by) IN (VALUES'
+      assert_includes sql, 'RETURNING id'
+    end
+  end
 
-    assert_includes connection.executed_sql[0], "status = 'processed'"
-    assert_includes connection.executed_sql[0], 'processed_at = CURRENT_TIMESTAMP'
-    assert_includes connection.executed_sql[1], "status = 'superseded'"
+  def test_acknowledgement_executes_again_under_active_record_query_caching
+    QueryCacheDatabase.establish_connection(adapter: 'sqlite3', database: ':memory:')
+    QueryCacheDatabase.connection_pool.with_connection do |connection|
+      connection.execute(<<~SQL)
+        CREATE TABLE custom_outbox (
+          id bigint PRIMARY KEY, status text, locked_by text, locked_at timestamp, processed_at timestamp,
+          updated_at timestamp
+        )
+      SQL
+      connection.execute("INSERT INTO custom_outbox(id, status, locked_by) VALUES (5, 'processing', 'worker')")
+      repository = SearchEngine::PostgresOutbox::Repository.new(connection: connection)
+      event = SearchEngine::PostgresOutbox::Event.new(event_row(id: 5).merge(event_lease_owner: 'worker'))
+
+      connection.cache do
+        assert_equal [5], repository.mark_processed!([event])
+        assert_empty repository.mark_processed!([event])
+      end
+    end
+  ensure
+    QueryCacheDatabase.remove_connection
   end
 
   def test_mark_retryable_increments_attempts_and_schedules_failure_threshold
     connection = FakeConnection.new
     repository = SearchEngine::PostgresOutbox::Repository.new(connection: connection)
+    event = SearchEngine::PostgresOutbox::Event.new(event_row(id: 5).merge(event_lease_owner: 'w'))
 
-    repository.mark_retryable!([5], error: StandardError.new('x' * 1200))
+    repository.mark_retryable!([event], error: StandardError.new('x' * 1200))
 
-    sql = connection.executed_sql.last
+    sql = connection.selected_sql.last
     assert_includes sql, 'attempts = attempts + 1'
     assert_includes sql, "status = CASE WHEN attempts + 1 >= 3 THEN 'failed' ELSE 'pending' END"
     assert_includes sql, "next_attempt_at = CURRENT_TIMESTAMP + CASE attempts + 1 WHEN 1 THEN interval '12 seconds'"
@@ -178,10 +220,11 @@ class PostgresOutboxRepositoryTest < Minitest::Test
   def test_mark_failed_sets_failed_status_and_error
     connection = FakeConnection.new
     repository = SearchEngine::PostgresOutbox::Repository.new(connection: connection)
+    event = SearchEngine::PostgresOutbox::Event.new(event_row(id: 6).merge(event_lease_owner: 'w'))
 
-    repository.mark_failed!([6], error: 'hard failure')
+    repository.mark_failed!([event], error: 'hard failure')
 
-    sql = connection.executed_sql.last
+    sql = connection.selected_sql.last
     assert_includes sql, "status = 'failed'"
     assert_includes sql, "last_error = 'hard failure'"
   end
@@ -1245,13 +1288,15 @@ class PostgresOutboxRepositoryTest < Minitest::Test
     refute_includes sql, 'LIMIT 25'
   end
 
-  def assert_claim_update_sql(executed_sql)
-    assert_includes executed_sql.first, "status = 'pending'"
-    assert_supersede_sql(executed_sql[1])
-    assert_includes executed_sql.last, "status = 'processing'"
-    assert_includes executed_sql.last, "locked_by = 'worker-1'"
-    assert_includes executed_sql.last, 'WHERE id IN (\'1\', \'2\')'
-    assert_includes executed_sql.last, "AND status = 'pending'"
+  def assert_claim_update_sql(connection)
+    assert_includes connection.executed_sql.first, "status = 'pending'"
+    assert_supersede_sql(connection.executed_sql.last)
+    sql = connection.selected_sql.last
+    assert_includes sql, "status = 'processing'"
+    assert_match(/locked_by = 'worker-1:[0-9a-f-]{36}'/, sql)
+    assert_includes sql, "WHERE id IN ('1', '2')"
+    assert_includes sql, "AND status = 'pending'"
+    assert_includes sql, 'RETURNING *, locked_by AS event_lease_owner'
   end
 
   def assert_supersede_sql(sql)
