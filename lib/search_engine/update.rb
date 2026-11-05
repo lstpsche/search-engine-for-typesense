@@ -20,7 +20,7 @@ module SearchEngine
     def update_by(klass:, attributes:, filter: nil, hash: nil, into: nil, partition: nil, timeout_ms: nil)
       raise ArgumentError, 'attributes must be a non-empty Hash' unless attributes.is_a?(Hash) && !attributes.empty?
 
-      filter_str = SearchEngine::Deletion.build_filter(filter, hash)
+      filter_str = SearchEngine::Deletion.build_filter(filter, hash, klass: klass)
       collection = SearchEngine::Deletion.resolve_into(klass: klass, partition: partition, into: into)
 
       resp = SearchEngine.client.update_documents_by_filter(

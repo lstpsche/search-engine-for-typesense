@@ -11,6 +11,7 @@ class FilterSafetyIntegrationTest < Minitest::Test
     attribute :tenant, :string
     attribute :label, :string
     attribute :position, :integer
+    attribute :published_at, :datetime
     attribute :marker, :string
     query_by :label
   end
@@ -20,22 +21,23 @@ class FilterSafetyIntegrationTest < Minitest::Test
 
   def setup
     setup_typesense
-    @collection = fixture_collection([
-                                       { name: 'tenant', type: 'string' },
-                                       { name: 'label', type: 'string', symbols_to_index: ['`', ','] },
-                                       { name: 'position', type: 'int32' },
-                                       { name: 'marker', type: 'string' }
-                                     ]
-                                    )
+    fields = [
+      { name: 'tenant', type: 'string' },
+      { name: 'label', type: 'string', symbols_to_index: ['`', ','] },
+      { name: 'position', type: 'int32' },
+      { name: 'published_at', type: 'int64' },
+      { name: 'marker', type: 'string' }
+    ]
+    @collection = fixture_collection(fields)
     Document.collection(@collection)
-    import_fixture(@collection, [
-                     { id: '001', tenant: 'alpha', label: OPERATOR_TEXT, position: 1, marker: 'original' },
-                     { id: '1', tenant: 'alpha', label: COMMA_TEXT, position: 2, marker: 'original' },
-                     { id: '2', tenant: 'beta', label: 'Books', position: 2, marker: 'original' },
-                     { id: '4', tenant: 'beta', label: 'Heavy', position: 3, marker: 'original' },
-                     { id: 'id,5', tenant: 'beta', label: 'More Books, Heavy', position: 4, marker: 'original' }
-                   ]
-    )
+    documents = [
+      { id: '001', tenant: 'alpha', label: OPERATOR_TEXT, position: 1 },
+      { id: '1', tenant: 'alpha', label: COMMA_TEXT, position: 2 },
+      { id: '2', tenant: 'beta', label: 'Books', position: 2 },
+      { id: '4', tenant: 'beta', label: 'Heavy', position: 3 },
+      { id: 'id,5', tenant: 'beta', label: 'More Books, Heavy', position: 4 }
+    ]
+    import_fixture(@collection, documents.map { |row| row.merge(marker: 'original', published_at: row[:position]) })
   end
 
   def teardown
@@ -62,6 +64,18 @@ class FilterSafetyIntegrationTest < Minitest::Test
     assert_raises(ArgumentError) { Document.delete_by(id: ['2', '*']) }
     assert_raises(ArgumentError) { Document.delete_by({ tenant: 'alpha' }, label: COMMA_TEXT) }
     assert_equal 5, Document.where(marker: 'original').count
+  end
+
+  def test_datetime_filters_use_the_same_epoch_representation_for_reads_and_writes
+    instant = DateTime.iso8601('1970-01-01T00:00:02Z')
+    assert_equal %w[1 2], Document.where(published_at: [instant]).ids.sort
+    assert_equal %w[4 id,5], Document.where('published_at > ?', instant).ids.sort
+    assert_equal 2, SearchEngine::Update.update_by(klass: Document, hash: { published_at: instant },
+                                                   attributes: { marker: 'published' }
+    )
+    assert_equal %w[1 2], Document.where(marker: 'published').ids.sort
+    assert_equal 2, Document.delete_by(published_at: instant)
+    assert_equal %w[001 4 id,5], Document.all.ids.sort
   end
 
   def test_negated_comparisons_at_the_boundary
