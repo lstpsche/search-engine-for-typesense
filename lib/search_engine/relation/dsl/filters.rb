@@ -485,7 +485,7 @@ module SearchEngine
         def normalize_where(args)
           # Preserve input shape so template bind arrays stay intact:
           # where('field IN ?', [1, 2]) => ['field IN ?', [1, 2]]
-          list = Array(args).compact
+          list = Array(args)
           return [] if list.empty?
 
           fragments = []
@@ -495,6 +495,8 @@ module SearchEngine
           while i < list.length
             entry = list[i]
             case entry
+            when nil
+              i += 1
             when Hash
               # Validate only base-like keys here; assoc keys (values as Hash) are handled via AST/Parser
               # and assoc keys with join-scope shorthand (values as Symbol/Array<Symbol>) are ignored for fragments.
@@ -526,15 +528,15 @@ module SearchEngine
         end
 
         def normalize_where_process_string!(fragments, entry, list, i)
-          if entry.match?(/(?<!\\)\?/) # has unescaped placeholders
+          needed = SearchEngine::Filters::Sanitizer.count_placeholders(entry)
+          if needed.positive?
             tail = list[(i + 1)..] || []
-            needed = SearchEngine::Filters::Sanitizer.count_placeholders(entry)
             args_for_template = tail.first(needed)
             if args_for_template.length != needed
               raise ArgumentError, "expected #{needed} args for #{needed} placeholders, got #{args_for_template.length}"
             end
 
-            fragments << SearchEngine::Filters::Sanitizer.apply_placeholders(entry, args_for_template)
+            fragments << SearchEngine::Filters::Sanitizer.apply_placeholders(entry, args_for_template, klass: @klass)
             i + 1 + needed
           else
             fragments << entry.to_s

@@ -16,6 +16,12 @@ class FilterSafetyIntegrationTest < Minitest::Test
     query_by :label
   end
 
+  class Reference < SearchEngine::Base
+    identify_by(&:id)
+    attribute :label, :string
+    query_by :label
+  end
+
   OPERATOR_TEXT = 'absent || tenant:=beta || label:=absent'
   COMMA_TEXT = 'Books, Heavy'
 
@@ -57,6 +63,31 @@ class FilterSafetyIntegrationTest < Minitest::Test
     assert_equal 1, Document.delete_by({ tenant: :alpha, label: OPERATOR_TEXT })
     assert_equal 1, Document.where(label: [COMMA_TEXT]).delete_all
     assert_equal %w[2 4 id,5], Document.where(marker: 'original').ids.sort
+  end
+
+  def test_legacy_filters_keep_fixed_predicates_when_values_contain_operators
+    expression = '(tenant:=alpha && label:=?) || (tenant:=beta && label:=absent)'
+    legacy = SearchEngine::Relation.new(Document, { filters: [expression, OPERATOR_TEXT] })
+    assert_equal ['001'], legacy.ids
+    assert_equal ['001'], Document.where(tenant: :alpha).where('label = ?', OPERATOR_TEXT).ids
+
+    expression = 'label:=[`absent || tenant:=beta || label:=absent`] && published_at:=?'
+    date_filter = SearchEngine::Relation.new(Document, { filters: [expression, Time.at(1).utc] })
+    assert_equal 1, date_filter.update_all(marker: 'changed')
+    assert_equal ['001'], Document.where(marker: 'changed').ids
+  end
+
+  def test_native_join_binds_use_the_referenced_collection_type
+    fields = [{ name: 'label', type: 'string' },
+              { name: 'document_id', type: 'string', reference: "#{@collection}.id" }]
+    collection = fixture_collection(fields)
+    Reference.collection(collection)
+    references = [{ id: 'alpha-ref', label: 'ref', document_id: '001' },
+                  { id: 'beta-ref', label: 'ref', document_id: '2' }]
+    import_fixture(collection, references)
+    expression = "label:=ref && $#{@collection}((published_at:=?) && tenant:=alpha)"
+    relation = SearchEngine::Relation.new(Reference, { filters: [expression, Time.at(1).utc] })
+    assert_equal ['alpha-ref'], relation.ids
   end
 
   def test_an_id_wildcard_cannot_become_a_bulk_mutation
