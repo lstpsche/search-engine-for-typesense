@@ -7,6 +7,8 @@ module SearchEngine
   module PostgresOutbox
     # Raw SQL repository for host-managed PostgreSQL outbox rows.
     class Repository
+      include DatabaseQueries
+
       # Keep expensive duplicate-key ranking bounded while leaving headroom for hot keys.
       CLAIM_CANDIDATE_OVERSAMPLE = 4
       MATERIALIZATION_LOCK_NAMESPACE = 0x53454F42 # SEOB
@@ -198,7 +200,7 @@ module SearchEngine
           event_ids = cursor&.candidate_ids(limit: scan_limit)
           preview = select_rows(delivery_materialization_select_sql(limit, targets, event_ids: event_ids, lock: false))
           rows = preview.empty? ? [] : materialize_batch(limit, targets, preview)
-          if cursor && rows.size == preview.size && materialization_page_drained?(rows, event_ids, limit)
+          if cursor && rows.size == preview.size && page_drained?(rows, event_ids, limit, cursor, targets)
             cursor.advance!
           end
           rows
@@ -414,14 +416,23 @@ module SearchEngine
       end
 
       # When a quota may have omitted matches, revisit the page after these deliveries commit.
-      def materialization_page_drained?(rows, event_ids, limit)
+      def page_drained?(rows, event_ids, limit, cursor, targets)
         return true if rows.empty? || rows.size == event_ids.size
 
         batch_size = global_limit_for(limit)
-        return rows.size < batch_size unless collection_limited_batch?(limit)
+        if collection_limited_batch?(limit)
+          quotas = SearchEngine.config.postgres_outbox.normalized_batch_sizes.values
+          batch_size = [batch_size, *quotas].min
+        end
+        return true if rows.size < batch_size
+        return false if event_ids.size == cursor.checkpoint_ids.size
 
-        per_collection = SearchEngine.config.postgres_outbox.normalized_batch_sizes.values
-        rows.size < [batch_size, *per_collection].min
+        # A moving head can fill a quota on every poll. Only work on the saved pages must hold progress.
+        select_rows(<<~SQL).empty?
+          SELECT 1 FROM #{quoted_table} outbox
+          WHERE #{materialization_filter_sql(targets, cursor.checkpoint_ids)}
+          LIMIT 1
+        SQL
       end
 
       # Revalidate the exact preview under parent locks before locking any deliveries.
@@ -1287,13 +1298,6 @@ module SearchEngine
       def aggregate_processed_at_sql
         "CASE WHEN aggregate.status IN ('processed', 'superseded') " \
           'THEN COALESCE(aggregate.terminal_processed_at, CURRENT_TIMESTAMP) ELSE NULL END'
-      end
-
-      def select_rows(sql)
-        result = connection.select_all(sql)
-        return result.to_a if result.respond_to?(:to_a)
-
-        Array(result)
       end
 
       def execute(sql)

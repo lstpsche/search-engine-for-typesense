@@ -572,9 +572,10 @@ For large histories, create a checkpoint table in a migration with
 `c.postgres_outbox.materialization_cursor_table_name = 'search_engine_outbox_materialization_cursors'`.
 Run the migration before starting consumers with this setting.
 
-With checkpoints, each discovery call checks at most 1,000 IDs around the forward position and
-1,000 historical IDs against the requested targets. The forward scan overlaps its previous
-range to catch nearby out-of-order commits. Each target set maintains its own position. A
+With checkpoints, each discovery call checks at most 2,000 event IDs. Each target set maintains
+its own forward position and a historical sweep. The forward scan overlaps its previous range
+to catch nearby out-of-order commits. When it falls behind, part of the historical scan budget
+checks the newest IDs while the forward scan continues through the intervening events. A
 transaction that commits farther behind, or an older event that becomes due, can wait until
 the historical scan revisits its ID. Sweep time depends on retained history and polling rate.
 Collection batch quotas and the latest-event rule still govern which deliveries may be created.

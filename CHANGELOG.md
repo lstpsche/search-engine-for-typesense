@@ -1,5 +1,12 @@
 # Changelog
 
+## 30.9.2
+
+- Check recent event IDs during catch-up so a returning delivery target can discover new work
+  while its saved position moves through older events. Collection quotas still apply.
+- Read outbox checkpoints, delivery state and row locks directly from the database on every poll,
+  including when Active Record query caching is enabled on Rails 6.1 and 7.0.
+
 ## 30.9.1
 
 - Serialize PostgreSQL delivery discovery across schedulers and workers and check delivery membership

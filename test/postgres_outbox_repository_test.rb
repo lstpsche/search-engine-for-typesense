@@ -819,6 +819,28 @@ class PostgresOutboxRepositoryTest < Minitest::Test
     QueryCacheDatabase.remove_connection
   end
 
+  def test_checkpoint_poll_observes_new_events_inside_active_record_query_cache
+    QueryCacheDatabase.establish_connection(adapter: 'sqlite3', database: ':memory:')
+    QueryCacheDatabase.connection_pool.with_connection do |connection|
+      connection.execute('CREATE TABLE events (id INTEGER PRIMARY KEY)')
+      connection.execute(<<~SQL)
+        CREATE TABLE cursors (target_scope TEXT PRIMARY KEY, forward_id INTEGER, backfill_through_id INTEGER)
+      SQL
+      cursor = SearchEngine::PostgresOutbox::MaterializationCursor.new(connection, 'events', 'cursors', ['node'])
+
+      connection.cache do
+        assert_empty cursor.candidate_ids(limit: 4)
+        cursor.advance!
+        connection.raw_connection.execute('INSERT INTO events (id) VALUES (42)')
+        assert_equal [42], cursor.candidate_ids(limit: 4)
+        cursor.advance!
+        assert_equal 42, connection.select_value('SELECT forward_id FROM cursors')
+      end
+    end
+  ensure
+    QueryCacheDatabase.remove_connection
+  end
+
   def test_delivery_target_guard_releases_on_exception_and_preserves_original_error
     connection = FakeConnection.new(advisory_results: [true, false])
     repository = SearchEngine::PostgresOutbox::Repository.new(connection: connection)

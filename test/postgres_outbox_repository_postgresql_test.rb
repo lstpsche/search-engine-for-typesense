@@ -273,6 +273,57 @@ class PostgresOutboxRepositoryPostgresqlTest < Minitest::Test
     rollback(delayed)
   end
 
+  def test_discovers_the_live_head_after_a_target_returns_and_still_catches_up
+    insert_distinct_events(1, 10)
+    @control.run(<<~SQL)
+      INSERT INTO #{deliveries_table} (event_id, target_key, queue_name, status)
+      SELECT id, 'target_1', 'queue_1', 'processed' FROM #{events_table} WHERE id > 1
+    SQL
+    repository = SearchEngine::PostgresOutbox::Repository.new(connection: PsqlConnection.new(new_session('resumed')))
+    repository.materialize_deliveries!(limit: 4)
+
+    # A returning target can have a long stretch of already covered events ahead of its checkpoint.
+    4.times do |batch|
+      first = 11 + batch * 100
+      last = first + 99
+      insert_distinct_events(first, last)
+      @control.run(<<~SQL)
+        INSERT INTO #{deliveries_table} (event_id, target_key, queue_name, status)
+        SELECT id, 'target_1', 'queue_1', 'processed' FROM #{events_table}
+        WHERE id BETWEEN #{first} AND #{last - 1} AND id != 50
+      SQL
+      assert_includes repository.materialize_deliveries!(limit: 4).map { |row| row.fetch('id') }, last
+    end
+
+    40.times { repository.materialize_deliveries!(limit: 4) }
+    assert_equal '1', scalar("SELECT count(*) FROM #{deliveries_table} WHERE event_id = 50")
+    assert_equal '1', scalar("SELECT count(*) FROM #{deliveries_table} WHERE event_id = 1")
+  end
+
+  def test_saturated_head_quota_does_not_hold_an_already_delivered_checkpoint_page
+    config = SearchEngine.config.postgres_outbox
+    config.batch_size = 3
+    config.batch_sizes = { products: 1 }
+    repository = SearchEngine::PostgresOutbox::Repository.new(connection: PsqlConnection.new(new_session('head_quota')))
+    assert_empty repository.materialize_deliveries!
+    position = 0
+
+    3.times do |batch|
+      first = 1 + batch * 20
+      last = first + 19
+      insert_distinct_events(first, last)
+      @control.run(<<~SQL)
+        INSERT INTO #{deliveries_table} (event_id, target_key, queue_name, status)
+        SELECT id, 'target_1', 'queue_1', 'processed' FROM #{events_table}
+        WHERE id BETWEEN #{first} AND #{last - 1}
+      SQL
+      assert_equal([last], repository.materialize_deliveries!.map { |row| row.fetch('id') })
+      next_position = scalar("SELECT forward_id FROM #{@schema}.cursors").to_i
+      assert_operator next_position, :>, position
+      position = next_position
+    end
+  end
+
   def test_hosts_without_checkpoints_can_materialize_existing_history_without_an_additional_table
     SearchEngine.config.postgres_outbox.materialization_cursor_table_name = nil
     @control.run("DROP TABLE #{@schema}.cursors")
