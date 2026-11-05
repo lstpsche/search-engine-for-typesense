@@ -53,7 +53,8 @@ module SearchEngine
 
       # Find the first matching record using where-like inputs.
       # Accepts the same arguments as `.where` (Hash, String, Array, Symbol),
-      # applies them if provided, then limits to a single result and returns it.
+      # and fetches one hit. Page-based searches start at the first match.
+      # Offset-based searches retain their explicit starting offset.
       #
       # @param args [Array<Object>] where-compatible arguments
       # @return [Object, nil]
@@ -61,8 +62,10 @@ module SearchEngine
       #   SearchEngine::Product.find_by(article_code: 12312, store_id: 1031)
       #   SearchEngine::Product.where(active: true).find_by('price:>100')
       def find_by(*args)
-        relation = args.nil? || args.empty? ? self : where(*args)
-        relation.limit(1).first
+        relation = where(*args)
+        return relation.limit(1).first if compute_pagination.key?(:offset)
+
+        relation.page(1).per(1).first
       end
 
       # Convenience for plucking :id values.
