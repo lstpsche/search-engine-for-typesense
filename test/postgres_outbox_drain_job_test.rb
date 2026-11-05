@@ -2,7 +2,6 @@
 
 require 'test_helper'
 require 'active_job'
-require_relative '../app/search_engine/search_engine/postgres_outbox/drain_job'
 
 class PostgresOutboxDrainJobTest < Minitest::Test
   class FakeDrainer

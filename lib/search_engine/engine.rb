@@ -15,16 +15,6 @@ module SearchEngine
     # Ensure app/search_engine is eager-loadable in production
     config.paths.add 'app/search_engine', eager_load: true
 
-    # Hosts can use inline indexing without loading the Active Job railtie.
-    initializer 'search_engine.optional_jobs', before: :setup_main_autoloader do
-      unless defined?(::ActiveJob::Base)
-        job_root = root.join('app/search_engine/search_engine')
-        Rails.autoloaders.main.do_not_eager_load(
-          job_root.join('index_partition_job.rb'), job_root.join('postgres_outbox/drain_job.rb')
-        )
-      end
-    end
-
     initializer 'search_engine.configuration' do
       cfg = SearchEngine.config
       # Hydrate only blank/unset fields from ENV to avoid clobbering
@@ -45,13 +35,7 @@ module SearchEngine
 
       # Also ensure Rails global autoloaders ignore these files, since the engine
       # adds lib/ to autoload paths and the main/once loaders may scan it.
-      if defined?(Rails) && Rails.respond_to?(:autoloaders)
-        al = Rails.autoloaders
-        al.main.ignore(shim) if al.respond_to?(:main)
-        al.once.ignore(shim) if al.respond_to?(:once)
-        al.main.ignore(cli_file) if al.respond_to?(:main)
-        al.once.ignore(cli_file) if al.respond_to?(:once)
-      end
+      Rails.autoloaders.each { |autoloader| autoloader.ignore(shim, cli_file) }
     end
 
     initializer 'search_engine.observability' do
@@ -126,10 +110,16 @@ module SearchEngine
     initializer 'search_engine.rails_model_mappings' do |app|
       app.reloader.to_prepare do
         models = app.paths['app/models'].existent
-        Rails.autoloaders.each do |loader|
-          (loader.dirs & models).each do |root|
-            namespace_dir = File.join(root, 'search_engine')
-            loader.eager_load_dir(namespace_dir) if File.directory?(namespace_dir)
+        if Rails.autoloaders.zeitwerk_enabled?
+          Rails.autoloaders.each do |loader|
+            (loader.dirs & models).each do |root|
+              namespace_dir = File.join(root, 'search_engine')
+              loader.eager_load_dir(namespace_dir) if File.directory?(namespace_dir)
+            end
+          end
+        else
+          models.each do |root|
+            Dir[File.join(root, 'search_engine', '**', '*.rb')].sort.each { |file| require_dependency(file) }
           end
         end
       end
@@ -150,22 +140,17 @@ module SearchEngine
       next unless File.directory?(path_s)
 
       # Ensure Rails' autoloaders do not also manage this directory.
-      if defined?(Rails) && Rails.respond_to?(:autoloaders)
-        al = Rails.autoloaders
-        %i[main once].each do |key|
-          al.public_send(key).ignore(path_s) if al.respond_to?(key)
-        end
-      end
+      Rails.autoloaders.each { |autoloader| autoloader.ignore(path_s) }
 
       # Create or reuse a dedicated loader under SearchEngine namespace.
       loader = SearchEngine.instance_variable_get(:@_models_loader)
       unless loader
+        require 'zeitwerk'
         loader = Zeitwerk::Loader.new
         loader.tag = 'search_engine.models'
         # Reuse Rails' inflector for consistent constantization rules.
-        if defined?(Rails) && Rails.respond_to?(:autoloaders) && Rails.autoloaders.respond_to?(:main)
-          loader.inflector = Rails.autoloaders.main.inflector
-        end
+        main = Rails.autoloaders.main
+        loader.inflector = main.inflector if main
         loader.push_dir(path_s, namespace: SearchEngine)
         loader.enable_reloading if defined?(Rails) && Rails.env.development?
         SearchEngine.instance_variable_set(:@_models_loader, loader)

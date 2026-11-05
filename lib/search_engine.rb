@@ -56,6 +56,8 @@ require 'search_engine/active_record_syncable'
 # Top-level namespace for the SearchEngine gem.
 # Provides Typesense integration points for Rails applications.
 module SearchEngine
+  autoload :IndexPartitionJob, 'search_engine/index_partition_job'
+
   class << self
     # Access the singleton configuration instance.
     # @return [SearchEngine::Config]
