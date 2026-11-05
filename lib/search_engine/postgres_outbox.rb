@@ -15,5 +15,6 @@ require 'search_engine/postgres_outbox/migration_helpers'
 module SearchEngine
   # PostgreSQL-backed outbox integration points.
   module PostgresOutbox
+    autoload :DrainJob, 'search_engine/postgres_outbox/drain_job'
   end
 end

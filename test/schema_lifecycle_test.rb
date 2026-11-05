@@ -3,7 +3,6 @@
 require 'test_helper'
 require 'active_job'
 require 'ostruct'
-require_relative '../app/search_engine/search_engine/index_partition_job'
 
 class SchemaLifecycleTest < Minitest::Test
   class Product < SearchEngine::Base

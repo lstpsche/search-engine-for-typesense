@@ -2,7 +2,6 @@
 
 require 'test_helper'
 require 'active_job'
-require_relative '../app/search_engine/search_engine/index_partition_job'
 
 class AsyncPartitionCoordinatorTest < Minitest::Test
   Summary = Struct.new(:docs_total, :success_total, :failed_total, :sample_error, keyword_init: true)

@@ -3,7 +3,6 @@
 require 'test_helper'
 require 'active_job'
 require 'active_support/cache'
-require_relative '../app/search_engine/search_engine/index_partition_job'
 
 class IndexPartitionJobRetryLifecycleTest < Minitest::Test
   Summary = Struct.new(:status, :docs_total, :success_total, :failed_total, :sample_error, keyword_init: true)
