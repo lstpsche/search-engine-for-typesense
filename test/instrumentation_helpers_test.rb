@@ -66,6 +66,11 @@ class InstrumentationHelpersTest < Minitest::Test
     assert_equal prev, SearchEngine::Instrumentation.current_correlation_id
   end
 
+  def test_filter_redaction_masks_complete_list_members_and_backtick_literals
+    params = { filter_by: 'id:=[red, blue] && label:=[`private, x] || token:=secret`]' }
+    assert_equal 'id:=*** && label:=***', SearchEngine::Instrumentation.redact(params)[:filter_by]
+  end
+
   def test_redact_returns_compact_hash
     red = SearchEngine::Instrumentation.redact({ q: 'a' * 200, filter_by: "id:=123 && title:='T'" })
     assert_kind_of Hash, red

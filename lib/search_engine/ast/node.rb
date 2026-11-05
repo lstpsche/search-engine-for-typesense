@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require 'search_engine/filters/sanitizer'
+
 module SearchEngine
   module AST
     # Abstract base node for the predicate AST.
@@ -154,12 +156,7 @@ module SearchEngine
       # @param field [String, Symbol]
       # @return [String]
       def validate_field!(field)
-        raise ArgumentError, 'field must be a String or Symbol' unless field.is_a?(String) || field.is_a?(Symbol)
-
-        str = field.to_s.strip
-        raise ArgumentError, 'field cannot be blank' if str.empty?
-
-        str
+        SearchEngine::Filters::Sanitizer.field_name(field, joined: true).dup.freeze
       end
 
       # Ensure values is a non-empty Array

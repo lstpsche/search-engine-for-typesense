@@ -90,6 +90,19 @@ class RelationRechainersTest < Minitest::Test
     assert_equal 10, p_2[:per_page]
   end
 
+  def test_offset_is_preserved_by_hit_limits_and_preset_pagination
+    window = Product.all.offset(1).limit(7)
+    params = window.limit_hits(3).to_typesense_params.to_h
+    assert_equal({ offset: 1, limit: 3 }, params.slice(:offset, :limit, :page, :per_page))
+    assert_equal({ offset: 0 }, Product.offset(0).to_typesense_params.to_h.slice(:offset, :limit))
+
+    preset = window.preset(:catalog, mode: :only)
+    assert_equal({ offset: 1, limit: 7 }, preset.to_typesense_params.to_h.slice(:offset, :limit))
+    multi = SearchEngine::Multi.new.add(:products, preset)
+    payload = multi.to_payloads(common: { 'page' => 4, 'per_page' => 8 }).first
+    assert_equal({ offset: 1, limit: 7 }, payload.slice(:offset, :limit, :page, :per_page))
+  end
+
   def test_unscope_page_and_per
     r_1 = Product.all.page(3).per(15)
     r_2 = r_1.unscope(:page, :per)

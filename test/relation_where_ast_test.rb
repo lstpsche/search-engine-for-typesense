@@ -9,6 +9,9 @@ class RelationWhereASTTest < Minitest::Test
     attribute :active, :boolean
     attribute :price, :float
     attribute :brand_id, :integer
+    attribute :tags, [:string], optional: true, empty_filtering: true
+    attribute :author_id, :string
+    join :writers, collection: 'authors', local_key: :author_id, foreign_key: :id
   end
 
   def test_where_populates_ast_and_strings
@@ -86,6 +89,26 @@ class RelationWhereASTTest < Minitest::Test
     refute_nil not_eq
     assert_equal 'active', not_eq.field
     assert_equal true, not_eq.value
+  end
+
+  def test_where_not_inverts_each_predicate_and_preserves_empty_and_nil_flags
+    rel = Product.where.not(['price >= ?', 3], { active: false }, ['brand_id NOT IN ?', [1, 2]])
+    assert_equal 'active:!=false && price:<3 && brand_id:=[1, 2]', rel.filter_params
+    assert_equal 'tags_empty:=false', Product.where.not(tags: []).filter_params
+    assert_equal '(tags_empty:=false && tags_blank:=false)', Product.where.not(tags: nil).filter_params
+    assert_equal '(tags_empty:=true || tags_blank:=true)', Product.where(tags: nil).filter_params
+  end
+
+  def test_join_aliases_are_mapped_only_outside_literal_values
+    relation = Product.joins(:writers).where(tags: ['keep $writers(name)'], writers: { first_name: 'Ada' })
+    assert_equal 'tags:=[`keep $writers(name)`] && $authors(first_name:=Ada)', relation.filter_params
+  end
+
+  def test_where_not_rejects_opaque_or_empty_predicates
+    assert_raises(SearchEngine::Errors::InvalidOperator) { Product.where.not('price:>3') }
+    assert_raises(SearchEngine::Errors::InvalidOperator) { Product.where.not('tags PREFIX ?', 'unit') }
+    assert_raises(SearchEngine::Errors::InvalidOperator) { Product.where.not({}) }
+    assert_equal 'price:>3', Product.where('price:>3').filter_params
   end
 
   def test_where_empty_array_is_noop_like_active_record

@@ -17,25 +17,7 @@ module SearchEngine
           # @param args [Array<Object>]
           # @return [SearchEngine::Relation]
           def not(*args)
-            @relation.send(:validate_not_args!, args)
-            nodes = Array(@relation.send(:build_ast_with_empty_array_rewrites, args, negated: true))
-
-            # Invert non-hidden predicates (Eq, In) returned by the builder
-            negated = nodes.map do |node|
-              case node
-              when SearchEngine::AST::Eq
-                SearchEngine::AST.not_eq(node.field, node.value)
-              when SearchEngine::AST::In
-                SearchEngine::AST.not_in(node.field, node.values)
-              else
-                node
-              end
-            end
-
-            @relation.send(:spawn) do |s|
-              s[:ast] = Array(s[:ast]) + negated
-              s[:filters] = Array(s[:filters])
-            end
+            @relation.not(*args)
           end
         end
 
@@ -47,11 +29,9 @@ module SearchEngine
           return self if args.nil? || args.empty?
           return self if blank_where_args?(args)
 
-          ast_nodes = build_ast_with_empty_array_rewrites(args, negated: false)
-          fragments = normalize_where(args)
+          ast_nodes = build_filter_nodes(args, negated: false)
           spawn do |s|
             s[:ast] = Array(s[:ast]) + Array(ast_nodes)
-            s[:filters] = Array(s[:filters]) + fragments
           end
         end
 
@@ -61,23 +41,10 @@ module SearchEngine
         # @return [SearchEngine::Relation]
         def not(*args)
           validate_not_args!(args)
-          nodes = Array(build_ast_with_empty_array_rewrites(args, negated: true))
+          nodes = build_filter_nodes(args, negated: true)
+          raise SearchEngine::Errors::InvalidOperator, 'where.not requires a predicate' if nodes.empty?
 
-          negated = nodes.map do |node|
-            case node
-            when SearchEngine::AST::Eq
-              SearchEngine::AST.not_eq(node.field, node.value)
-            when SearchEngine::AST::In
-              SearchEngine::AST.not_in(node.field, node.values)
-            else
-              node
-            end
-          end
-
-          spawn do |s|
-            s[:ast] = Array(s[:ast]) + negated
-            s[:filters] = Array(s[:filters])
-          end
+          spawn { |state| state[:ast] = Array(state[:ast]) + nodes }
         end
 
         # Replace all predicates with a new where input.
@@ -249,93 +216,77 @@ module SearchEngine
           end
         end
 
-        # Build AST nodes, rewriting:
-        # - empty-array predicates to hidden *_empty flags when enabled (existing behavior)
-        # - nil predicates to hidden *_blank flags when `optional` is enabled (new behavior)
-        # Delegates other inputs to the DSL parser.
-        def build_ast_with_empty_array_rewrites(args, negated: false)
-          # Preserve input shape so template bind arrays stay intact:
-          # where('field IN ?', [1, 2]) => ['field IN ?', [1, 2]]
-          items = Array(args).compact
-          return [] if items.empty?
-
-          out_nodes = []
-          non_hash_items = []
-
-          items.each do |entry|
+        def build_filter_nodes(args, negated:)
+          nodes = []
+          expressions = []
+          args.each do |entry|
             if entry.is_a?(Hash)
-              process_hash_entry(entry, out_nodes, negated)
-            else
-              non_hash_items << entry
-            end
-          end
-
-          unless non_hash_items.empty?
-            out_nodes.concat(
-              Array(SearchEngine::DSL::Parser.parse_list(non_hash_items, klass: @klass, joins: joins_list))
-            )
-          end
-
-          out_nodes.flatten.compact
-        end
-
-        def process_hash_entry(entry, out_nodes, negated)
-          entry.each do |k, v|
-            # Join-scope shorthand: where(assoc: :scope) or where(assoc: [:s1, :s2])
-            if join_scope_value?(v) && join_assoc?(k)
-              process_join_scope(k.to_sym, v, out_nodes)
-            elsif v.is_a?(Hash)
-              process_join_predicate(k, v, out_nodes, negated)
-            else
-              process_base_predicate(k, v, out_nodes, negated)
-            end
-          end
-        end
-
-        def process_join_predicate(assoc_key, values_hash, out_nodes, negated)
-          assoc = assoc_key.to_sym
-          values_hash.each do |inner_field, inner_value|
-            field_sym = inner_field.to_sym
-            if inner_value.nil?
-              emit_nil_flags_for_join(out_nodes, assoc, field_sym, negated)
-            elsif array_like?(inner_value)
-              arr = Array(inner_value).flatten(1).compact
-              if arr.empty?
-                if joined_empty_filtering_enabled?(assoc, field_sym)
-                  emit_empty_array_flag(out_nodes, "$#{assoc}.#{field_sym}_empty", negated)
+              entry.each do |field, value|
+                if join_scope_value?(value) && join_assoc?(field)
+                  scoped = []
+                  process_join_scope(field, value, scoped)
+                  nodes.concat(negated ? scoped.map { |node| invert_predicate(node) } : scoped)
+                elsif value.is_a?(Hash)
+                  SearchEngine::DSL::Parser.validate_assoc_and_join!(@klass, field.to_sym, joins_list)
+                  value.each do |inner_field, inner_value|
+                    nodes << hash_predicate(inner_field, inner_value, assoc: field, negated: negated)
+                  end
                 else
-                  raise_empty_array_type!(field_sym)
+                  nodes << hash_predicate(field, value, negated: negated)
                 end
-              else
-                out_nodes << SearchEngine::DSL::Parser.parse(
-                  { assoc => { field_sym => inner_value } }, klass: @klass, joins: joins_list
-                )
               end
             else
-              out_nodes << SearchEngine::DSL::Parser.parse(
-                { assoc => { field_sym => inner_value } }, klass: @klass, joins: joins_list
-              )
+              expressions << entry
             end
           end
+
+          parsed = SearchEngine::DSL::Parser.parse_list(expressions, klass: @klass, joins: joins_list)
+          nodes.concat(negated ? parsed.map { |node| invert_predicate(node) } : parsed)
         end
 
-        def process_base_predicate(field_key, value, out_nodes, negated)
-          field = field_key.to_sym
-          if value.nil?
-            emit_nil_flags_for_base(out_nodes, field, negated)
-          elsif array_like?(value)
-            arr = Array(value).flatten(1).compact
-            if arr.empty?
-              if base_empty_filtering_enabled?(field)
-                emit_empty_array_flag(out_nodes, "#{field}_empty", negated)
-              else
-                raise_empty_array_type!(field)
-              end
-            else
-              out_nodes << SearchEngine::DSL::Parser.parse({ field => value }, klass: @klass, joins: joins_list)
+        def hash_predicate(key, value, negated:, assoc: nil)
+          field = SearchEngine::Filters::Sanitizer.field_name(key).to_sym
+          empty_array = value.is_a?(Array) && value.flatten(1).compact.empty?
+          if value.nil? || empty_array
+            lhs = assoc ? "$#{assoc}.#{field}" : field.to_s
+            empty = assoc ? joined_empty_filtering_enabled?(assoc, field) : base_empty_filtering_enabled?(field)
+            blank = assoc ? joined_optional_enabled?(assoc, field) : base_optional_enabled?(field)
+            raise_empty_array_type!(field) if empty_array && !empty
+
+            flags = []
+            flags << SearchEngine::AST.eq("#{lhs}_empty", !negated) if empty
+            flags << SearchEngine::AST.eq("#{lhs}_blank", !negated) if blank && value.nil?
+            return flags.first if flags.size == 1
+            if flags.size > 1
+              return SearchEngine::AST.group(negated ? SearchEngine::AST.and_(*flags) : SearchEngine::AST.or_(*flags))
             end
+          end
+
+          predicate = { field => value }
+          predicate = { assoc => predicate } if assoc
+          node = SearchEngine::DSL::Parser.parse(predicate, klass: @klass, joins: joins_list)
+          negated ? invert_predicate(node) : node
+        end
+
+        INVERSE_PREDICATES = {
+          eq: :not_eq, not_eq: :eq, in: :not_in, not_in: :in_,
+          gt: :lte, gte: :lt, lt: :gte, lte: :gt
+        }.freeze
+        private_constant :INVERSE_PREDICATES
+
+        def invert_predicate(node)
+          inverse = INVERSE_PREDICATES[node.type]
+          return SearchEngine::AST.public_send(inverse, node.field, node.right) if inverse
+
+          case node
+          when SearchEngine::AST::And
+            SearchEngine::AST.or_(*node.children.map { |child| invert_predicate(child) })
+          when SearchEngine::AST::Or
+            SearchEngine::AST.and_(*node.children.map { |child| invert_predicate(child) })
+          when SearchEngine::AST::Group
+            SearchEngine::AST.group(invert_predicate(node.child))
           else
-            out_nodes << SearchEngine::DSL::Parser.parse({ field => value }, klass: @klass, joins: joins_list)
+            raise SearchEngine::Errors::InvalidOperator, "where.not cannot invert a #{node.type} predicate"
           end
         end
 
@@ -478,10 +429,6 @@ module SearchEngine
           end
         end
 
-        def emit_empty_array_flag(out_nodes, lhs, negated)
-          out_nodes << SearchEngine::AST.raw("#{lhs}:=#{negated ? 'false' : 'true'}")
-        end
-
         def base_empty_filtering_enabled?(field_sym)
           opts = @klass.respond_to?(:attribute_options) ? (@klass.attribute_options || {}) : {}
           o = opts[field_sym]
@@ -524,59 +471,6 @@ module SearchEngine
           o.is_a?(Hash) && o[:optional]
         rescue StandardError
           false
-        end
-
-        def emit_nil_flags_for_base(out_nodes, field_sym, negated)
-          has_empty = base_empty_filtering_enabled?(field_sym)
-          has_blank = base_optional_enabled?(field_sym)
-          fragment = nil
-          if has_empty && has_blank
-            fragment = if negated
-                         "(#{field_sym}_empty:=false && #{field_sym}_blank:=false)"
-                       else
-                         "(#{field_sym}_empty:=true || #{field_sym}_blank:=true)"
-                       end
-          elsif has_blank
-            fragment = "#{field_sym}_blank:=#{negated ? 'false' : 'true'}"
-          elsif has_empty
-            fragment = "#{field_sym}_empty:=#{negated ? 'false' : 'true'}"
-          end
-
-          out_nodes << if fragment
-                         SearchEngine::AST.raw(fragment)
-                       else
-                         SearchEngine::DSL::Parser.parse({ field_sym => nil }, klass: @klass, joins: joins_list)
-                       end
-        end
-
-        def emit_nil_flags_for_join(out_nodes, assoc_sym, field_sym, negated)
-          has_empty = joined_empty_filtering_enabled?(assoc_sym, field_sym)
-          has_blank = joined_optional_enabled?(assoc_sym, field_sym)
-          lhs_empty = "$#{assoc_sym}.#{field_sym}_empty"
-          lhs_blank = "$#{assoc_sym}.#{field_sym}_blank"
-          fragment = nil
-          if has_empty && has_blank
-            fragment = if negated
-                         "(#{lhs_empty}:=false && #{lhs_blank}:=false)"
-                       else
-                         "(#{lhs_empty}:=true || #{lhs_blank}:=true)"
-                       end
-          elsif has_blank
-            fragment = "#{lhs_blank}:=#{negated ? 'false' : 'true'}"
-          elsif has_empty
-            fragment = "#{lhs_empty}:=#{negated ? 'false' : 'true'}"
-          end
-
-          if fragment
-            out_nodes << SearchEngine::AST.raw(fragment)
-          else
-            parsed = { assoc_sym => { field_sym => nil } }
-            out_nodes << SearchEngine::DSL::Parser.parse(parsed, klass: @klass, joins: joins_list)
-          end
-        end
-
-        def array_like?(value)
-          value.is_a?(Array)
         end
 
         def raise_empty_array_type!(field_sym)

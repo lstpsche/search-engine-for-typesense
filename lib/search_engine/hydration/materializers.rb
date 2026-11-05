@@ -24,29 +24,7 @@ module SearchEngine
           memo = relation.instance_variable_get(:@__result_memo)
           return memo if loaded && memo
 
-          collection = relation.send(:collection_name_for_klass)
-          params = SearchEngine::CompiledParams.from(relation.to_typesense_params)
-          url_opts = relation.send(:build_url_opts)
-
-          raw_result = relation.send(:client).search(
-            collection: collection, params: params, url_opts: url_opts
-          )
-
-          selection_ctx = SearchEngine::Hydration::SelectionContext.build(relation)
-          facets_ctx = build_facets_context_from_state(relation)
-
-          result = if selection_ctx || facets_ctx
-                     SearchEngine::Result.new(
-                       raw_result.raw,
-                       klass: relation.klass,
-                       selection: selection_ctx,
-                       facets: facets_ctx
-                     )
-                   else
-                     raw_result
-                   end
-
-          relation.send(:enforce_hit_validator_if_needed!, result.found, collection: collection)
+          result = search_result(relation)
           relation.instance_variable_set(:@__result_memo, result)
           relation.instance_variable_set(:@__loaded, true)
           result
@@ -84,39 +62,10 @@ module SearchEngine
           return Array(cached).first(limit)
         end
 
-        # Use the relation's effective per_page for the underlying request to keep
-        # ordering consistent with to_a; slice to the preview limit locally.
-        per_for_request = effective_per_page(relation)
-        per_for_request = limit if per_for_request.to_i <= 0
-
-        preview_relation = relation.send(:spawn) do |state|
-          state[:page] = 1
-          state[:per_page] = per_for_request
-        end
-
-        collection = preview_relation.send(:collection_name_for_klass)
-        params = SearchEngine::CompiledParams.from(preview_relation.to_typesense_params)
-        url_opts = preview_relation.send(:build_url_opts)
-
-        raw_result = preview_relation.send(:client).search(collection: collection, params: params, url_opts: url_opts)
-
-        selection_ctx = SearchEngine::Hydration::SelectionContext.build(preview_relation)
-        facets_ctx = build_facets_context_from_state(preview_relation)
-
-        result = if selection_ctx || facets_ctx
-                   SearchEngine::Result.new(
-                     raw_result.raw,
-                     klass: preview_relation.klass,
-                     selection: selection_ctx,
-                     facets: facets_ctx
-                   )
-                 else
-                   raw_result
-                 end
-
-        array = Array(result.respond_to?(:to_a) ? result.to_a : result).first(limit)
+        result = search_result(relation)
+        array = result.to_a
         relation.instance_variable_set(:@__preview_memo, array)
-        array
+        array.first(limit)
       end
 
       def each(relation, &block)
@@ -172,44 +121,20 @@ module SearchEngine
         validate_pluck_fields_allowed!(relation, names)
 
         result = execute(relation)
-        raw_hits = Array(result.raw['hits'])
-        objects = result.to_a
-
-        enforce_strict_for_pluck_row = lambda do |doc, requested|
-          present_keys = doc.keys.map(&:to_s)
-          if result.respond_to?(:send)
-            ctx = result.instance_variable_get(:@selection_ctx) || {}
-            if ctx[:strict_missing] == true
-              result.send(:enforce_strict_missing_if_needed!, present_keys, requested_override: requested)
-            end
+        documents = Result.documents(result.raw)
+        result.to_a.each_with_index.map do |object, index|
+          doc = documents.fetch(index)
+          if result.is_a?(Result)
+            result.send(:enforce_strict_missing_if_needed!, doc.keys.map(&:to_s), requested_override: names)
           end
-        end
-
-        if names.length == 1
-          field = names.first
-          return objects.each_with_index.map do |obj, idx|
-            doc = (raw_hits[idx] && raw_hits[idx]['document']) || {}
-            # Enforce strict missing for the requested field against present keys
-            enforce_strict_for_pluck_row.call(doc, [field])
-            if obj.respond_to?(field)
-              obj.public_send(field)
+          values = names.map do |field|
+            if object.respond_to?(field)
+              object.public_send(field)
             else
-              doc[field]
+              doc.fetch(field) { doc[field.to_sym] }
             end
           end
-        end
-
-        objects.each_with_index.map do |obj, idx|
-          doc = (raw_hits[idx] && raw_hits[idx]['document']) || {}
-          # Enforce strict missing for all requested fields against present keys
-          enforce_strict_for_pluck_row.call(doc, names)
-          names.map do |field|
-            if obj.respond_to?(field)
-              obj.public_send(field)
-            else
-              doc[field]
-            end
-          end
+          names.one? ? values.first : values
         end
       end
 
@@ -250,11 +175,38 @@ module SearchEngine
 
       # --- internals --------------------------------------------------------
 
+      def result_options(relation)
+        {
+          klass: relation.klass,
+          selection: SelectionContext.build(relation),
+          facets: build_facets_context_from_state(relation)
+        }
+      end
+
+      def search_result(relation, client: relation.send(:client))
+        collection = relation.send(:collection_name_for_klass)
+        params = SearchEngine::CompiledParams.from(relation.to_typesense_params)
+        options = result_options(relation)
+        built = false
+        url_opts = relation.send(:build_url_opts)
+        result = client.search(collection: collection, params: params, url_opts: url_opts) do |raw|
+          built = true
+          Result.new(raw, **options)
+        end
+
+        # Legacy clients return an already wrapped result without yielding the response.
+        if !built && (options[:selection] || options[:facets])
+          result = result.is_a?(Result) ? result.with_context(**options) : Result.new(result.raw, **options)
+        end
+        relation.send(:enforce_hit_validator_if_needed!, result.found, collection: collection)
+        result
+      end
+
       def fetch_found_only(relation)
         collection = relation.send(:collection_name_for_klass)
         base = SearchEngine::CompiledParams.from(relation.to_typesense_params).to_h
 
-        minimal = base.dup
+        minimal = base.except(:offset, :limit)
         minimal[:per_page] = 1
         minimal[:page] = 1
         minimal[:include_fields] = 'id'
@@ -285,8 +237,8 @@ module SearchEngine
 
       def effective_per_page(relation)
         state = relation.instance_variable_get(:@state) || {}
-        per_page = state[:per_page]
-        return per_page.to_i if per_page.to_i.positive?
+        per_page = state[:per_page] || (state[:limit] unless state[:page])
+        return [per_page, state.dig(:hit_limits, :early_limit)].compact.min if per_page
 
         loaded = relation.instance_variable_get(:@__loaded)
         memo = relation.instance_variable_get(:@__result_memo)
@@ -297,8 +249,6 @@ module SearchEngine
             per = request_params['per_page'] || request_params[:per_page]
             return per.to_i if per.to_i.positive?
           end
-
-          return memo.hits.size if memo.respond_to?(:hits)
         end
 
         10
@@ -313,35 +263,20 @@ module SearchEngine
         total = count(relation)
         return [] if total.to_i <= 0
 
-        per = 250
+        per = [250, relation.hit_limits&.dig(:early_limit)].compact.min
         pages = (total.to_f / per).ceil
 
-        # Fast path for a single page
-        return relation.page(1).per(per).to_a if pages <= 1
+        client = relation.send(:client)
+        return search_result(relation.page(1).per(per), client: client).to_a if pages == 1
 
-        limit = begin
-          SearchEngine.config.multi_search_limit.to_i
-        rescue StandardError
-          50
-        end
-        limit = 1 if limit <= 0
-
-        page_numbers = (1..pages).to_a
+        url_opts = relation.send(:build_url_opts)
         out = []
-
-        page_numbers.each_slice(limit) do |batch|
-          mr = SearchEngine.multi_search_result do |m|
-            batch.each do |p|
-              m.add("p#{p}", relation.page(p).per(per))
-            end
-          end
-
-          batch.each do |p|
-            res = mr["p#{p}"]
-            out.concat(Array(res&.to_a))
-          end
+        (1..pages).each_slice([SearchEngine.config.multi_search_limit, 1].max) do |batch|
+          builder = SearchEngine::Multi.new
+          batch.each { |page| builder.add("p#{page}", relation.page(page).per(per)) }
+          results = builder.execute(client: client, url_opts: url_opts)
+          results.each_label { |_, result| out.concat(result.hits) }
         end
-
         out
       end
 

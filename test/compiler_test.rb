@@ -32,14 +32,46 @@ class CompilerTest < Minitest::Test
   end
 
   def test_quoting_and_types
-    assert_equal 'name:="mil\"k"', compile(SearchEngine::AST.eq(:name, 'mil"k'))
+    assert_equal 'name:=[`mil"k`]', compile(SearchEngine::AST.eq(:name, 'mil"k'))
     assert_equal 'active:=true', compile(SearchEngine::AST.eq(:active, true))
     assert_equal 'active:=false', compile(SearchEngine::AST.eq(:active, false))
-    assert_equal 'name:=["a", "b"]', compile(SearchEngine::AST.in_(:name, %w[a b]))
+    assert_equal 'name:=[a, b]', compile(SearchEngine::AST.in_(:name, %w[a b]))
     assert_equal 'id:=null', compile(SearchEngine::AST.eq(:id, nil))
 
     t = Time.utc(2020, 1, 1, 12, 0, 0)
-    assert_equal 'created_at:="2020-01-01T12:00:00Z"', compile(SearchEngine::AST.eq(:created_at, t))
+    assert_equal 'created_at:=[`2020-01-01T12:00:00Z`]', compile(SearchEngine::AST.eq(:created_at, t))
+  end
+
+  def test_opaque_data_cannot_change_filter_syntax
+    bound = 'one || (tenant:=other && label:=two)'
+    assert_equal "name:=[`#{bound}`]", compile(SearchEngine::AST.eq(:name, bound))
+    assert_equal 'name:=[safe, `Books, Heavy`]', compile(SearchEngine::AST.in_(:name, [:safe, 'Books, Heavy']))
+    assert_equal 'id:=[`id,3`]', compile(SearchEngine::AST.eq(:id, 'id,3'))
+
+    ['secret` || active:=true', 'prefix*', '"words"', ' secret', "secret\n", 'x,y\\', 'secret:('].each do |value|
+      error = assert_raises(ArgumentError) { compile(SearchEngine::AST.in_(:name, [value])) }
+      refute_includes error.message, value
+    end
+    assert_raises(ArgumentError) { compile(SearchEngine::AST.eq(:id, '*')) }
+    assert_raises(ArgumentError) { compile(SearchEngine::AST.eq('$authors.name', 'a) || (b')) }
+    assert_raises(ArgumentError) { SearchEngine::AST.eq('name:=foo || active', true) }
+    assert_raises(ArgumentError) { SearchEngine::Deletion.build_filter(nil, { 'name:=foo || active' => true }) }
+  end
+
+  def test_legacy_bind_templates_require_a_complete_filter_operand
+    sanitizer = SearchEngine::Filters::Sanitizer
+    assert_equal 'id:=[`comma,id`] && name:=[`one || two`]',
+                 sanitizer.apply_placeholders('id:=? && name:=?', ['comma,id', 'one || two'])
+    assert_raises(ArgumentError) { sanitizer.apply_placeholders('name:=`?`', ['one || two']) }
+    assert_raises(ArgumentError) { sanitizer.apply_placeholders('id:=?', ['*']) }
+  end
+
+  def test_boolean_compilation_preserves_operator_text_inside_a_literal
+    value = 'left || right'
+    tree = SearchEngine::AST.or_(SearchEngine::AST.eq(:name, value),
+                                 SearchEngine::AST.and_(SearchEngine::AST.eq(:a, 1), SearchEngine::AST.eq(:b, 2))
+                                )
+    assert_equal 'name:=[`left || right`] || (a:=1 && b:=2)', compile(tree)
   end
 
   def test_boolean_composition_and_parentheses

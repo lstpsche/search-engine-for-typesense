@@ -29,12 +29,13 @@ module SearchEngine
     # @param collection [String] collection name
     # @param params [Hash] Typesense search parameters (q, query_by, etc.)
     # @param url_opts [Hash] URL/common knobs (use_cache, cache_ttl)
+    # @yieldparam raw [Hash] optional result builder receives the response before hydration
     # @return [SearchEngine::Result] Wrapped response with hydrated hits
     # @raise [SearchEngine::Errors::InvalidParams, SearchEngine::Errors::*]
     # @see `https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/client`
     # @see `https://typesense.org/docs/latest/api/documents.html#search-document`
-    def search(collection:, params:, url_opts: {})
-      services.fetch(:search).call(collection: collection, params: params, url_opts: url_opts)
+    def search(collection:, params:, url_opts: {}, &result_builder)
+      services.fetch(:search).call(collection: collection, params: params, url_opts: url_opts, &result_builder)
     end
 
     # Resolve a logical collection name that might be an alias to the physical collection name.
@@ -387,6 +388,11 @@ module SearchEngine
       services.fetch(:search).multi(searches: searches, url_opts: url_opts)
     end
 
+    # Default URL-level search options for this client's configuration.
+    def search_url_options
+      ClientOptions.url_options_from_config(config)
+    end
+
     # Clear the Typesense server-side search cache.
     #
     # @return [Hash] response payload from Typesense (symbolized keys)
@@ -692,7 +698,7 @@ module SearchEngine
     end
 
     def derive_cache_opts(url_opts)
-      merged = ClientOptions.url_options_from_config(config)
+      merged = search_url_options
       merged[:use_cache] = url_opts[:use_cache] if url_opts.key?(:use_cache) && !url_opts[:use_cache].nil?
       merged[:cache_ttl] = Integer(url_opts[:cache_ttl]) if url_opts.key?(:cache_ttl)
       merged

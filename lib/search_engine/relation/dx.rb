@@ -153,7 +153,9 @@ module SearchEngine
           seg << 'missing_values' if g[:missing_values]
           parts << "grouping=#{seg.join(':')}"
         end
-        if params.key?(:page) || params.key?(:per_page)
+        if params.key?(:offset)
+          parts << "offset/limit=#{params[:offset]}/#{params[:limit]}"
+        elsif params.key?(:page) || params.key?(:per_page)
           p = params[:page]
           per = params[:per_page]
           parts << "page/per=#{p || ''}/#{per || ''}"

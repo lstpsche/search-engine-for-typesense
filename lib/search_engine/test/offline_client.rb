@@ -13,11 +13,11 @@ module SearchEngine
       EMPTY_SEARCH = { 'hits' => [], 'found' => 0, 'out_of' => 0 }.freeze
 
       def search(collection:, params:, url_opts: {})
-        SearchEngine::Result.new(EMPTY_SEARCH, klass: nil)
+        block_given? ? yield(EMPTY_SEARCH) : SearchEngine::Result.new(EMPTY_SEARCH, klass: nil)
       end
 
       def multi_search(searches:, url_opts: {})
-        { 'results' => [] }
+        { 'results' => searches.map { EMPTY_SEARCH } }
       end
 
       def import_documents(collection:, jsonl:, action: :upsert)

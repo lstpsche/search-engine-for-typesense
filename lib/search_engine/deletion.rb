@@ -43,14 +43,19 @@ module SearchEngine
     # @param hash [Hash, nil]
     # @return [String]
     def build_filter(filter, hash)
-      if filter && !filter.to_s.strip.empty?
-        filter.to_s
-      elsif hash.is_a?(Hash) && !hash.empty?
-        fragments = SearchEngine::Filters::Sanitizer.build_from_hash(hash)
-        fragments.join(' && ')
-      else
-        raise ArgumentError, 'delete_by requires a filter string or a non-empty hash'
+      return filter if filter.is_a?(String) && !filter.strip.empty?
+      unless filter.nil? || filter.is_a?(String) || filter.is_a?(Hash)
+        raise ArgumentError, 'expected a filter string or hash'
       end
+
+      if filter.is_a?(Hash) && hash && !hash.empty?
+        raise ArgumentError, 'provide filter fields in a single hash'
+      end
+
+      fields = filter.is_a?(Hash) ? filter : hash
+      raise ArgumentError, 'expected a non-empty filter hash' unless fields.is_a?(Hash) && !fields.empty?
+
+      SearchEngine::Filters::Sanitizer.build_from_hash(fields).join(' && ')
     end
 
     # Resolve the physical collection name using the same logic as the indexer.

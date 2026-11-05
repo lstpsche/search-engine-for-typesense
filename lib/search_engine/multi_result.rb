@@ -28,6 +28,21 @@ module SearchEngine
   #   mr.dig('brands').to_a
   #   mr.labels #=> [:products, :brands]
   class MultiResult
+    attr_reader :result_set
+
+    # Typesense can report individual failures inside a successful HTTP response.
+    def self.entry_error(label, item)
+      return unless item.is_a?(Hash)
+
+      code = item[:code] || item['code'] || item[:status] || item['status']
+      status = Integer(code, exception: false)
+      return unless item[:error] || item['error'] || (status && !(200..299).cover?(status))
+
+      message = "Multi-search failed for label :#{label}"
+      message += " (status #{status})" if status
+      Errors::Api.new("#{message}.", status: status, body: item)
+    end
+
     # Build a new MultiResult.
     #
     # @param labels [Array<String, Symbol>] ordered labels
@@ -36,36 +51,38 @@ module SearchEngine
     # @raise [ArgumentError] when sizes mismatch, labels invalid/duplicate, or inputs malformed
     # @see `https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/multi-search-guide`
     def initialize(labels:, raw_results:, klasses: nil)
-      @labels = canonicalize_labels(labels)
-      @map = {}
+      keys = canonicalize_labels(labels)
+      validate_sizes!(keys, raw_results, klasses)
+      keys.each_with_index do |label, index|
+        raw = raw_results[index]
+        raise ArgumentError, "Expected a result Hash for label :#{label}" unless raw.is_a?(Hash)
 
-      # Store the raw array privately to document the one-time network call and hydration
-      @raw_results = Array(raw_results).freeze
-
-      validate_sizes!(@labels, @raw_results, klasses)
-
-      klass_by_index = build_klass_index(@labels, klasses)
-
-      @labels.each_with_index do |label, index|
-        raw = @raw_results[index]
-        kls = klass_by_index[index] || infer_klass_from_raw(raw)
-        @map[label] = SearchEngine::Result.new(raw, klass: kls)
+        failure = MultiResult.entry_error(label, raw)
+        raise failure if failure
       end
 
+      klass_by_index = build_klass_index(keys, klasses)
+      pairs = keys.each_with_index.map do |label, index|
+        raw = raw_results[index]
+        result = if block_given?
+                   yield(raw, index)
+                 else
+                   Result.new(raw, klass: klass_by_index[index] || infer_klass_from_raw(raw))
+                 end
+        [label, result]
+      end
+      @result_set = Multi::ResultSet.new(pairs)
       freeze
     end
 
-    # Return a shallow copy of labels to preserve immutability.
-    # @return [Array<Symbol>]
+    # Return a shallow copy of the ordered labels.
     def labels
-      @labels.dup
+      @result_set.labels
     end
 
-    # Fetch a Result by label.
-    # @param label [String, Symbol]
-    # @return [SearchEngine::Result, nil]
+    # Fetch a result by its case-insensitive label.
     def [](label)
-      @map[SearchEngine::Multi.canonicalize_label(label)]
+      @result_set[label]
     rescue ArgumentError
       nil
     end
@@ -87,7 +104,7 @@ module SearchEngine
     # Pure helper: returns a shallow copy and never performs HTTP.
     # @return [Hash{Symbol=>SearchEngine::Result}]
     def to_h
-      @map.dup
+      @result_set.to_h
     end
 
     # Iterate over (label, result) in insertion order.
@@ -98,7 +115,7 @@ module SearchEngine
     def each_label
       return enum_for(:each_label) unless block_given?
 
-      @labels.each { |l| yield([l, @map[l]]) }
+      @result_set.each_pair { |label, result| yield([label, result]) }
     end
 
     # Convenience to map over (label, result) pairs.

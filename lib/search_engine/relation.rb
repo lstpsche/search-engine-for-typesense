@@ -17,7 +17,7 @@ module SearchEngine
       find_index index rindex values_at sample shuffle rotate
     ].freeze
     # Keys considered essential for :only preset mode.
-    ESSENTIAL_PARAM_KEYS = %i[q page per_page].freeze
+    ESSENTIAL_PARAM_KEYS = %i[q page per_page offset limit].freeze
 
     # @return [Class] bound model class (typically a SearchEngine::Base subclass)
     attr_reader :klass
@@ -463,8 +463,9 @@ module SearchEngine
         parts << gparts.join(' ')
       end
 
-      parts << "page=#{compiled[:page]}" if compiled.key?(:page)
-      parts << "per=#{compiled[:per_page]}" if compiled.key?(:per_page)
+      { page: :page, per: :per_page, offset: :offset, limit: :limit }.each do |label, key|
+        parts << "#{label}=#{compiled[key]}" if compiled.key?(key)
+      end
 
       "#<#{self.class.name} #{parts.join(' ')} >"
     end
@@ -586,7 +587,7 @@ module SearchEngine
         msg,
         hint: 'Increase `validate_hits!(max:)` or narrow filters. Prefer `limit_hits(n)` to avoid work when supported.',
         doc: 'https://nikita-shkoda.mintlify.app/projects/search-engine-for-typesense/v30.1/hit-limits#validation',
-        details: { total_hits: th, max: max, collection: coll, relation_summary: inspect }
+        details: { total_hits: th, max: max, collection: coll, relation_summary: summary_inspect_string }
       )
     end
 

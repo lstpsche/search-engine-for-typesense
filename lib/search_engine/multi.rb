@@ -5,7 +5,7 @@ require 'set'
 module SearchEngine
   # Builder for assembling labeled Relations into a federated multi-search.
   #
-  # Pure collector: validates labels and relations, preserves insertion order,
+  # Validates labels and relations, preserves insertion order,
   # and produces per-search payload hashes ready for {SearchEngine::Client#multi_search}.
   #
   # Usage (via the module-level convenience):
@@ -21,7 +21,7 @@ module SearchEngine
     URL_ONLY_KEYS = %i[use_cache cache_ttl].freeze
 
     # Keys that must be present/retained for :only mode in multi-search payloads.
-    ESSENTIAL_MULTI_KEYS = %i[collection q page per_page preset].freeze
+    ESSENTIAL_MULTI_KEYS = %i[collection q page per_page offset limit preset].freeze
 
     # Canonicalize a label into a case-insensitive Symbol key.
     # @param label [String, Symbol]
@@ -90,7 +90,7 @@ module SearchEngine
     # Presets:
     # - Preset token lives inside each per-search payload under :preset (never top-level)
     # - mode=:merge — pass through compiler output (includes :preset)
-    # - mode=:only  — retain only ESSENTIAL_MULTI_KEYS (collection,q,page,per_page,preset) after common merge
+    # - mode=:only  — retain only ESSENTIAL_MULTI_KEYS after common merge
     # - mode=:lock  — defensively drop any keys present in Config.presets.locked_domains from the merged payload
     #                 (conflict recording remains in single-search compile)
     #
@@ -107,7 +107,7 @@ module SearchEngine
     def to_payloads(common: {})
       raise ArgumentError, 'common must be a Hash' unless common.is_a?(Hash)
 
-      filtered_common = filter_url_only_keys(common)
+      filtered_common = filter_url_only_keys(common).transform_keys(&:to_sym)
 
       seen = Set.new
       @entries.map do |e|
@@ -129,8 +129,14 @@ module SearchEngine
 
         collection = collection_name_for_relation(e.relation)
 
-        # Shallow-merge with per-search winning
-        merged = filtered_common.merge(per_search)
+        common_params = if per_search.key?(:offset) || per_search.key?(:limit)
+                          filtered_common.except(:page, :per_page)
+                        elsif per_search.key?(:page) || per_search.key?(:per_page)
+                          filtered_common.except(:offset, :limit)
+                        else
+                          filtered_common
+                        end
+        merged = common_params.merge(per_search)
         payload = { collection: collection }.merge(EssentialPruner.prune(merged, relation: e.relation))
         prune_empty_values(payload)
       end
@@ -140,6 +146,28 @@ module SearchEngine
     # @return [Array<Class>]
     def klasses
       @entries.map { |e| e.relation.klass }
+    end
+
+    # Execute the labeled searches together. Typed results retain each relation's context.
+    # Raw responses expose the complete backend envelope, including per-search errors.
+    def execute(common: {}, client: nil, url_opts: {}, raw: false)
+      keys = labels
+      enforce_multi_limit!(keys.size, SearchEngine.config.multi_search_limit)
+      searches = to_payloads(common: common)
+      client ||= SearchEngine.client
+      url_opts = search_url_options(client, url_opts)
+      payload = build_multi_event_payload(keys.size, keys, url_opts)
+
+      Instrumentation.instrument('search_engine.multi_search', payload) do |ctx|
+        begin
+          response = client.multi_search(searches: searches, url_opts: url_opts)
+        rescue Errors::Api => error
+          ctx[:http_status] = error.status
+          raise augment_multi_api_error(error, keys)
+        end
+        ctx[:http_status] = 200
+        raw ? response : to_result(response, keys)
+      end
     end
 
     # ResultSet maps labels to {SearchEngine::Result} while preserving order.
@@ -194,6 +222,64 @@ module SearchEngine
     end
 
     private
+
+    # Hydrate each result with the selection, facets and constraints of its relation.
+    def to_result(response, keys)
+      items = response[:results] || response['results'] if response.is_a?(Hash)
+      MultiResult.new(labels: keys, raw_results: items) do |raw, index|
+        relation = @entries.fetch(index).relation
+        if relation.is_a?(Relation)
+          relation.send(:enforce_hit_validator_if_needed!, raw[:found] || raw['found'])
+          Result.new(raw, **Hydration::Materializers.result_options(relation))
+        else
+          Result.new(raw, klass: relation.klass)
+        end
+      end
+    end
+
+    def enforce_multi_limit!(count, limit)
+      return unless count > limit
+
+      raise ArgumentError,
+            "multi_search: #{count} searches exceed limit (#{limit}). " \
+            'Increase `SearchEngine.config.multi_search_limit` if necessary.'
+    end
+
+    def search_url_options(client, overrides)
+      defaults = if client.respond_to?(:search_url_options)
+                   client.search_url_options
+                 else
+                   ClientOptions.url_options_from_config
+                 end
+      options = defaults.merge(overrides)
+      disabled = @entries.any? do |entry|
+        entry.relation.is_a?(Relation) && entry.relation.send(:build_url_opts)[:use_cache] == false
+      end
+      options[:use_cache] = false if disabled
+      options
+    end
+
+    def build_multi_event_payload(count, labels, url_opts)
+      {
+        searches_count: count,
+        labels: labels.map(&:to_s),
+        http_status: nil,
+        source: :multi,
+        url_opts: Observability.filtered_url_opts(url_opts)
+      }
+    end
+
+    def augment_multi_api_error(error, labels)
+      body = error.body
+      results = body[:results] || body['results'] if body.is_a?(Hash)
+      return error unless results.is_a?(Array)
+
+      labels.each_with_index do |label, index|
+        failure = MultiResult.entry_error(label, results[index])
+        return Errors::Api.new(failure.message, status: error.status, body: body) if failure
+      end
+      error
+    end
 
     def validate_relation!(relation)
       unless relation.respond_to?(:to_typesense_params) && relation.respond_to?(:klass)
