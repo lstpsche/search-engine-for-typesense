@@ -62,7 +62,7 @@ module SearchEngine
       #   SearchEngine::Product.where(active: true).find_by('price:>100')
       def find_by(*args)
         relation = args.nil? || args.empty? ? self : where(*args)
-        relation.per(1).page(1).first
+        relation.limit(1).first
       end
 
       # Convenience for plucking :id values.

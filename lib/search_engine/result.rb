@@ -105,6 +105,26 @@ module SearchEngine
       freeze
     end
 
+    # Apply relation constraints to a result supplied by a custom client.
+    # Matching model instances, including all grouped hits, can be shared.
+    def with_context(klass:, selection:, facets:)
+      return Result.new(raw, klass: klass, selection: selection, facets: facets) unless klass == @klass
+
+      copy = dup
+      copy.send(:apply_context!, selection, facets)
+      copy.freeze
+    end
+
+    # Source documents aligned with #hits, or with every hit in each group.
+    def self.documents(raw, all_group_members: false)
+      groups = raw['grouped_hits'] || raw[:grouped_hits]
+      (groups || [raw]).flat_map do |section|
+        hits = section['hits'] || section[:hits]
+        docs = Array(hits).filter_map { |hit| hit['document'] || hit[:document] }
+        groups && !all_group_members ? docs.first(1) : docs
+      end
+    end
+
     # Iterate over hydrated hits.
     # @yieldparam obj [Object] hydrated object
     # @return [Enumerator] when no block is given
@@ -314,6 +334,17 @@ module SearchEngine
       end
     end
 
+    def apply_context!(selection, facets)
+      @selection_ctx = selection
+      if selection && selection[:strict_missing]
+        Result.documents(raw, all_group_members: true).each do |document|
+          enforce_strict_missing_if_needed!(document.keys.map(&:to_s))
+        end
+      end
+      @facets_ctx = facets
+      @__facets_parsed_memo = build_parsed_facets(raw, facets).freeze if facets
+    end
+
     def parse_facets
       @__facets_parsed_memo || {}.freeze
     end
@@ -504,12 +535,12 @@ module SearchEngine
 
     # Enforce strict-missing behavior when enabled.
     # Computes missing = requested_root − present_keys and raises when non-empty.
-    def enforce_strict_missing_if_needed!(present_keys)
+    def enforce_strict_missing_if_needed!(present_keys, requested_override: nil)
       ctx = @selection_ctx || {}
       strict = (ctx[:strict_missing] == true)
       return unless strict
 
-      requested = Array(ctx[:requested_root]).map(&:to_s).reject(&:empty?)
+      requested = Array(requested_override || ctx[:requested_root]).map(&:to_s).reject(&:empty?)
       return if requested.empty?
 
       missing = requested - present_keys

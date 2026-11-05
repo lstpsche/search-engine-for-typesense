@@ -133,6 +133,11 @@ class ParserTest < Minitest::Test
     assert_equal 42, node.value
   end
 
+  def test_numeric_looking_ids_preserve_distinct_document_keys
+    node = SearchEngine::DSL::Parser.parse(['id IN ?', %w[2 002]], klass: Product)
+    assert_equal [2, '002'], node.values
+  end
+
   def test_invalid_integer_coercion_raises
     assert_raises(SearchEngine::Errors::InvalidType) do
       SearchEngine::DSL::Parser.parse(['id = ?', '4.2'], klass: Product)

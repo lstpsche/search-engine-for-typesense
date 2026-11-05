@@ -122,21 +122,8 @@ module SearchEngine
     #   res[:products].found
     # @note Emits "search_engine.multi_search" via ActiveSupport::Notifications with
     #   payload: { searches_count, labels, http_status, source: :multi }.
-    def multi_search(common: {})
-      raise ArgumentError, 'block required' unless block_given?
-
-      builder = SearchEngine::Multi.new
-      yield builder
-
-      labels = builder.labels
-      raw = execute_multi_search_internal(builder: builder, common: common, labels: labels, use_custom_client: false)
-
-      # Typesense client returns symbolized keys; be resilient to both forms.
-      # Expect: { results: [ { ... }, ... ] }
-      list = Array(raw && (raw[:results] || raw['results']))
-      pairs = build_label_result_pairs(list, labels, builder)
-
-      SearchEngine::Multi::ResultSet.new(pairs)
+    def multi_search(common: {}, &block)
+      multi_search_result(common: common, &block).result_set
     end
 
     # Execute a federated multi-search and return a MultiResult wrapper.
@@ -157,17 +144,8 @@ module SearchEngine
     #   mr[:products].found
     # @note Emits "search_engine.multi_search" via ActiveSupport::Notifications with
     #   payload: { searches_count, labels, http_status, source: :multi }.
-    def multi_search_result(common: {})
-      raise ArgumentError, 'block required' unless block_given?
-
-      builder = SearchEngine::Multi.new
-      yield builder
-
-      labels = builder.labels
-      raw = execute_multi_search_internal(builder: builder, common: common, labels: labels, use_custom_client: false)
-
-      list = Array(raw && (raw[:results] || raw['results']))
-      SearchEngine::MultiResult.new(labels: labels, raw_results: list, klasses: builder.klasses)
+    def multi_search_result(common: {}, &block)
+      multi_search_builder(&block).execute(common: common)
     end
 
     # Execute a federated multi-search and return the raw response.
@@ -183,16 +161,8 @@ module SearchEngine
     # @raise [SearchEngine::Errors::Api] when Typesense returns a non-2xx status
     # @note Emits "search_engine.multi_search" via ActiveSupport::Notifications with
     #   payload: { searches_count, labels, http_status, source: :multi }.
-    def multi_search_raw(common: {})
-      raise ArgumentError, 'block required' unless block_given?
-
-      builder = SearchEngine::Multi.new
-      yield builder
-
-      labels = builder.labels
-      execute_multi_search_internal(builder: builder, common: common, labels: labels, use_custom_client: true)
-    rescue Errors::Api => error
-      raise augment_multi_api_error(error, labels)
+    def multi_search_raw(common: {}, &block)
+      multi_search_builder(&block).execute(common: common, raw: true)
     end
 
     # Build and render a graph of Typesense collections and their interconnections.
@@ -220,120 +190,10 @@ module SearchEngine
       @config_mutex ||= Mutex.new
     end
 
-    # Internal method that executes multi-search request with common setup and error handling.
-    # Returns the raw Typesense response.
-    #
-    # @param builder [SearchEngine::Multi] configured builder instance
-    # @param common [Hash] optional params merged into each per-search payload
-    # @param labels [Array<Symbol>] ordered labels for the search list
-    # @param use_custom_client [Boolean] whether to check config.client for custom client instance
-    # @return [Hash] raw Typesense multi-search response
-    # @raise [ArgumentError] when the number of searches exceeds the configured limit
-    # @raise [SearchEngine::Errors::Api] when Typesense returns a non-2xx status
-    def execute_multi_search_internal(builder:, common:, labels:, use_custom_client:)
-      count = builder.labels.size
-      limit = SearchEngine.config.multi_search_limit
-      enforce_multi_limit!(count, limit)
+    def multi_search_builder(&block)
+      raise ArgumentError, 'block required' unless block
 
-      payloads = builder.to_payloads(common: common)
-      url_opts = SearchEngine::ClientOptions.url_options_from_config(SearchEngine.config)
-
-      client_obj = SearchEngine.client(use_config_client: use_custom_client)
-
-      if defined?(ActiveSupport::Notifications)
-        se_payload = build_multi_event_payload(count, labels, url_opts)
-        begin
-          SearchEngine::Instrumentation.instrument('search_engine.multi_search', se_payload) do |ctx|
-            client_obj.multi_search(searches: payloads, url_opts: url_opts).tap do
-              ctx[:http_status] = 200
-            end
-          rescue Errors::Api => error
-            ctx[:http_status] = error.status
-            raise
-          end
-        rescue Errors::Api => error
-          raise augment_multi_api_error(error, labels)
-        end
-      else
-        begin
-          client_obj.multi_search(searches: payloads, url_opts: url_opts)
-        rescue Errors::Api => error
-          raise augment_multi_api_error(error, labels)
-        end
-      end
-    end
-
-    def enforce_multi_limit!(count, limit)
-      return unless count > limit
-
-      raise ArgumentError,
-            "multi_search: #{count} searches exceed limit (#{limit}). " \
-            'Increase `SearchEngine.config.multi_search_limit` if necessary.'
-    end
-
-    def build_multi_event_payload(count, labels, url_opts)
-      {
-        searches_count: count,
-        labels: labels.map(&:to_s),
-        http_status: nil,
-        source: :multi,
-        url_opts: Observability.filtered_url_opts(url_opts)
-      }
-    end
-
-    def build_label_result_pairs(list, labels, builder)
-      pairs = []
-      list.each_with_index do |item, idx|
-        label = labels[idx]
-        klass = builder.klasses[idx]
-        result = SearchEngine::Result.new(item, klass: klass)
-        pairs << [label, result]
-      end
-      pairs
-    end
-
-    # Build an API error with additional label context when possible.
-    # @param error [SearchEngine::Errors::Api]
-    # @param labels [Array<Symbol>] ordered labels for the search list
-    # @return [SearchEngine::Errors::Api]
-    def augment_multi_api_error(error, labels)
-      body = error.body
-      failing_index = nil
-      failing_status = nil
-
-      if body.is_a?(Hash)
-        results = body['results'] || body[:results]
-        if results.is_a?(Array)
-          results.each_with_index do |item, idx|
-            status = item.is_a?(Hash) ? (item['status'] || item[:status] || item['code'] || item[:code]) : nil
-            next if status.nil? || status.to_i == 200
-
-            failing_index = idx
-            failing_status = status.to_i
-            break
-          end
-        end
-      end
-
-      if failing_index && labels[failing_index]
-        label = labels[failing_index]
-        msg = "Multi-search failed for label :#{label} (status #{failing_status})."
-        return Errors::Api.new(msg, status: error.status, body: error.body)
-      end
-
-      # Fallback: summarize
-      codes = []
-      if body.is_a?(Hash)
-        results = body['results'] || body[:results]
-        if results.is_a?(Array)
-          results.each do |item|
-            codes << (item['status'] || item[:status] || item['code'] || item[:code])
-          end
-        end
-      end
-      Errors::Api.new("Multi-search failed (statuses: #{codes.compact.join(', ')})", status: error.status,
-body: error.body
-      )
+      SearchEngine::Multi.new.tap(&block)
     end
   end
 end

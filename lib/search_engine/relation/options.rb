@@ -5,33 +5,12 @@ module SearchEngine
     # Options and pagination normalization helpers.
     # Centralizes precedence rules and guards for page/per vs limit/offset.
     module Options
-      # Compute page/per_page with precedence:
-      # - When page/per are provided, prefer them (fill missing per with nil, page defaults to 1 when only per is set)
-      # - Otherwise, when limit is set, derive page from offset and per_page from limit
-      # - Otherwise, return empty Hash
-      # @return [Hash{Symbol=>Integer}]
+      # Page-based pagination takes precedence. A native offset can start between pages.
       def compute_pagination
-        page = @state[:page]
-        per = @state[:per_page]
-
-        if page || per
-          out = {}
-          if per && page
-            out[:page] = page
-            out[:per_page] = per
-          elsif per && !page
-            out[:page] = 1
-            out[:per_page] = per
-          elsif page && !per
-            out[:page] = page
-          end
-          return out
-        elsif @state[:limit]
-          limit = @state[:limit]
-          off = @state[:offset] || 0
-          computed_page = (off.to_i / limit.to_i) + 1
-          return { page: computed_page, per_page: limit }
-        end
+        page, per, limit, offset = @state.values_at(:page, :per_page, :limit, :offset)
+        return { page: page || 1, per_page: per }.compact if page || per
+        return { offset: offset, limit: limit }.compact if offset
+        return { page: 1, per_page: limit } if limit
 
         {}
       end

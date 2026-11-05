@@ -195,7 +195,7 @@ class MultiTest < Minitest::Test
     SearchEngine.configure { |c| c.cache_ttl_s = ttl }
 
     client = Minitest::Mock.new
-    raw = { 'results' => [] }
+    raw = { 'results' => [{ 'hits' => [], 'found' => 0 }] }
     client.expect(:multi_search, raw) do |searches:, url_opts:|
       assert_equal ttl, url_opts[:cache_ttl]
       assert_equal true, [true, false].include?(url_opts[:use_cache])
@@ -229,6 +229,72 @@ class MultiTest < Minitest::Test
     end
 
     client.verify
+  end
+
+  def test_typed_helpers_apply_selection_and_hit_validators_without_requesting_a_preview
+    stub = SearchEngine::Test::StubClient.new
+    raw = { results: [{ found: 2, hits: [{ document: { id: '1' } }] }] }
+    strict = Product.all.select(:name).options(selection: { strict_missing: true })
+    SearchEngine.config.stub(:client, stub) do
+      %i[multi_search multi_search_result].each do |helper|
+        stub.enqueue_response(:multi_search, raw)
+        assert_raises(SearchEngine::Errors::MissingField) do
+          SearchEngine.public_send(helper) { |m| m.add(:products, strict) }
+        end
+        stub.enqueue_response(:multi_search, raw)
+        assert_raises(SearchEngine::Errors::HitLimitExceeded) do
+          SearchEngine.public_send(helper) { |m| m.add(:products, Product.all.validate_hits!(max: 1)) }
+        end
+      end
+    end
+    assert_empty stub.search_calls
+    assert_equal 4, stub.multi_search_calls.size
+  end
+
+  def test_typed_helpers_reject_incomplete_responses_before_hydration_and_raw_preserves_them
+    stub = SearchEngine::Test::StubClient.new
+    incomplete = { results: [] }
+    queries = ->(m) { m.add(:products, Product.all) }
+    SearchEngine.config.stub(:client, stub) do
+      %i[multi_search multi_search_result].each do |helper|
+        stub.enqueue_response(:multi_search, incomplete)
+        error = assert_raises(ArgumentError) { SearchEngine.public_send(helper, &queries) }
+        assert_match(/does not match/, error.message)
+      end
+      stub.enqueue_response(:multi_search, incomplete)
+      assert_same incomplete, SearchEngine.multi_search_raw(&queries)
+    end
+  end
+
+  def test_cache_opt_out_applies_to_all_entries_and_a_scoped_clients_own_defaults
+    scoped = SearchEngine::Config.new
+    native = SearchEngine::Client.new(config: scoped)
+    seen = []
+    response = lambda do |searches:, url_opts:|
+      seen << url_opts.fetch(:use_cache)
+      assert(searches.none? { |body| body.key?(:use_cache) })
+      { results: searches.map { { found: 0, hits: [] } } }
+    end
+    native.stub(:multi_search, response) do
+      SearchEngine.config.stub(:client, native) do
+        scoped.use_cache = false
+        SearchEngine.multi_search { |m| m.add(:products, Product.all) }
+        scoped.use_cache = true
+        SearchEngine.multi_search_raw { |m| m.add(:first, Product.all).add(:second, Product.all.cache(false)) }
+        SearchEngine.multi_search_result { |m| m.add(:cached, Product.all) }
+      end
+    end
+    assert_equal [false, false, true], seen
+  end
+
+  def test_bundled_offline_clients_supply_one_empty_result_per_search
+    [SearchEngine.offline_client, SearchEngine::Test::StubClient.new].each do |client|
+      SearchEngine.config.stub(:client, client) do
+        results = SearchEngine.multi_search { |m| m.add(:one, Product.all).add(:two, Brand.all) }
+        assert_equal %i[one two], results.labels
+        assert_equal [0, 0], results.to_h.values.map(&:found)
+      end
+    end
   end
 
   def test_api_error_augmentation_includes_label_when_available

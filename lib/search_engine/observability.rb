@@ -12,7 +12,7 @@ module SearchEngine
 
     # Whitelisted search parameter keys to include in payload excerpts.
     PARAM_WHITELIST = %i[
-      q query_by include_fields exclude_fields per_page page infix filter_by sort_by
+      q query_by include_fields exclude_fields per_page page limit offset infix filter_by sort_by
       group_by group_limit group_missing_values
       facet_by max_facet_values facet_query
       num_typos drop_tokens_threshold prioritize_exact_match query_by_weights
@@ -110,7 +110,7 @@ module SearchEngine
       return str unless str.is_a?(String)
 
       # Mask obvious quoted literals first
-      redacted = str.gsub(/"[^"]*"|'[^']*'/, '***')
+      redacted = str.gsub(/`[^`]*`|"[^"]*"|'[^']*'/, '***')
 
       # Mask numeric literals (best-effort)
       redacted.gsub(/\b\d+(?:\.\d+)?\b/, '***')
@@ -124,10 +124,10 @@ module SearchEngine
     def self.redact_filter_by(filter)
       return filter unless filter.is_a?(String)
 
-      # Replace values that follow a comparator or a colon with *** until a
-      # delimiter is reached. Also mask quoted strings and numbers.
-      masked = filter.gsub(/([!:><=]{1,2})\s*([^\s)&|]+)/, '\1***')
-      masked = masked.gsub(/"[^"]*"|'[^']*'/, '***')
+      # Mask whole literals first: their contents may look like expressions.
+      # Once quoted values are gone, a list can safely be masked as a unit.
+      masked = filter.gsub(/`[^`]*`|"[^"]*"|'[^']*'/, '***').gsub(/\[[^\]]*\]/, '***')
+      masked = masked.gsub(/([!:><=]{1,2})\s*([^\s)&|]+)/, '\1***')
       masked.gsub(/\b\d+(?:\.\d+)?\b/, '***')
     end
 

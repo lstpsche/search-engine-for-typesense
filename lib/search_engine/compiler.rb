@@ -89,7 +89,7 @@ module SearchEngine
       when SearchEngine::AST::And
         compile_boolean(node.children, ' && ', parent_prec: parent_prec, my_prec: precedence(:and), klass: klass)
       when SearchEngine::AST::Or
-        compile_or(node, parent_prec, klass: klass)
+        compile_boolean(node.children, ' || ', parent_prec: parent_prec, my_prec: precedence(:or), klass: klass)
       when SearchEngine::AST::Group
         "(#{compile_node(node.children.first, parent_prec: 0, klass: klass)})"
       when SearchEngine::AST::Raw
@@ -104,25 +104,9 @@ module SearchEngine
     end
     private_class_method :compile_node
 
-    def compile_or(node, parent_prec, klass: nil)
-      compiled = compile_boolean(
-        node.children,
-        ' || ',
-        parent_prec: parent_prec,
-        my_prec: precedence(:or),
-        klass: klass
-      )
-      if node.children.length == 2 && node.children.last.is_a?(SearchEngine::AST::And)
-        left_str, right_str = compiled.split(' || ', 2)
-        compiled = "#{left_str} || (#{right_str})"
-      end
-      compiled
-    end
-    private_class_method :compile_or
-
     def compile_binary(field, op, value, klass: nil)
       fstr = field.to_s
-      if (m = fstr.match(/^\$(\w+)\.(.+)$/))
+      if (m = fstr.match(/\A\$([^.]*)\.(.+)\z/))
         assoc = m[1]
         inner = m[2]
         # Render joined field as $assoc(inner OP value) per expected Typesense join filter syntax
@@ -133,7 +117,7 @@ module SearchEngine
         rescue StandardError
           nil
         end
-        rhs = quote(value, field: inner, klass: target_klass || klass)
+        rhs = quote(value, field: inner, klass: target_klass || klass, joined: true)
         "$#{assoc}(#{inner}#{op}#{rhs})"
       else
         rhs = quote(value, field: fstr, klass: klass)
@@ -237,7 +221,7 @@ joiner: joiner
         field = node.respond_to?(:field) ? node.field.to_s : nil
         return nil unless field&.start_with?('$')
 
-        m = field.match(/^\$(\w+)\.(.+)$/)
+        m = field.match(/\A\$([^.]*)\.(.+)\z/)
         return nil unless m
 
         assoc = m[1]
@@ -251,9 +235,9 @@ joiner: joiner
           nil
         end
         rhs = if node.respond_to?(:value)
-                quote(node.value, field: inner_field, klass: target_klass || klass)
+                quote(node.value, field: inner_field, klass: target_klass || klass, joined: true)
               elsif node.respond_to?(:values)
-                quote(node.values, field: inner_field, klass: target_klass || klass)
+                quote(node.values, field: inner_field, klass: target_klass || klass, joined: true)
               else
                 return nil
               end
@@ -279,7 +263,7 @@ joiner: joiner
     end
     private_class_method :op_for
 
-    def quote(value, field: nil, klass: nil)
+    def quote(value, field:, klass:, joined: false)
       # Typesense requires reference fields to use string values, even if the field type is int64
       converted_value = if klass && field && field_reference?(klass, field)
                           convert_for_reference_field(value)
@@ -287,12 +271,7 @@ joiner: joiner
                           value
                         end
 
-      # Use conditional scalar quoting for scalars; preserve array element quoting rules
-      if converted_value.is_a?(Array)
-        SearchEngine::Filters::Sanitizer.quote(converted_value)
-      else
-        SearchEngine::Filters::Sanitizer.quote_scalar_for_filter(converted_value)
-      end
+      SearchEngine::Filters::Sanitizer.quote(converted_value, field: field, joined: joined)
     end
     private_class_method :quote
 
@@ -333,7 +312,7 @@ joiner: joiner
     def needs_parentheses?(child, parent_prec:)
       child_prec = precedence(child)
       # Parenthesize when child binds looser than parent
-      child_prec < parent_prec
+      child_prec < parent_prec || (child.is_a?(SearchEngine::AST::And) && parent_prec == precedence(:or))
     end
     private_class_method :needs_parentheses?
 

@@ -335,7 +335,7 @@ module SearchEngine
                         {}
                       end
         parts = []
-        %i[q query_by per_page page infix].each do |key|
+        %i[q query_by per_page page limit offset infix].each do |key|
           next unless params_hash.key?(key)
 
           parts << format_param(key, params_hash[key])
@@ -540,7 +540,7 @@ module SearchEngine
       private_class_method :attach_grouping_fields!
 
       def self.attach_selected_params!(h, params_hash)
-        %i[q query_by per_page page infix].each do |key|
+        %i[q query_by per_page page limit offset infix].each do |key|
           h[key.to_s] = params_hash[key] if params_hash.key?(key)
         end
         h['filter_by'] = '***' if params_hash.key?(:filter_by)

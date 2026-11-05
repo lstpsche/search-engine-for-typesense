@@ -54,6 +54,43 @@ class MaterializersExecutionTest < Minitest::Test
     assert_includes client.calls.first[:params].to_h[:filter_by], '$authors'
   end
 
+  def test_legacy_client_hydrated_hits_are_reused_with_facet_and_selection_context
+    raw = {
+      hits: [{ document: { id: '1', name: 'alpha' } }],
+      found: 1,
+      facet_counts: [{ field_name: 'name', counts: [{ value: 'alpha', count: 1 }] }]
+    }
+    eager = SearchEngine::Result.new(raw, klass: Product)
+    client = Object.new
+    calls = []
+    client.define_singleton_method(:search) do |collection:, params:, url_opts:|
+      calls << [collection, params[:q], url_opts]
+      eager
+    end
+    relation = Product.all.select(:name).options(selection: { strict_missing: true })
+                      .facet_query(:name, 'alpha', label: 'First')
+    SearchEngine.config.stub(:client, client) do
+      result = relation.execute
+      assert_same eager.first, result.first
+      assert_equal 'First', result.facet_values(:name).first.fetch(:label)
+      assert_nil eager.facet_values(:name).first.fetch(:label)
+      assert_equal ['alpha'], relation.pluck(:name)
+      assert_same eager.first, SearchEngine::Hydration::Materializers.preview(relation.per(1), 1).first
+    end
+    assert_equal [[Product.collection, '*', {}]] * 2, calls
+  end
+
+  def test_strict_pluck_checks_requested_fields_in_symbol_keyed_hits
+    client = SearchEngine::Test::StubClient.new
+    client.enqueue_response(:search, { hits: [{ document: { id: '1' } }], found: 1 })
+    SearchEngine.config.stub(:client, client) do
+      relation = Product.all.options(selection: { strict_missing: true })
+      assert_equal ['1'], relation.ids
+      error = assert_raises(SearchEngine::Errors::MissingField) { relation.pluck(:name) }
+      assert_equal ['name'], error.details.fetch(:requested)
+    end
+  end
+
   def test_configuration_errors_propagate_from_all_materializers
     %i[to_a count exists? preview].each do |operation|
       client = Client.new

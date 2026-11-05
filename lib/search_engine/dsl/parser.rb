@@ -70,7 +70,7 @@ module SearchEngine
       def parse_list(list, klass:, joins: nil)
         # Preserve input shape so template bind arrays stay intact:
         # parse_list(['brand_id IN ?', [1, 2]]) should keep [1, 2] as one bind arg.
-        items = Array(list).compact
+        items = Array(list)
         return [] if items.empty?
 
         nodes = []
@@ -78,6 +78,8 @@ module SearchEngine
         while i < items.length
           entry = items[i]
           case entry
+          when nil
+            i += 1
           when Hash
             nodes.concat(Array(parse_hash(entry, klass: klass, joins: joins)))
             i += 1
@@ -455,6 +457,10 @@ module SearchEngine
           if value.is_a?(String)
             begin
               int_val = Integer(value, 10)
+              # Typesense compares document IDs byte-for-byte. Canonical numeric
+              # IDs may use the integer hint; converting "0042" would target "42".
+              return value if field.to_s == 'id' && value != int_val.to_s
+
               return int_val
             rescue StandardError
               raise SearchEngine::Errors::InvalidType.new(

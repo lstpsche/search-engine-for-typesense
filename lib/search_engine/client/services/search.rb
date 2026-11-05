@@ -24,6 +24,8 @@ module SearchEngine
           instrument(:get, path, duration, cache_params, request_token: start)
           log_success(:get, path, start, cache_params)
 
+          return yield(result) if block_given?
+
           klass = begin
             SearchEngine.collection_for(collection)
           rescue ArgumentError

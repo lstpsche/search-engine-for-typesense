@@ -91,13 +91,13 @@ module SearchEngine
           compiled = SearchEngine::Compiler.compile(ast_nodes, klass: @klass)
           return nil if compiled.to_s.empty?
 
-          return compiled
+          return map_join_tokens(compiled)
         end
 
         fragments = Array(@state[:filters])
         return nil if fragments.empty?
 
-        fragments.join(' && ')
+        map_join_tokens(fragments.join(' && '))
       end
 
       # Compile sort_by from normalized order entries.
@@ -276,16 +276,10 @@ module SearchEngine
       end
 
       def add_pagination_line!(lines, params)
-        page = params[:page]
-        per = params[:per_page]
-        return unless page || per
-
-        if page && per
-          lines << "  page/per: #{page}/#{per}"
-        elsif page
-          lines << "  page/per: #{page}/"
-        elsif per
-          lines << "  page/per: /#{per}"
+        if params.key?(:offset)
+          lines << "  offset/limit: #{params[:offset]}/#{params[:limit]}"
+        elsif params.key?(:page) || params.key?(:per_page)
+          lines << "  page/per: #{params[:page]}/#{params[:per_page]}"
         end
       end
 
@@ -384,7 +378,6 @@ module SearchEngine
 
       def assign_filter_by!(params, ast_nodes)
         filter_str = compiled_filter_by(ast_nodes)
-        filter_str = map_join_tokens(filter_str)
         params[:filter_by] = filter_str if filter_str
         filter_str
       end
@@ -417,17 +410,12 @@ module SearchEngine
         rewrites = join_token_rewrites
         return value if rewrites.empty?
 
-        mapped = str.dup
-        rewrites.each do |assoc, collection|
-          coll = collection.to_s
-          assoc_token = assoc.to_s
-          next if coll.strip.empty? || assoc_token.empty? || coll == assoc_token
-
-          pattern = /\$#{Regexp.escape(assoc_token)}(?=[.(])/
-          mapped = mapped.gsub(pattern, "$#{coll}")
+        names = Regexp.union(rewrites.keys.map(&:to_s))
+        # Backtick-delimited values can contain literal reference syntax.
+        str.gsub(/`[^`]*`|\$(#{names})(?=[.(])/) do |match|
+          name = Regexp.last_match(1)
+          name ? "$#{rewrites.fetch(name.to_sym)}" : match
         end
-
-        mapped
       end
 
       def join_token_rewrites
@@ -687,17 +675,14 @@ module SearchEngine
       def apply_pagination_and_hit_limits!(params)
         hits_info = {}
         pagination = compute_pagination
-        if (hl = @state[:hit_limits]) && hl[:early_limit]
-          if pagination.key?(:per_page) && pagination[:per_page].to_i > hl[:early_limit].to_i
-            pagination = pagination.merge(per_page: hl[:early_limit].to_i)
-            hits_info[:per_adjusted] = true
-          else
-            hits_info[:per_adjusted] = false
-          end
-          hits_info[:early_limit] = hl[:early_limit].to_i
+        if (early_limit = @state.dig(:hit_limits, :early_limit))
+          size_key = pagination.key?(:limit) ? :limit : :per_page
+          size = pagination[size_key]
+          hits_info[:per_adjusted] = size.to_i > early_limit
+          pagination[size_key] = early_limit if hits_info[:per_adjusted]
+          hits_info[:early_limit] = early_limit
         end
-        params[:page] = pagination[:page] if pagination.key?(:page)
-        params[:per_page] = pagination[:per_page] if pagination.key?(:per_page)
+        params.merge!(pagination)
         hits_info
       end
 

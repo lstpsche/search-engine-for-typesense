@@ -2,6 +2,7 @@
 
 require 'monitor'
 require 'json'
+require 'search_engine/test/offline_client'
 
 module SearchEngine
   module Test
@@ -102,7 +103,7 @@ module SearchEngine
 
         entry = capture(:search, url: compiled_url(collection), params: params_hash, url_opts: url_opts)
         payload = dequeue_or_default(:search, entry)
-        wrap_single(payload)
+        block_given? ? yield(payload) : SearchEngine::Result.new(payload)
       end
 
       # Public API: multi search. Mirrors top-level helper client usage: returns raw Hash from Typesense.
@@ -117,9 +118,7 @@ module SearchEngine
 
         # Record a synthetic URL for multi endpoint; individual bodies are not posted here
         entry = capture(:multi_search, url: compiled_multi_url, params: searches, url_opts: url_opts)
-        dequeue_or_default(:multi_search, entry).tap do |raw|
-          return raw
-        end
+        dequeue_or_default(:multi_search, entry)
       end
 
       private
@@ -128,7 +127,7 @@ module SearchEngine
         val = @lock.synchronize { queue_for(method).shift }
         case val
         when nil
-          default_payload(method)
+          default_payload(entry)
         when Proc
           val.call(entry)
         when Exception
@@ -138,12 +137,11 @@ module SearchEngine
         end
       end
 
-      def default_payload(method)
-        if method == :search
-          { 'hits' => [], 'found' => 0, 'out_of' => 0 }
-        else
-          { 'results' => [] }
-        end
+      def default_payload(entry)
+        empty = SearchEngine::Test::OfflineClient::EMPTY_SEARCH
+        return empty if entry.verb == :search
+
+        { 'results' => entry.body.map { empty } }
       end
 
       def queue_for(method)
@@ -190,11 +188,6 @@ module SearchEngine
         )
         @lock.synchronize { @calls[method] << entry }
         entry
-      end
-
-      def wrap_single(payload)
-        # Mirror Client#search returning SearchEngine::Result
-        SearchEngine::Result.new(payload, klass: nil)
       end
     end
   end
