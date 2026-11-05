@@ -271,7 +271,7 @@ joiner: joiner
                           value
                         end
 
-      SearchEngine::Filters::Sanitizer.quote(converted_value, field: field, joined: joined)
+      SearchEngine::Filters::Sanitizer.quote(converted_value, field: field, klass: klass, joined: joined)
     end
     private_class_method :quote
 

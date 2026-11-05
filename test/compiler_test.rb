@@ -11,6 +11,7 @@ class CompilerTest < Minitest::Test
     attribute :price, :float
     attribute :brand_id, :integer
     attribute :created_at, :time
+    attribute :recorded_at, :time_string
   end
 
   def compile(ast)
@@ -39,7 +40,8 @@ class CompilerTest < Minitest::Test
     assert_equal 'id:=null', compile(SearchEngine::AST.eq(:id, nil))
 
     t = Time.utc(2020, 1, 1, 12, 0, 0)
-    assert_equal 'created_at:=[`2020-01-01T12:00:00Z`]', compile(SearchEngine::AST.eq(:created_at, t))
+    assert_equal 'created_at:=1577880000', compile(SearchEngine::AST.eq(:created_at, t))
+    assert_equal 'recorded_at:=[`2020-01-01T12:00:00Z`]', compile(SearchEngine::AST.eq(:recorded_at, t))
   end
 
   def test_opaque_data_cannot_change_filter_syntax

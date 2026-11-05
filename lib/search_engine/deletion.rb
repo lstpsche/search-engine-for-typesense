@@ -17,7 +17,7 @@ module SearchEngine
     # @param timeout_ms [Integer, nil] optional read timeout override in ms
     # @return [Integer] number of deleted documents as reported by Typesense
     def delete_by(klass:, filter: nil, hash: nil, into: nil, partition: nil, timeout_ms: nil)
-      filter_str = build_filter(filter, hash)
+      filter_str = build_filter(filter, hash, klass: klass)
       collection = resolve_into(klass: klass, partition: partition, into: into)
 
       effective_timeout = if timeout_ms&.to_i&.positive?
@@ -42,20 +42,18 @@ module SearchEngine
     # @param filter [String, nil]
     # @param hash [Hash, nil]
     # @return [String]
-    def build_filter(filter, hash)
+    def build_filter(filter, hash, klass: nil)
       return filter if filter.is_a?(String) && !filter.strip.empty?
       unless filter.nil? || filter.is_a?(String) || filter.is_a?(Hash)
         raise ArgumentError, 'expected a filter string or hash'
       end
 
-      if filter.is_a?(Hash) && hash && !hash.empty?
-        raise ArgumentError, 'provide filter fields in a single hash'
-      end
+      raise ArgumentError, 'provide filter fields in a single hash' if filter.is_a?(Hash) && hash && !hash.empty?
 
       fields = filter.is_a?(Hash) ? filter : hash
       raise ArgumentError, 'expected a non-empty filter hash' unless fields.is_a?(Hash) && !fields.empty?
 
-      SearchEngine::Filters::Sanitizer.build_from_hash(fields).join(' && ')
+      SearchEngine::Filters::Sanitizer.build_from_hash(fields, klass: klass).join(' && ')
     end
 
     # Resolve the physical collection name using the same logic as the indexer.

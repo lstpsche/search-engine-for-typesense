@@ -504,7 +504,7 @@ module SearchEngine
               base_pairs = base_like_pairs
               unless base_pairs.empty?
                 fragments.concat(
-                  SearchEngine::Filters::Sanitizer.build_from_hash(base_pairs, known_attrs)
+                  SearchEngine::Filters::Sanitizer.build_from_hash(base_pairs, known_attrs, klass: @klass)
                 )
               end
               i += 1

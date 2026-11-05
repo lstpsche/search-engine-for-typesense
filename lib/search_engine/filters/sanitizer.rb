@@ -24,13 +24,13 @@ module SearchEngine
       # Backticks protect operators during expression parsing. A list (even
       # with a single item) also removes the delimiters before tokenization,
       # including on collections that explicitly index the backtick symbol.
-      def quote(value, field: nil, joined: false)
+      def quote(value, field: nil, klass: nil, joined: false)
         if value.is_a?(Array)
-          items = value.flatten(1).map { |item| literal(item, field: field, joined: joined) }
+          items = value.flatten(1).map { |item| literal(item, field: field, klass: klass, joined: joined) }
           return "[#{items.join(', ')}]"
         end
 
-        item = literal(value, field: field, joined: joined)
+        item = literal(value, field: field, klass: klass, joined: joined)
         item.start_with?('`') ? "[#{item}]" : item
       end
 
@@ -38,7 +38,7 @@ module SearchEngine
         quote(value)
       end
 
-      def literal(value, field:, joined:)
+      def literal(value, field:, klass:, joined:)
         case value
         when nil then 'null'
         when true then 'true'
@@ -53,10 +53,12 @@ module SearchEngine
         when Array
           raise ArgumentError, 'expected a scalar filter list item'
         else
-          string = if value.respond_to?(:iso8601) && (value.is_a?(Time) || value.is_a?(Date))
-                     value.iso8601
-                   elsif value.respond_to?(:to_time) && !value.is_a?(String)
-                     value.to_time.iso8601
+          string = if value.respond_to?(:to_time) && !value.is_a?(String)
+                     type = Array(klass.attributes[field.to_sym]).first if field && klass.respond_to?(:attributes)
+                     time = value.to_time
+                     return time.to_i.to_s if %i[time datetime integer].include?(type)
+
+                     value.respond_to?(:iso8601) ? value.iso8601 : time.iso8601
                    else
                      value.to_s
                    end
@@ -100,12 +102,12 @@ module SearchEngine
       end
       private_class_method :balanced_parentheses?
 
-      def build_from_hash(hash, _attributes_map = nil)
+      def build_from_hash(hash, _attributes_map = nil, klass: nil)
         raise ArgumentError, 'filters hash must be a Hash' unless hash.is_a?(Hash)
 
         hash.map do |key, value|
           field = field_name(key)
-          "#{field}:=#{quote(value, field: field)}"
+          "#{field}:=#{quote(value, field: field, klass: klass)}"
         end
       end
 
