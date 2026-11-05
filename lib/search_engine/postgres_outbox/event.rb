@@ -1,9 +1,12 @@
 # frozen_string_literal: true
 
+require 'securerandom'
+
 module SearchEngine
   module PostgresOutbox
     # Immutable value object for one PostgreSQL outbox row.
     class Event
+      LEASE_OWNER_MAX_LENGTH = 255
       VALID_OPERATIONS = %i[upsert delete].freeze
 
       attr_reader :id,
@@ -16,9 +19,17 @@ module SearchEngine
                   :attempts,
                   :payload,
                   :created_at,
+                  :event_lease_owner,
                   :delivery_id,
                   :target_key,
                   :delivery_lease_owner
+
+      def self.new_lease_owner(worker_id)
+        suffix = SecureRandom.uuid
+        prefix_limit = LEASE_OWNER_MAX_LENGTH - suffix.length - 1
+        prefix = worker_id.to_s.gsub(/[^a-zA-Z0-9_.:-]/, '_')[0, prefix_limit]
+        "#{prefix}:#{suffix}"
+      end
 
       # @param row [Hash] outbox row with string or symbol keys
       # @raise [ArgumentError] when operation is not upsert/delete
@@ -33,6 +44,7 @@ module SearchEngine
         @attempts = (value(row, :delivery_attempts) || value(row, :attempts)).to_i
         @payload = value(row, :payload) || {}
         @created_at = value(row, :created_at)
+        @event_lease_owner = string_value(row, :event_lease_owner)
         @delivery_id = value(row, :delivery_id)
         @target_key = string_value(row, :target_key)
         @delivery_lease_owner = string_value(row, :delivery_lease_owner)

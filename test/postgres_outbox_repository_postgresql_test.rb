@@ -160,6 +160,72 @@ class PostgresOutboxRepositoryPostgresqlTest < Minitest::Test
     restore_previous_outbox_config
   end
 
+  def test_single_target_reclaims_fence_every_acknowledgement_even_with_the_same_worker_id
+    insert_distinct_events(1, 5)
+    first = single_target_repository('first')
+    second = single_target_repository('second')
+    original = first.claim_pending(limit: 5, worker_id: 'worker')
+    assert_equal [1, 2, 3, 4, 5], original.map(&:id)
+
+    @control.run("UPDATE #{events_table} SET locked_at = now() - interval '1 hour' WHERE id = 1")
+    reclaimed = second.claim_pending(limit: 2, worker_id: 'worker')
+    assert_equal [1], reclaimed.map(&:id)
+    refute_equal original.first.event_lease_owner, reclaimed.first.event_lease_owner
+    assert_equal reclaimed.first.event_lease_owner, scalar("SELECT locked_by FROM #{events_table} WHERE id = 1")
+
+    stale = original.first
+    assert_equal [2], first.mark_processed!([stale, original[1]])
+    assert_equal [3], first.mark_superseded!([stale, original[2]])
+    assert_equal [4], first.mark_failed!([stale, original[3]], error: 'failure')
+    assert_equal [5], first.mark_retryable!([stale, original[4]], error: 'retry')
+    assert_equal '1', scalar(<<~SQL)
+      SELECT count(*) FROM #{events_table}
+      WHERE id = 1 AND status = 'processing' AND attempts = 0 AND locked_at IS NOT NULL
+        AND processed_at IS NULL AND next_attempt_at IS NULL AND last_error IS NULL
+    SQL
+
+    assert_equal [1], second.mark_processed!(reclaimed)
+    assert_empty first.mark_retryable!(original, error: 'late retry')
+    assert_empty second.mark_processed!(reclaimed)
+    assert_equal %w[processed processed superseded failed pending], @control.run(<<~SQL)
+      SELECT status FROM #{events_table} ORDER BY id
+    SQL
+    assert_equal '1', scalar(<<~SQL)
+      SELECT count(*) FROM #{events_table}
+      WHERE id = 5 AND attempts = 1 AND next_attempt_at IS NOT NULL AND last_error = 'retry' AND locked_by IS NULL
+    SQL
+  end
+
+  def test_single_target_drainer_recovers_an_old_lock_and_reports_only_acknowledged_events
+    insert_distinct_events(1, 2)
+    @control.run(<<~SQL)
+      UPDATE #{events_table}
+      SET status = 'processing', locked_by = 'pre-existing-worker', locked_at = now() - interval '1 hour'
+      WHERE id = 1
+    SQL
+    repository = single_target_repository('drainer')
+    contender = single_target_repository('contender')
+    processor = lambda do |events:, context:|
+      assert_equal [1, 2], events.map(&:id)
+      assert_equal 'worker', context.fetch(:worker_id)
+      owner = context.fetch(:lease_owner)
+      assert_match(/\Aworker:[0-9a-f-]{36}\z/, owner)
+      assert_equal [owner], events.map(&:event_lease_owner).uniq
+      assert_equal [owner], @control.run("SELECT DISTINCT locked_by FROM #{events_table}")
+
+      @control.run("UPDATE #{events_table} SET locked_at = now() - interval '1 hour' WHERE id = 1")
+      assert_equal [1], contender.claim_pending(limit: 1, worker_id: 'worker').map(&:id)
+      SearchEngine::PostgresOutbox::ProcessorResult.success(events.map(&:id))
+    end
+
+    drainer = SearchEngine::PostgresOutbox::Drainer.new(
+      repository: repository, worker_id: 'worker', processor: processor
+    )
+    summary = drainer.drain_once(limit: 2)
+    assert_equal [2, 1, 1], summary.values_at(:claimed, :processed, :stale)
+    assert_equal %w[processing processed], @control.run("SELECT status FROM #{events_table} ORDER BY id")
+  end
+
   def test_materialization_waits_on_parent_before_locking_an_older_delivery
     SearchEngine.config.postgres_outbox.delivery_targets = [
       { key: 'target_1', queue_name: 'queue_1' }, { key: 'target_2', queue_name: 'queue_2' }
@@ -812,6 +878,10 @@ class PostgresOutboxRepositoryPostgresqlTest < Minitest::Test
     )
     @sessions << session
     session
+  end
+
+  def single_target_repository(label)
+    SearchEngine::PostgresOutbox::Repository.new(connection: PsqlConnection.new(new_session(label)))
   end
 
   def one_shot_parent_lock_hook(queue)

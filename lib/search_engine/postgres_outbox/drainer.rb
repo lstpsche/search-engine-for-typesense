@@ -1,7 +1,6 @@
 # frozen_string_literal: true
 
 require 'socket'
-require 'securerandom'
 require 'set'
 require 'search_engine/cache'
 
@@ -10,7 +9,6 @@ module SearchEngine
     # Orchestrates one bounded PostgreSQL outbox drain pass.
     class Drainer
       BLOCKED_ERROR = 'Skipped because an earlier outbox collection group failed'
-      LEASE_OWNER_MAX_LENGTH = 255
 
       # @param repository [SearchEngine::PostgresOutbox::Repository]
       # @param processor [#call]
@@ -31,8 +29,8 @@ module SearchEngine
           'search_engine.postgres_outbox.drain',
           drain_payload(limit)
         ) do |payload|
-          lease_owner = next_lease_owner
-          events = repository.claim_pending(limit: limit, worker_id: lease_owner)
+          lease_owner = Event.new_lease_owner(worker_id) unless repository_assigns_lease_owner?
+          events = repository.claim_pending(limit: limit, worker_id: lease_owner || worker_id)
           summary = empty_summary(events)
           next summary if events.empty?
 
@@ -43,7 +41,7 @@ module SearchEngine
           record_acknowledgements(summary, :superseded, superseded_events, superseded_ids)
 
           ordered = SearchEngine::DependencyPlanner.order_events(kept)
-          process_ordered_events(ordered, summary, lease_owner: lease_owner)
+          process_ordered_events(ordered, summary, lease_owner: lease_owner || events.first.event_lease_owner)
           payload.merge!(summary)
           summary
         end
@@ -52,6 +50,10 @@ module SearchEngine
       private
 
       attr_reader :repository, :processor, :worker_id, :target_key
+
+      def repository_assigns_lease_owner?
+        repository.respond_to?(:assigns_event_lease_owner?) && repository.assigns_event_lease_owner?
+      end
 
       def empty_summary(events)
         summary = {
@@ -248,13 +250,6 @@ module SearchEngine
 
       def default_worker_id
         "#{Socket.gethostname}:#{$PROCESS_ID}:#{Thread.current.object_id}"
-      end
-
-      def next_lease_owner
-        suffix = SecureRandom.uuid
-        prefix_limit = LEASE_OWNER_MAX_LENGTH - suffix.length - 1
-        prefix = worker_id.to_s.gsub(/[^a-zA-Z0-9_.:-]/, '_')[0, prefix_limit]
-        "#{prefix}:#{suffix}"
       end
 
       def processor_context(lease_owner)
