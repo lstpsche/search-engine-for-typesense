@@ -7,7 +7,7 @@ module SearchEngine
   module IndexingRunStore
     # Rails.cache-backed implementation for async partition indexing run metadata.
     class RailsCache
-      # @param cache [Object, nil] cache object responding to read/write/delete
+      # @param cache [Object, nil] Rails-compatible cache responding to read/write/delete
       def initialize(cache: nil)
         @cache = cache || resolve_rails_cache!
         validate_cache!
@@ -29,17 +29,17 @@ module SearchEngine
           created_at: SearchEngine::IndexingRun.iso8601_now,
           updated_at: SearchEngine::IndexingRun.iso8601_now
         }
-        write_meta(run, ttl_s: ttl_s)
+        write!(meta_cache_key(run_id), run, ttl_s: ttl_s)
         entries.each do |partition_key, entry|
-          @cache.write(partition_cache_key(run_id, partition_key), entry, expires_in: ttl_s)
+          write!(partition_cache_key(run_id, partition_key), entry, ttl_s: ttl_s)
         end
         snapshot(run_id: run_id)
       end
 
       # Mark a partition as started.
-      # @return [Hash]
-      def mark_started(run_id:, partition_key:, job_id: nil)
-        update_partition(run_id, partition_key) do |entry|
+      # @return [Hash, nil] run snapshot when requested
+      def mark_started(run_id:, partition_key:, job_id: nil, return_snapshot: true)
+        update_partition(run_id, partition_key, return_snapshot:) do |entry|
           ensure_non_terminal!(entry, 'start')
           entry[:status] = 'running'
           entry[:attempts] = entry[:attempts].to_i + 1
@@ -49,9 +49,9 @@ module SearchEngine
 
       # Record one failed import attempt without terminalizing the partition.
       # ActiveJob may safely start the same partition again on retry.
-      # @return [Hash]
-      def record_attempt(run_id:, partition_key:, summary:, error:)
-        update_partition(run_id, partition_key) do |entry|
+      # @return [Hash, nil] run snapshot when requested
+      def record_attempt(run_id:, partition_key:, summary:, error:, return_snapshot: true)
+        update_partition(run_id, partition_key, return_snapshot:) do |entry|
           ensure_non_terminal!(entry, 'record an attempt for')
           assign_summary!(entry, summary)
           entry[:status] = 'running'
@@ -60,9 +60,9 @@ module SearchEngine
       end
 
       # Mark a partition as succeeded with import counters.
-      # @return [Hash]
-      def mark_succeeded(run_id:, partition_key:, summary:)
-        update_partition(run_id, partition_key) do |entry|
+      # @return [Hash, nil] run snapshot when requested
+      def mark_succeeded(run_id:, partition_key:, summary:, return_snapshot: true)
+        update_partition(run_id, partition_key, return_snapshot:) do |entry|
           ensure_non_terminal!(entry, 'succeed')
           assign_summary!(entry, summary)
           entry[:status] = 'succeeded'
@@ -71,9 +71,9 @@ module SearchEngine
       end
 
       # Mark a partition as failed.
-      # @return [Hash]
-      def mark_failed(run_id:, partition_key:, error:)
-        update_partition(run_id, partition_key) do |entry|
+      # @return [Hash, nil] run snapshot when requested
+      def mark_failed(run_id:, partition_key:, error:, return_snapshot: true)
+        update_partition(run_id, partition_key, return_snapshot:) do |entry|
           ensure_not_succeeded!(entry)
           entry[:status] = 'failed'
           entry[:sample_error] = error_message(error) if entry[:sample_error].to_s.strip.empty?
@@ -87,14 +87,13 @@ module SearchEngine
         meta = symbolize_meta(@cache.read(meta_cache_key(run_id)))
         return nil unless meta
 
-        partition_keys = Array(meta[:partition_keys]).map(&:to_s)
-        partitions = partition_keys.each_with_object({}) do |partition_key, hash|
-          entry = @cache.read(partition_cache_key(run_id, partition_key))
-          hash[partition_key] = if entry.is_a?(Hash)
-                                  deep_symbolize(entry)
-                                else
-                                  missing_partition_entry(partition_key)
-                                end
+        cache_keys = Array(meta[:partition_keys]).to_h do |partition_key|
+          [partition_key.to_s, partition_cache_key(run_id, partition_key)]
+        end
+        entries = read_entries(cache_keys.values)
+        partitions = cache_keys.to_h do |partition_key, cache_key|
+          entry = entries[cache_key]
+          [partition_key, entry.is_a?(Hash) ? deep_symbolize(entry) : missing_partition_entry(partition_key)]
         end
         meta[:partitions] = partitions
         meta[:status] = run_status(partitions)
@@ -150,30 +149,42 @@ module SearchEngine
         end
       end
 
-      def write_meta(run, ttl_s:)
-        @cache.write(meta_cache_key(run[:run_id]), run, expires_in: ttl_s)
+      def read_entries(keys)
+        return {} if keys.empty?
+        return @cache.read_multi(*keys) if @cache.respond_to?(:read_multi)
+
+        keys.to_h { |key| [key, @cache.read(key)] }
       end
 
-      def update_partition(run_id, partition_key)
-        meta = symbolize_meta(@cache.read(meta_cache_key(run_id)))
+      def write!(key, value, ttl_s:)
+        return if @cache.write(key, value, expires_in: ttl_s)
+
+        raise IOError, "failed to write indexing run cache entry #{key}"
+      end
+
+      def update_partition(run_id, partition_key, return_snapshot:)
+        partition_key = partition_key.to_s
+        cache_key = partition_cache_key(run_id, partition_key)
+        meta_key = meta_cache_key(run_id)
+        entries = read_entries([meta_key, cache_key])
+        meta = symbolize_meta(entries[meta_key])
         raise StaleRun, "indexing run not found: #{run_id}" unless meta
 
-        partition_key = partition_key.to_s
-        unless Array(meta[:partition_keys]).map(&:to_s).include?(partition_key)
+        unless Array(meta[:partition_keys]).any? { |key| key.to_s == partition_key }
           raise StaleRun, "indexing run partition not found: #{partition_key}"
         end
 
-        entry = @cache.read(partition_cache_key(run_id, partition_key))
+        entry = entries[cache_key]
         raise StaleRun, "indexing run partition not found: #{partition_key}" unless entry
 
         entry = deep_symbolize(entry)
         yield entry
         now = SearchEngine::IndexingRun.iso8601_now
         entry[:updated_at] = now
-        @cache.write(partition_cache_key(run_id, partition_key), entry, expires_in: meta[:ttl_s])
+        write!(cache_key, entry, ttl_s: meta[:ttl_s])
         meta[:updated_at] = now
-        write_meta(meta, ttl_s: meta[:ttl_s])
-        snapshot(run_id: run_id)
+        write!(meta_key, meta, ttl_s: meta[:ttl_s])
+        snapshot(run_id: run_id) if return_snapshot
       end
 
       def run_status(partitions)

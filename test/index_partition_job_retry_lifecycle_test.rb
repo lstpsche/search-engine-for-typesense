@@ -32,6 +32,31 @@ class IndexPartitionJobRetryLifecycleTest < Minitest::Test
     ActiveJob::Base.queue_adapter = @previous_adapter
   end
 
+  def test_workers_only_read_run_metadata_and_their_own_partition
+    run_id = 'run-many-partitions'
+    partitions = (1..10).to_a
+    @store.create_run(
+      run_id: run_id, collection: 'authors', collection_class_name: 'SearchEngine::Author',
+      into: 'authors_v2', partitions: partitions, ttl_s: 60
+    )
+
+    reads = SearchEngine::Test.capture_events(/\Acache_read(?:_multi)?\.active_support\z/) do
+      SearchEngine::IndexingRunStore.stub(:resolve, @store) do
+        SearchEngine::Indexer.stub(:rebuild_partition!, successful_summary) do
+          partitions.each do |partition|
+            SearchEngine::IndexPartitionJob.new.perform('SearchEngine::Author', partition, run_id: run_id)
+          end
+        end
+      end
+    end
+
+    reads_by_key = reads.flat_map { |event| Array(event[:payload][:key]) }.tally
+    assert_equal partitions.size * 2, reads_by_key.delete("search_engine:indexing_run:#{run_id}:meta")
+    assert_equal partitions.size, reads_by_key.size
+    assert_equal [2], reads_by_key.values.uniq
+    assert_equal 'succeeded', @store.snapshot(run_id: run_id)[:status]
+  end
+
   def test_perform_now_records_partial_attempt_enqueues_retry_and_retry_can_succeed
     summaries = [partial_summary, successful_summary]
 

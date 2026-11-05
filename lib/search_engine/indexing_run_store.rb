@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require 'active_support/core_ext/object/with_options'
+
 module SearchEngine
   # Resolver and interface contract for async partition indexing run stores.
   module IndexingRunStore
@@ -18,6 +20,14 @@ module SearchEngine
       return configured if configured
 
       default
+    end
+
+    # Worker and timeout transitions only need to persist the affected partition.
+    # Custom stores keep their configured transition signatures.
+    def partition_writer(store = resolve)
+      return store unless defined?(RailsCache) && store.instance_of?(RailsCache)
+
+      store.with_options(return_snapshot: false)
     end
 
     # Build the default run store.
