@@ -32,6 +32,24 @@ class PaginationIntegrationTest < Minitest::Test
     assert_equal %w[3 4], @ordered.limit(2).offset(1).page(2).per(2).ids
   end
 
+  def test_find_by_hydrates_one_hit_at_the_start_or_the_exact_offset
+    hydrated = []
+    original = Document.method(:from_document)
+    hydrate = lambda do |doc|
+      hydrated << doc.fetch('id')
+      original.call(doc)
+    end
+
+    Document.stub(:from_document, hydrate) do
+      assert_equal '1', @ordered.per(250).find_by.id
+      assert_equal '2', @ordered.page(2).find_by('position:>1').id
+      assert_equal '1', @ordered.offset(4).page(2).per(2).find_by(name: 'row').id
+      assert_equal '3', @ordered.limit(4).offset(2).find_by(name: 'row').id
+      assert_nil @ordered.offset(10).find_by
+    end
+    assert_equal %w[1 2 1 3], hydrated
+  end
+
   def test_all_counts_pages_using_the_same_page_size_as_the_server
     query = @ordered.limit_hits(2)
     assert_equal %w[1 2 3 4 5], query.all!.map(&:id)
