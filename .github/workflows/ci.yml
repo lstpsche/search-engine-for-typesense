@@ -11,7 +11,7 @@ on:
 
 jobs:
   rubocop:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
       - uses: ruby/setup-ruby@v1
@@ -21,7 +21,7 @@ jobs:
       - run: bin/rubocop -f github
 
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
       - uses: ruby/setup-ruby@v1
@@ -31,7 +31,7 @@ jobs:
       - run: bundle exec bin/test
 
   rails-6-1:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
       - uses: ruby/setup-ruby@v1
@@ -50,7 +50,7 @@ jobs:
           bundle exec ruby -rlogger -Itest test/engine_boot_test.rb
 
   integration:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     services:
       typesense:
@@ -100,7 +100,7 @@ jobs:
       - run: bundle exec ruby examples/demo_shop/bin/query_smoke --live --auto-embedding
 
   postgres:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     services:
       postgres:
