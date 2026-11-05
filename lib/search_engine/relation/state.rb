@@ -128,8 +128,9 @@ module SearchEngine
         legacy = Array(state[:filters]).flatten.compact
         return if !ast_nodes.empty? || legacy.empty?
 
-        raw_nodes = legacy.map { |fragment| SearchEngine::AST.raw(String(fragment)) }
-        state[:ast] = raw_nodes
+        state[:ast] = legacy.map { |fragment| SearchEngine::AST.raw(String(fragment)) }
+        # On a subsequent spawn, '?' in these compiled literals is data.
+        state[:filters] = []
         nil
       end
 

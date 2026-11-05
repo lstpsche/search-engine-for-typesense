@@ -111,34 +111,92 @@ module SearchEngine
         end
       end
 
-      def apply_placeholders(template, args)
+      # Consume a quoted literal or an escape before looking for structural
+      # tokens. Typesense only uses backticks to protect filter operators.
+      TEMPLATE_TOKEN = /`[^`]*(?:`|\z)|(?<![[:alnum:]])(?:"[^"]*(?:"|\z)|'[^']*(?:'|\z))|\\[?\\]|&&|\|\||[(){}\[\]?]/
+      BOUND_FIELD = /\A\s*([[:alnum:]_.-]+)\s*(?::\s*(?:!=|>=|<=|[!<>=])?|!=|>=|<=|[=<>]|NOT\s+IN|IN)\s*\z/i
+      CLOSING_DELIMITERS = { '(' => ')', '[' => ']', '{' => '}' }.freeze
+      private_constant :TEMPLATE_TOKEN, :BOUND_FIELD, :CLOSING_DELIMITERS
+
+      def apply_placeholders(template, args, klass: nil)
         raise ArgumentError, 'template must be a String' unless template.is_a?(String)
         raise ArgumentError, 'args must be an Array' unless args.is_a?(Array)
 
         needed = count_placeholders(template)
         unless needed == args.length
-          raise ArgumentError,
-                "expected #{needed} args for #{needed} placeholders, got #{args.length}"
+          raise ArgumentError, "expected #{needed} args for #{needed} placeholders, got #{args.length}"
         end
-
         return template if needed.zero?
 
-        # A template bind must own an entire comparison operand. Substituting
-        # another quoted literal inside caller-supplied quotes can reopen it.
-        values = args.each
-        template.split(/(&&|\|\|)/, -1).map.with_index do |part, index|
-          next part if index.odd?
+        # Keep trusted fixed expressions verbatim. Track groups and reference
+        # filters so only a complete, unquoted comparison operand accepts data.
+        scopes = [[nil, klass, false]]
+        start = 0
+        binds = args.each
+        result = template.gsub(TEMPLATE_TOKEN) do |token|
+          match = Regexp.last_match
+          case token
+          when '?'
+            prefix = template[start...match.begin(0)]
+            field = prefix[BOUND_FIELD, 1]
+            ends_operand = template.match?(/\G\s*(?:&&|\|\||\)|\z)/, match.end(0))
+            _, model, joined = scopes.last
+            unless field && ends_operand && model != :opaque
+              raise ArgumentError, 'placeholder must be a complete filter operand'
+            end
 
-          match = part.match(/\A\s*\(*\s*([[:alnum:]_.-]+)\s*:?(?:!=|>=|<=|[=<>]|NOT\s+IN|IN)?\s*\?\s*\)*\s*\z/i)
-          raise ArgumentError, 'placeholder must be a complete filter operand' unless match
+            next quote(binds.next, field: field_name(field), klass: model, joined: joined)
+          when '(', '[', '{'
+            prefix = template[start...match.begin(0)].strip
+            scopes << template_scope(token, prefix, scopes.last)
+          when ')', ']', '}'
+            raise ArgumentError, 'unbalanced filter template' unless scopes.last.first == token
 
-          field = field_name(match[1])
-          part.sub('?') { quote(values.next, field: field) }
-        end.join
+            scopes.pop
+          when /\A[`"'\\]/
+            validate_template_literal!(token, joined: scopes.last.last)
+            next token
+          end
+          start = match.end(0)
+          token
+        end
+        raise ArgumentError, 'unbalanced filter template' unless scopes.length == 1
+
+        result
       end
 
+      def validate_template_literal!(token, joined:)
+        raise ArgumentError, 'placeholder must be a complete filter operand' if count_placeholders(token).positive?
+        if (token.start_with?('"', "'") && token.include?('`')) || token.match?(/: *(?:\[ *)?\(/)
+          raise ArgumentError, 'ambiguous delimiters in quoted filter template'
+        end
+        return unless joined && !balanced_parentheses?(token)
+
+        raise ArgumentError, 'unbalanced parentheses in quoted reference filter'
+      end
+      private_class_method :validate_template_literal!
+
+      def template_scope(token, prefix, parent)
+        _, model, joined = parent
+        if token == '(' && model != :opaque
+          return [')', model, joined] if prefix.empty?
+
+          if (name = prefix[/\A!?\$([[:alnum:]_-]+)\z/, 1])
+            association = model.joins_config[name.to_sym] if model.respond_to?(:joins_config)
+            collection = association ? association[:collection] : name
+            target = SearchEngine.collection_for(collection) { nil } if model
+            return [')', target, true]
+          end
+        end
+        # Lists, object filters and geopoint tuples use their own grammars.
+        [CLOSING_DELIMITERS.fetch(token), :opaque, joined]
+      end
+      private_class_method :template_scope
+
       def count_placeholders(template)
-        template.scan(/(?<!\\)\?/).length
+        return 0 unless template.include?('?')
+
+        template.scan(/\\.|(\?)/m).count(&:first)
       end
     end
   end
