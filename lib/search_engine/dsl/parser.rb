@@ -152,31 +152,25 @@ module SearchEngine
             # assoc => { field => value }
             validate_assoc_and_join!(klass, key_sym, joins)
 
+            cfg = klass.join_for(key_sym)
+            target_klass = SearchEngine::Joins::Guard.target_model(klass, key_sym)
             value.each do |inner_field, inner_value|
               field_sym = inner_field.to_sym
               path = "$#{key_sym}.#{field_sym}"
               SearchEngine::Joins::Guard.ensure_single_hop_path!(path)
 
-              # Resolve target klass for joined-field type coercion and validate field best-effort
-              cfg = klass.join_for(key_sym)
-              target_klass = begin
-                SearchEngine.collection_for(cfg[:collection])
-              rescue StandardError
-                nil
-              end
-              begin
-                SearchEngine::Joins::Guard.validate_joined_field!(cfg, field_sym)
-              rescue StandardError
-                # skip strictly when registry/attributes missing or join missing
+              if target_klass && strict_fields?
+                SearchEngine::Joins::Guard.validate_joined_field!(
+                  cfg, field_sym, source_klass: klass, target_klass: target_klass
+                )
               end
 
-              coercion_klass = target_klass || klass
               if array_like?(inner_value)
-                values = normalize_array_values(inner_value, field: field_sym, klass: coercion_klass)
-                ensure_non_empty_values!(values, field: field_sym, klass: coercion_klass)
+                values = normalize_array_values(inner_value, field: field_sym, klass: target_klass)
+                ensure_non_empty_values!(values, field: field_sym, klass: target_klass)
                 pairs << SearchEngine::AST.in_(path, values)
               else
-                coerced = coerce_value_for_field(inner_value, field: field_sym, klass: coercion_klass)
+                coerced = coerce_value_for_field(inner_value, field: field_sym, klass: target_klass)
                 pairs << SearchEngine::AST.eq(path, coerced)
               end
             end

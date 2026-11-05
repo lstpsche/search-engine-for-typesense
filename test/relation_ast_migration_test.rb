@@ -40,6 +40,26 @@ class RelationASTMigrationTest < Minitest::Test
     assert_equal '$authors_relation_migration(name:=[`left || right`])', relation.filter_params
   end
 
+  def test_joined_filter_model_load_errors_propagate_from_every_compilation_path
+    failure = RuntimeError.new('broken target model')
+    field = SearchEngine::AST.eq('$authors.registered_at', Time.at(2).utc)
+    resolver = lambda do |collection|
+      assert_equal 'authors_relation_migration', collection
+      raise failure
+    end
+
+    SearchEngine.stub(:collection_for, resolver) do
+      assert_same failure, assert_raises(RuntimeError) { SearchEngine::Compiler.compile(field, klass: Product) }
+      assert_same failure, assert_raises(RuntimeError) {
+        SearchEngine::Compiler.compile([field, SearchEngine::AST.eq(:active, true)], klass: Product)
+      }
+      assert_same failure, assert_raises(RuntimeError) { Product.joins(:authors).where(authors: { registered_at: 2 }) }
+      assert_same failure, assert_raises(RuntimeError) {
+        SearchEngine::Relation.new(Product, { filters: ['$authors(registered_at:=?)', 2] })
+      }
+    end
+  end
+
   def test_an_expanded_question_mark_stays_data_when_the_relation_is_chained
     relation = SearchEngine::Relation.new(Product, { filters: ['active:=true && name:=?', 'Which?'] })
 

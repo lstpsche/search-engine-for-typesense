@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require 'search_engine/registry'
+
 module SearchEngine
   module Joins
     # Stateless guard for validating join usage across Relation and Parser.
@@ -85,28 +87,32 @@ module SearchEngine
         )
       end
 
+      # Structured filters use association names; native expressions can also
+      # name a physical collection directly. A missing registration has no
+      # local schema. Errors loading an existing registration must propagate.
+      def target_model(source_klass, name)
+        association = source_klass.joins_config[name.to_sym] if source_klass.respond_to?(:joins_config)
+        SearchEngine.collection_for(association ? association.fetch(:collection) : name) { nil }
+      end
+
       # Validate that a joined field exists on the target collection when the
       # target model is registered and exposes attributes.
       #
-      # Best-effort: when registry or attributes are unavailable, no exception
-      # is raised (prefer low-noise behavior on missing metadata).
+      # Collections without a local model leave validation to Typesense.
       #
       # @param assoc_cfg [Hash] normalized association config
       # @param field [Symbol, String]
       # @param source_klass [Class, nil] optional source model class for error messages
+      # @param target_klass [Class, nil] already resolved target model, if available
       # @raise [SearchEngine::Errors::UnknownJoinField]
       # @return [void]
-      def validate_joined_field!(assoc_cfg, field, source_klass: nil)
+      def validate_joined_field!(assoc_cfg, field, source_klass: nil, target_klass: nil)
         return if assoc_cfg.nil?
 
         collection = assoc_cfg[:collection]
         return if blank?(collection)
 
-        target_klass = begin
-          SearchEngine.collection_for(collection)
-        rescue StandardError
-          nil
-        end
+        target_klass ||= SearchEngine.collection_for(collection) { nil }
         return unless target_klass.respond_to?(:attributes)
 
         known = Array(target_klass.attributes).map { |k, _| k.to_s }

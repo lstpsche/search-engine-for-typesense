@@ -80,8 +80,9 @@ A relation with `limit(2).offset(1)` starts at the second matching document. An 
 `per` takes precedence over the offset. Use a stable sort when reading successive windows.
 
 Joined filters execute as native Typesense joins and require valid collection references.
-Search configuration and missing-reference errors propagate to callers; they do not
-produce empty results or trigger client-side joins.
+The target model's field type determines how Ruby dates and times are encoded. For a target
+without a declared field type, pass the stored value as an ISO string or integer epoch.
+Search configuration and missing-reference errors propagate to the caller.
 
 Single search, federated search and multi-page `all!` use the configured client. A failing entry in
 `multi_search` or `multi_search_result` raises with the entry label and provider status.
