@@ -161,6 +161,9 @@ class PostgresOutboxRepositoryPostgresqlTest < Minitest::Test
   end
 
   def test_materialization_waits_on_parent_before_locking_an_older_delivery
+    SearchEngine.config.postgres_outbox.delivery_targets = [
+      { key: 'target_1', queue_name: 'queue_1' }, { key: 'target_2', queue_name: 'queue_2' }
+    ]
     seed_materialization_rows
     blocker = new_session('trigger_blocker')
     worker = new_session('materializer')
@@ -174,6 +177,11 @@ class PostgresOutboxRepositoryPostgresqlTest < Minitest::Test
 
     wait_for_parent_lock(parent_lock_attempted, result)
     wait_until_lock_blocked(worker.application_name)
+    # A target worker racing the scheduler skips discovery before even reading the checkpoint.
+    contender = PsqlConnection.new(new_session('target_worker'))
+    contender.before_execute = ->(sql) { assert_includes sql, 'pg_try_advisory_xact_lock' }
+    target_repository = SearchEngine::PostgresOutbox::Repository.new(connection: contender, target_key: 'target_1')
+    assert_empty target_repository.materialize_deliveries!(limit: 10)
     blocker.run("SELECT id FROM #{deliveries_table} WHERE id = 101 FOR UPDATE")
     blocker.run('COMMIT')
 
@@ -181,9 +189,114 @@ class PostgresOutboxRepositoryPostgresqlTest < Minitest::Test
     assert_equal([2], rows.map { |row| row.fetch('id').to_i })
     assert_equal 'superseded', scalar("SELECT status FROM #{events_table} WHERE id = 1")
     assert_equal 'superseded', scalar("SELECT status FROM #{deliveries_table} WHERE id = 101")
-    assert_equal 'pending', scalar("SELECT status FROM #{deliveries_table} WHERE event_id = 2")
+    assert_equal %w[target_1 target_2], @control.run(<<~SQL)
+      SELECT target_key FROM #{deliveries_table} WHERE event_id = 2 AND status = 'pending' ORDER BY target_key
+    SQL
   ensure
     rollback(blocker)
+  end
+
+  def test_checkpoints_follow_new_events_and_revisit_late_commits_and_due_retries
+    delayed = new_session('delayed_insert')
+    delayed.run('BEGIN')
+    insert_distinct_events(3, 3, session: delayed)
+    insert_distinct_events(1, 2)
+    insert_distinct_events(4, 7)
+    @control.run("UPDATE #{events_table} SET next_attempt_at = 'infinity' WHERE id = 7")
+    connection = PsqlConnection.new(new_session('checkpointed'))
+    discover = lambda do
+      SearchEngine::PostgresOutbox::Repository.new(connection: connection)
+                                              .materialize_deliveries!(limit: 2)
+                                              .map { |row| row.fetch('id') }
+    end
+
+    assert_equal [6], discover.call
+    insert_distinct_events(8, 8)
+    assert_equal [4, 5], discover.call
+    assert_equal [8], discover.call
+    8.times { discover.call }
+    assert_equal '1,2,4,5,6,8',
+                 scalar("SELECT string_agg(event_id::text, ',' ORDER BY event_id) FROM #{deliveries_table}")
+
+    delayed.run('COMMIT')
+    @control.run("UPDATE #{events_table} SET next_attempt_at = CURRENT_TIMESTAMP WHERE id = 7")
+    12.times { discover.call }
+    assert_equal '1,2,3,4,5,6,7,8',
+                 scalar("SELECT string_agg(event_id::text, ',' ORDER BY event_id) FROM #{deliveries_table}")
+    assert_equal '1', scalar("SELECT count(*) FROM #{@schema}.cursors")
+  ensure
+    rollback(delayed)
+  end
+
+  def test_quota_limited_pages_finish_and_new_targets_only_get_their_missing_deliveries
+    config = SearchEngine.config.postgres_outbox
+    config.batch_sizes = { products: 1 }
+    insert_distinct_events(1, 5)
+    @control.run(<<~SQL)
+      INSERT INTO #{deliveries_table} (event_id, target_key, queue_name, status)
+      VALUES (5, 'target_1', 'queue_1', 'failed')
+    SQL
+    repository = SearchEngine::PostgresOutbox::Repository.new(connection: PsqlConnection.new(new_session('quota')))
+    5.times { assert_operator repository.materialize_deliveries!.size, :<=, 1 }
+    assert_equal '5', scalar("SELECT count(*) FROM #{deliveries_table}")
+
+    config.delivery_targets = [{ key: 'target_2', queue_name: 'queue_2' }, { key: 'target_1', queue_name: 'queue_1' }]
+    5.times { assert_equal 1, repository.materialize_deliveries!.size }
+    config.delivery_targets.reverse!
+    assert_empty repository.materialize_deliveries!
+    assert_equal '10', scalar("SELECT count(*) FROM #{deliveries_table}")
+    assert_equal 'failed',
+                 scalar("SELECT status FROM #{deliveries_table} WHERE event_id = 5 AND target_key = 'target_1'")
+    assert_equal '2', scalar("SELECT count(*) FROM #{@schema}.cursors")
+  end
+
+  def test_recent_out_of_order_commits_are_found_while_the_historical_sweep_is_still_far_behind
+    insert_distinct_events(1, 24)
+    @control.run(<<~SQL)
+      INSERT INTO #{deliveries_table} (event_id, target_key, queue_name, status)
+      SELECT id, 'target_1', 'queue_1', 'processed' FROM #{events_table}
+    SQL
+    repository = SearchEngine::PostgresOutbox::Repository.new(connection: PsqlConnection.new(new_session('overlap')))
+    3.times { assert_empty repository.materialize_deliveries!(limit: 4) }
+
+    delayed = new_session('recent_insert')
+    delayed.run('BEGIN')
+    insert_distinct_events(25, 25, session: delayed)
+    insert_distinct_events(26, 26)
+    assert_equal([26], repository.materialize_deliveries!(limit: 4).map { |row| row.fetch('id') })
+    assert_equal '26', scalar("SELECT forward_id FROM #{@schema}.cursors")
+    delayed.run('COMMIT')
+
+    assert_equal([25], repository.materialize_deliveries!(limit: 4).map { |row| row.fetch('id') })
+    assert_operator scalar("SELECT backfill_through_id FROM #{@schema}.cursors").to_i, :<, 12
+  ensure
+    rollback(delayed)
+  end
+
+  def test_hosts_without_checkpoints_can_materialize_existing_history_without_an_additional_table
+    SearchEngine.config.postgres_outbox.materialization_cursor_table_name = nil
+    @control.run("DROP TABLE #{@schema}.cursors")
+    insert_distinct_events(1, 4)
+    repository = SearchEngine::PostgresOutbox::Repository.new(connection: PsqlConnection.new(new_session('legacy')))
+    assert_equal([1, 2], repository.materialize_deliveries!(limit: 2).map { |row| row.fetch('id') })
+  end
+
+  def test_failed_checkpoint_write_rolls_back_the_delivery_and_releases_the_lock
+    insert_distinct_events(1, 4)
+    connection = PsqlConnection.new(new_session('rollback'))
+    connection.before_execute = lambda { |sql|
+      raise 'failed checkpoint write' if sql.start_with?("UPDATE \"#{@schema}\".\"cursors\"")
+    }
+    repository = SearchEngine::PostgresOutbox::Repository.new(connection: connection)
+
+    error = assert_raises(RuntimeError) { repository.materialize_deliveries!(limit: 2) }
+    assert_equal 'failed checkpoint write', error.message
+    assert_equal '0', scalar("SELECT count(*) FROM #{deliveries_table}")
+    assert_equal '0', scalar("SELECT count(*) FROM #{@schema}.cursors")
+
+    successor = SearchEngine::PostgresOutbox::Repository.new(connection: PsqlConnection.new(new_session('successor')))
+    assert_equal([3, 4], successor.materialize_deliveries!(limit: 2).map { |row| row.fetch('id') })
+    assert_equal '2', scalar("SELECT backfill_through_id FROM #{@schema}.cursors")
   end
 
   def test_claim_supersede_revalidates_then_waits_on_parent_before_locking_deliveries
@@ -764,6 +877,11 @@ class PostgresOutboxRepositoryPostgresqlTest < Minitest::Test
         created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
         updated_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
         UNIQUE (event_id, target_key)
+      );
+      CREATE TABLE #{@schema}.cursors (
+        target_scope text PRIMARY KEY,
+        forward_id bigint NOT NULL,
+        backfill_through_id bigint NOT NULL
       )
     SQL
   end
@@ -911,6 +1029,14 @@ class PostgresOutboxRepositoryPostgresqlTest < Minitest::Test
     SQL
   end
 
+  def insert_distinct_events(first, last, session: @control)
+    session.run(<<~SQL)
+      INSERT INTO #{events_table} (id, source_table, source_model_name, collection, record_id, document_id, operation, status)
+      SELECT n, 'products', 'Product', 'products', n::text, n::text, 'upsert', 'pending'
+      FROM generate_series(#{first}, #{last}) AS n
+    SQL
+  end
+
   def events_table
     %("#{@schema}"."events")
   end
@@ -924,6 +1050,7 @@ class PostgresOutboxRepositoryPostgresqlTest < Minitest::Test
     @previous_outbox_config = {
       table_name: config.table_name,
       delivery_table_name: config.delivery_table_name,
+      materialization_cursor_table_name: config.materialization_cursor_table_name,
       delivery_targets: config.delivery_targets,
       batch_size: config.batch_size,
       batch_sizes: config.batch_sizes,
@@ -935,6 +1062,7 @@ class PostgresOutboxRepositoryPostgresqlTest < Minitest::Test
     config = SearchEngine.config.postgres_outbox
     config.table_name = "#{@schema}.events"
     config.delivery_table_name = "#{@schema}.deliveries"
+    config.materialization_cursor_table_name = "#{@schema}.cursors"
     config.delivery_targets = -> { [{ key: 'target_1', queue_name: 'queue_1' }] }
     config.batch_size = 10
     config.batch_sizes = {}

@@ -3,6 +3,7 @@
 require 'search_engine/postgres_outbox/event'
 require 'search_engine/postgres_outbox/delivery_target'
 require 'search_engine/postgres_outbox/processor_result'
+require 'search_engine/postgres_outbox/materialization_cursor'
 require 'search_engine/postgres_outbox/repository'
 require 'search_engine/postgres_outbox/event_processor'
 require 'search_engine/postgres_outbox/drainer'

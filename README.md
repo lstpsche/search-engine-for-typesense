@@ -565,6 +565,22 @@ target-specific status, retry, lock, and queue state for each logical event. Add
 `create_search_engine_outbox_drain_slots` in that delivery-target migration so the drain enqueuer can cap
 queued and running drain jobs per target.
 
+Concurrent listener, scheduler and worker calls share one nonblocking PostgreSQL transaction lock for
+delivery discovery on each events table. Other callers can keep claiming existing deliveries.
+For large histories, create a checkpoint table in a migration with
+`create_search_engine_outbox_materialization_cursors`, then set
+`c.postgres_outbox.materialization_cursor_table_name = 'search_engine_outbox_materialization_cursors'`.
+Run the migration before starting consumers with this setting.
+
+With checkpoints, each discovery call checks at most 1,000 IDs around the forward position and
+1,000 historical IDs against the requested targets. The forward scan overlaps its previous
+range to catch nearby out-of-order commits. Each target set maintains its own position. A
+transaction that commits farther behind, or an older event that becomes due, can wait until
+the historical scan revisits its ID. Sweep time depends on retained history and polling rate.
+Collection batch quotas and the latest-event rule still govern which deliveries may be created.
+Without a configured checkpoint table the existing full-history discovery uses indexed per-event
+delivery checks and the same concurrency lock.
+
 Drain slots are a generic backpressure mechanism for delivery-target mode. On each listener or polling
 wakeup, the enqueuer materializes missing delivery rows, acquires idle slots from
 `c.postgres_outbox.drain_slot_table_name`, and enqueues one drain job per acquired slot. If all slots for a

@@ -278,6 +278,8 @@ module SearchEngine
       attr_accessor :delivery_table_name
       # @return [String] database table used by host-managed drain slots
       attr_accessor :drain_slot_table_name
+      # @return [String, nil] optional checkpoint table for bounded delivery discovery
+      attr_accessor :materialization_cursor_table_name
       # @return [String] PostgreSQL notification channel for wakeups
       attr_accessor :channel
       # @return [String] queue name used by host app job dispatch
@@ -936,6 +938,7 @@ module SearchEngine
         table_name: postgres_outbox.table_name,
         delivery_table_name: postgres_outbox.delivery_table_name,
         drain_slot_table_name: postgres_outbox.drain_slot_table_name,
+        materialization_cursor_table_name: postgres_outbox.materialization_cursor_table_name,
         channel: postgres_outbox.channel,
         queue_name: postgres_outbox.queue_name,
         batch_size: postgres_outbox.batch_size,

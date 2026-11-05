@@ -1,8 +1,13 @@
 # frozen_string_literal: true
 
 require 'test_helper'
+require 'active_record'
 
 class PostgresOutboxRepositoryTest < Minitest::Test
+  class QueryCacheDatabase < ActiveRecord::Base
+    self.abstract_class = true
+  end
+
   class FakeConnection
     attr_reader :executed_sql, :selected_sql, :selected_values_sql, :transaction_events
 
@@ -418,7 +423,7 @@ class PostgresOutboxRepositoryTest < Minitest::Test
     assert_supersede_parent_ids_sql(connection.selected_sql[1])
     assert_materialization_select_sql(connection.selected_sql[2], lock: true, event_ids: [11])
     assert_materialization_supersede_candidates_sql(connection.selected_sql[3])
-    assert_includes connection.selected_sql.first, "VALUES ('target_1', 'queue_1'), ('target_2', 'queue_2')"
+    assert_includes connection.selected_sql.first, "deliveries.target_key IN ('target_1', 'target_2')"
     assert_event_row_lock_sql(connection.executed_sql[0], event_ids: [11, 10])
     assert_delivery_row_lock_sql(connection.executed_sql[1], delivery_ids: [100])
     assert_supersede_by_id_sql(connection.executed_sql[2], event_ids: [10])
@@ -456,7 +461,7 @@ class PostgresOutboxRepositoryTest < Minitest::Test
 
     repository.materialize_deliveries!(limit: 25)
 
-    assert_includes connection.selected_sql.first, "VALUES ('target_1', 'queue_1')"
+    assert_includes connection.selected_sql.first, "deliveries.target_key IN ('target_1')"
     refute_includes connection.selected_sql.first, "'target_2'"
     assert_includes connection.executed_sql[1], "VALUES ('target_1', 'queue_1')"
     refute_includes connection.executed_sql[1], "'target_2'"
@@ -791,6 +796,27 @@ class PostgresOutboxRepositoryTest < Minitest::Test
     refute yielded
     assert_match(/shared advisory lock/, error.message)
     refute(connection.selected_values_sql.any? { |sql| sql.include?('pg_advisory_unlock') })
+  end
+
+  def test_delivery_target_guard_rechecks_the_lock_with_active_record_query_caching
+    QueryCacheDatabase.establish_connection(adapter: 'sqlite3', database: ':memory:')
+    QueryCacheDatabase.connection_pool.with_connection do |connection|
+      results = [1, 0]
+      connection.raw_connection.create_function('pg_try_advisory_lock_shared', 1) do |fn, _key|
+        fn.result = results.shift
+      end
+      connection.raw_connection.create_function('pg_advisory_unlock_shared', 1) { |fn, _key| fn.result = 1 }
+      repository = SearchEngine::PostgresOutbox::Repository.new(connection: connection)
+
+      connection.cache do
+        repository.with_delivery_target_writes_allowed(target_key: 'target_1', timeout_s: 0) { :written }
+        assert_raises(SearchEngine::Errors::Timeout) do
+          repository.with_delivery_target_writes_allowed(target_key: 'target_1', timeout_s: 0) { flunk 'lock is held' }
+        end
+      end
+    end
+  ensure
+    QueryCacheDatabase.remove_connection
   end
 
   def test_delivery_target_guard_releases_on_exception_and_preserves_original_error
@@ -1347,37 +1373,30 @@ class PostgresOutboxRepositoryTest < Minitest::Test
   end
 
   def assert_materialization_select_sql(sql, lock:, event_ids: nil)
-    assert_includes sql, 'WITH target(target_key, queue_name) AS ('
-    assert_includes sql, "outbox.status IN ('pending', 'processing', 'failed')"
-    assert_includes sql, 'NOT EXISTS ('
-    assert_includes sql, 'deliveries.event_id = outbox.id'
-    assert_includes sql, 'deliveries.target_key = target.target_key'
+    assert_materialization_filter_sql(sql)
     assert_includes sql, 'LIMIT 25'
     assert_materialization_lock_contract(sql, lock: lock, event_ids: event_ids)
-    assert_includes sql, 'candidate_events AS MATERIALIZED'
-    assert_includes sql, 'ROW_NUMBER() OVER'
-    assert_includes sql, 'PARTITION BY collection, document_id'
-    assert_includes sql, 'latest_candidate_ids'
-    assert_includes sql, 'FROM "custom_outbox" outbox'
-    assert_includes sql, 'INNER JOIN latest_candidate_ids'
-    assert_newer_event_exclusion_sql(sql)
-    refute_includes sql, 'SELECT DISTINCT ON (collection, document_id) *'
+    refute_includes sql, 'ROW_NUMBER() OVER'
   end
 
   def assert_collection_limited_materialization_sql(sql, lock:, event_ids: nil)
-    assert_includes sql, 'WITH target(target_key, queue_name) AS ('
+    assert_materialization_filter_sql(sql)
     assert_includes sql, 'collection_limits(collection, batch_size) AS'
     assert_includes sql, "('brands', 1)"
     assert_includes sql, "('products', 2)"
     assert_includes sql, 'candidate_events AS MATERIALIZED'
-    assert_includes sql, 'latest_candidate_ids'
-    assert_includes sql, 'PARTITION BY latest_candidate_ids.collection'
+    assert_includes sql, 'PARTITION BY candidate_events.collection'
     assert_includes sql, 'collection_row_number <= collection_batch_size'
     assert_includes sql, 'COALESCE(collection_limits.batch_size, 1000)'
     assert_includes sql, 'LIMIT 1003'
-    assert_newer_event_exclusion_sql(sql)
     assert_materialization_lock_contract(sql, lock: lock, event_ids: event_ids)
-    refute_includes sql, 'LIMIT 25'
+  end
+
+  def assert_materialization_filter_sql(sql)
+    assert_includes sql, "outbox.status IN ('pending', 'processing', 'failed')"
+    assert_includes sql, 'deliveries.event_id = outbox.id AND deliveries.target_key IN'
+    assert_includes sql, 'newer.collection = outbox.collection AND newer.document_id = outbox.document_id'
+    assert_includes sql, 'newer.id > outbox.id'
   end
 
   def assert_materialization_insert_sql(sql)
@@ -1417,17 +1436,17 @@ class PostgresOutboxRepositoryTest < Minitest::Test
 
   def assert_parent_first_supersede_transaction(connection)
     assert_equal(
-      %i[begin execute select select execute execute execute execute execute commit],
+      %i[begin select_value select select execute select select execute execute execute execute execute commit],
       connection.transaction_events.map(&:first)
     )
-    assert_event_row_lock_sql(connection.transaction_events[1].last, event_ids: [11, 10])
-    assert_materialization_select_sql(connection.transaction_events[2].last, lock: true, event_ids: [11])
-    assert_materialization_supersede_candidates_sql(connection.transaction_events[3].last)
-    assert_delivery_row_lock_sql(connection.transaction_events[4].last, delivery_ids: [100])
-    assert_supersede_by_id_sql(connection.transaction_events[5].last, event_ids: [10])
-    assert_pending_delivery_supersede_sql(connection.transaction_events[6].last, delivery_ids: [100])
-    assert_parent_refresh_sql(connection.transaction_events[7].last)
-    assert_materialization_insert_sql(connection.transaction_events[8].last)
+    assert_event_row_lock_sql(connection.transaction_events[4].last, event_ids: [11, 10])
+    assert_materialization_select_sql(connection.transaction_events[5].last, lock: true, event_ids: [11])
+    assert_materialization_supersede_candidates_sql(connection.transaction_events[6].last)
+    assert_delivery_row_lock_sql(connection.transaction_events[7].last, delivery_ids: [100])
+    assert_supersede_by_id_sql(connection.transaction_events[8].last, event_ids: [10])
+    assert_pending_delivery_supersede_sql(connection.transaction_events[9].last, delivery_ids: [100])
+    assert_parent_refresh_sql(connection.transaction_events[10].last)
+    assert_materialization_insert_sql(connection.transaction_events[11].last)
   end
 
   def assert_supersede_parent_ids_sql(sql)
@@ -1465,13 +1484,6 @@ class PostgresOutboxRepositoryTest < Minitest::Test
     assert_includes sql, 'ORDER BY event_id ASC'
     assert_includes sql, "'11'::bigint, '101'::bigint"
     refute_includes sql, 'FOR UPDATE'
-  end
-
-  def assert_newer_event_exclusion_sql(sql)
-    assert_includes sql, 'FROM "custom_outbox" newer_events'
-    assert_includes sql, 'newer_events.collection = outbox.collection'
-    assert_includes sql, 'newer_events.document_id = outbox.document_id'
-    assert_includes sql, 'newer_events.id > outbox.id'
   end
 
   def assert_pending_delivery_supersede_sql(sql, delivery_ids:)

@@ -102,6 +102,15 @@ module SearchEngine
                         on_delete: :cascade
       end
 
+      # Create the small checkpoint table used for bounded delivery discovery.
+      # @param table_name [String, Symbol] table configured as materialization_cursor_table_name
+      def create_search_engine_outbox_materialization_cursors(table_name: :search_engine_outbox_materialization_cursors)
+        create_table table_name, id: :string, primary_key: :target_scope do |t|
+          t.bigint :forward_id, null: false
+          t.bigint :backfill_through_id, null: false
+        end
+      end
+
       # Create the SearchEngine outbox drain slots table.
       #
       # @param table_name [String, Symbol] destination drain slots table name

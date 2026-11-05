@@ -9,6 +9,7 @@ module SearchEngine
     class Repository
       # Keep expensive duplicate-key ranking bounded while leaving headroom for hot keys.
       CLAIM_CANDIDATE_OVERSAMPLE = 4
+      MATERIALIZATION_LOCK_NAMESPACE = 0x53454F42 # SEOB
       ERROR_LIMIT = 1000
       PROCESSED_AT_ASSIGNMENT = 'processed_at = CURRENT_TIMESTAMP'
       RETIREMENT_BATCH_SIZE = 1000
@@ -181,43 +182,27 @@ module SearchEngine
         with_delivery_target_session_lock(target, mode: :shared, timing: timing, &block)
       end
 
-      # Create missing delivery rows for all configured delivery targets.
-      # @return [void]
+      # Create missing deliveries. Concurrent pollers leave discovery to the current owner.
+      # @return [Array<Hash>, nil] materialized events, or nil when no targets are configured
       def materialize_deliveries!(limit: nil)
         targets = materialization_delivery_targets
         return if targets.empty?
 
-        # Discover work without row locks, then acquire every affected parent before any delivery.
-        # The exact preview is revalidated under those parent locks before mutations begin.
-        preview_rows = select_rows(delivery_materialization_select_sql(limit, targets, lock: false))
-        return preview_rows if preview_rows.empty?
+        scan_limit = collection_limited_batch?(limit) ? collection_limited_candidate_limit : global_limit_for(limit)
+        return [] if scan_limit.zero?
 
-        supersede_parents = select_rows(supersede_parent_ids_sql(preview_rows))
-        rows = []
         connection.transaction do
-          parent_ids = preview_rows.map { |row| row_value(row, :id) }
-          parent_ids.concat(supersede_parents.map { |row| row_value(row, :event_id) })
-          lock_event_rows!(parent_ids)
+          next [] unless materialization_lock_acquired?
 
-          rows = select_rows(
-            delivery_materialization_select_sql(
-              limit,
-              targets,
-              event_ids: preview_rows.map { |row| row_value(row, :id) }
-            )
-          )
-          next if rows.empty?
-
-          supersede_candidates = select_rows(materialization_supersede_parent_candidates_sql(rows, targets))
-          older_event_ids = supersede_candidates.map { |candidate| row_value(candidate, :event_id) }
-          older_delivery_ids = supersede_candidates.map { |candidate| row_value(candidate, :delivery_id) }
-          lock_delivery_rows!(older_delivery_ids)
-          supersede_pending_events_by_id!(older_event_ids)
-          supersede_pending_deliveries!(older_delivery_ids, event_ids: older_event_ids)
-          execute(delivery_materialization_insert_sql(rows, targets))
+          cursor = materialization_cursor(targets)
+          event_ids = cursor&.candidate_ids(limit: scan_limit)
+          preview = select_rows(delivery_materialization_select_sql(limit, targets, event_ids: event_ids, lock: false))
+          rows = preview.empty? ? [] : materialize_batch(limit, targets, preview)
+          if cursor && rows.size == preview.size && materialization_page_drained?(rows, event_ids, limit)
+            cursor.advance!
+          end
+          rows
         end
-
-        rows
       end
 
       # Refresh cleanup-eligible parent event statuses from terminal delivery rows.
@@ -415,6 +400,49 @@ module SearchEngine
         end
       end
 
+      # PostgreSQL's two-integer lock space is separate from the single-key delivery cutover locks.
+      def materialization_lock_acquired?
+        sql = <<~SQL
+          SELECT pg_try_advisory_xact_lock(#{MATERIALIZATION_LOCK_NAMESPACE}, #{quote(quoted_table)}::regclass::integer)
+        SQL
+        advisory_lock_truthy?(select_scalar(sql))
+      end
+
+      def materialization_cursor(targets)
+        table = SearchEngine.config.postgres_outbox.materialization_cursor_table_name
+        MaterializationCursor.new(connection, quoted_table, table, targets.map(&:key)) if table
+      end
+
+      # When a quota may have omitted matches, revisit the page after these deliveries commit.
+      def materialization_page_drained?(rows, event_ids, limit)
+        return true if rows.empty? || rows.size == event_ids.size
+
+        batch_size = global_limit_for(limit)
+        return rows.size < batch_size unless collection_limited_batch?(limit)
+
+        per_collection = SearchEngine.config.postgres_outbox.normalized_batch_sizes.values
+        rows.size < [batch_size, *per_collection].min
+      end
+
+      # Revalidate the exact preview under parent locks before locking any deliveries.
+      def materialize_batch(limit, targets, preview_rows)
+        supersede_parents = select_rows(supersede_parent_ids_sql(preview_rows))
+        preview_ids = preview_rows.map { |row| row_value(row, :id) }
+        lock_event_rows!(preview_ids + supersede_parents.map { |row| row_value(row, :event_id) })
+
+        rows = select_rows(delivery_materialization_select_sql(limit, targets, event_ids: preview_ids))
+        return rows if rows.empty?
+
+        supersede_candidates = select_rows(materialization_supersede_parent_candidates_sql(rows, targets))
+        older_event_ids = supersede_candidates.map { |candidate| row_value(candidate, :event_id) }
+        older_delivery_ids = supersede_candidates.map { |candidate| row_value(candidate, :delivery_id) }
+        lock_delivery_rows!(older_delivery_ids)
+        supersede_pending_events_by_id!(older_event_ids)
+        supersede_pending_deliveries!(older_delivery_ids, event_ids: older_event_ids)
+        execute(delivery_materialization_insert_sql(rows, targets))
+        rows
+      end
+
       def claim_pending_deliveries(limit:, worker_id:)
         rows = claim_pending_delivery_rows(limit: limit, worker_id: worker_id)
 
@@ -431,51 +459,34 @@ module SearchEngine
           return collection_limited_materialization_select_sql(targets, event_ids: event_ids, lock: lock)
         end
 
-        limit = global_limit_for(limit)
         <<~SQL
-          WITH target(target_key, queue_name) AS (
-            VALUES #{delivery_target_values_sql(targets)}
-          ),
-          candidate_events AS MATERIALIZED (
-            SELECT outbox.id,
-                   outbox.collection,
-                   outbox.document_id
-            FROM #{quoted_table} outbox
-            WHERE outbox.status IN ('pending', 'processing', 'failed')
-              AND (outbox.next_attempt_at IS NULL OR outbox.next_attempt_at <= CURRENT_TIMESTAMP)
-              #{newer_event_exclusion_sql('outbox')}
-              #{event_id_filter_sql('outbox', event_ids)}
-              AND EXISTS (
-                SELECT 1
-                FROM target
-                WHERE NOT EXISTS (
-                  SELECT 1
-                  FROM #{quoted_delivery_table} deliveries
-                  WHERE deliveries.event_id = outbox.id
-                    AND deliveries.target_key = target.target_key
-                )
-              )
-            ORDER BY outbox.id ASC
-            LIMIT #{limit}
-            #{row_lock_sql(lock)}
-          ),
-          latest_candidate_ids AS (
-            SELECT id
-            FROM (
-              SELECT id,
-                     ROW_NUMBER() OVER (
-                       PARTITION BY collection, document_id
-                       ORDER BY id DESC
-                     ) AS row_number
-              FROM candidate_events
-            ) ranked_candidate_events
-            WHERE row_number = 1
-          )
-          SELECT outbox.*
+          SELECT #{lock ? 'outbox.*' : 'outbox.id, outbox.collection, outbox.document_id'}
           FROM #{quoted_table} outbox
-          INNER JOIN latest_candidate_ids
-            ON latest_candidate_ids.id = outbox.id
+          WHERE #{materialization_filter_sql(targets, event_ids)}
           ORDER BY outbox.id ASC
+          LIMIT #{global_limit_for(limit)}
+          #{row_lock_sql(lock)}
+        SQL
+      end
+
+      # Each membership check reads at most one unique delivery per requested key.
+      # The scalar newer-event probe also prevents a hash over the entire parent history.
+      def materialization_filter_sql(targets, event_ids)
+        keys = targets.map(&:key).uniq
+        <<~SQL.chomp
+          outbox.status IN ('pending', 'processing', 'failed')
+          AND (outbox.next_attempt_at IS NULL OR outbox.next_attempt_at <= CURRENT_TIMESTAMP)
+          #{event_id_filter_sql('outbox', event_ids)}
+          AND (
+            SELECT newer.id FROM #{quoted_table} newer
+            WHERE newer.collection = outbox.collection AND newer.document_id = outbox.document_id
+              AND newer.id > outbox.id
+            LIMIT 1
+          ) IS NULL
+          AND (
+            SELECT COUNT(*) FROM #{quoted_delivery_table} deliveries
+            WHERE deliveries.event_id = outbox.id AND deliveries.target_key IN (#{ids_sql(keys)})
+          ) < #{keys.size}
         SQL
       end
 
@@ -683,6 +694,8 @@ module SearchEngine
       end
 
       def select_scalar(sql)
+        # Advisory locks and quiescence polls must reach the current database session on every attempt.
+        return connection.exec_query(sql).rows.first&.first if connection.respond_to?(:exec_query)
         return connection.select_value(sql) if connection.respond_to?(:select_value)
 
         result = connection.execute(sql)
@@ -1594,64 +1607,32 @@ module SearchEngine
 
       def collection_limited_materialization_select_sql(targets, event_ids: nil, lock: true)
         <<~SQL
-          WITH target(target_key, queue_name) AS (
-            VALUES #{delivery_target_values_sql(targets)}
-          ),
-          #{collection_limits_cte_sql},
+          WITH #{collection_limits_cte_sql},
           candidate_events AS MATERIALIZED (
-            SELECT outbox.id,
-                   outbox.collection,
-                   outbox.document_id
+            SELECT outbox.id, outbox.collection
             FROM #{quoted_table} outbox
-            WHERE outbox.status IN ('pending', 'processing', 'failed')
-              AND (outbox.next_attempt_at IS NULL OR outbox.next_attempt_at <= CURRENT_TIMESTAMP)
-              #{newer_event_exclusion_sql('outbox')}
-              #{event_id_filter_sql('outbox', event_ids)}
-              AND EXISTS (
-                SELECT 1
-                FROM target
-                WHERE NOT EXISTS (
-                  SELECT 1
-                  FROM #{quoted_delivery_table} deliveries
-                  WHERE deliveries.event_id = outbox.id
-                    AND deliveries.target_key = target.target_key
-                )
-            )
+            WHERE #{materialization_filter_sql(targets, event_ids)}
             ORDER BY outbox.id ASC
             LIMIT #{collection_limited_candidate_limit}
             #{row_lock_sql(lock)}
           ),
-          latest_candidate_ids AS (
-            SELECT id,
-                   collection
-            FROM (
-              SELECT id,
-                     collection,
-                     ROW_NUMBER() OVER (
-                       PARTITION BY collection, document_id
-                       ORDER BY id DESC
-                     ) AS row_number
-              FROM candidate_events
-            ) ranked_candidate_events
-            WHERE row_number = 1
-          ),
           ranked_by_collection AS (
-            SELECT latest_candidate_ids.id,
+            SELECT candidate_events.id,
                    ROW_NUMBER() OVER (
-                     PARTITION BY latest_candidate_ids.collection
-                     ORDER BY latest_candidate_ids.id ASC
+                     PARTITION BY candidate_events.collection
+                     ORDER BY candidate_events.id ASC
                    ) AS collection_row_number,
                    COALESCE(collection_limits.batch_size, #{global_limit_for(nil)}) AS collection_batch_size
-            FROM latest_candidate_ids
+            FROM candidate_events
             LEFT JOIN collection_limits
-              ON collection_limits.collection = latest_candidate_ids.collection
+              ON collection_limits.collection = candidate_events.collection
           ),
           selected_candidate_ids AS (
             SELECT id
             FROM ranked_by_collection
             WHERE collection_row_number <= collection_batch_size
           )
-          SELECT outbox.*
+          SELECT #{lock ? 'outbox.*' : 'outbox.id, outbox.collection, outbox.document_id'}
           FROM #{quoted_table} outbox
           INNER JOIN selected_candidate_ids
             ON selected_candidate_ids.id = outbox.id
@@ -1782,18 +1763,6 @@ module SearchEngine
 
       def normalized_ids(ids)
         Array(ids).compact.uniq(&:to_s)
-      end
-
-      def newer_event_exclusion_sql(event_relation)
-        <<~SQL.chomp
-          AND NOT EXISTS (
-            SELECT 1
-            FROM #{quoted_table} newer_events
-            WHERE newer_events.collection = #{event_relation}.collection
-              AND newer_events.document_id = #{event_relation}.document_id
-              AND newer_events.id > #{event_relation}.id
-          )
-        SQL
       end
 
       def processing_event_exclusion_sql(event_relation)

@@ -1,5 +1,11 @@
 # Changelog
 
+## 30.9.1
+
+- Serialize PostgreSQL delivery discovery across schedulers and workers and check delivery membership
+  by event and target. Hosts can enable checkpointed scans to bound discovery on large outboxes.
+- Execute advisory locks and delivery cutover polls on the database when Rails query caching is enabled.
+
 ## 30.9.0
 
 - Qualify geo/vector search and native caching against Typesense 30.2 while keeping the gem major
